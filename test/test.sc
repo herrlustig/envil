@@ -13,10 +13,12 @@ p.fadeTime = 0.5;
     ( 
         
         ~out     = {
-        var sig = LFTri.ar(freq: [400.rand,~freq]+[0,1,5]+LFNoise0.ar(0.2,mul:10).lag(3), 
-        numharm: 3, phase: 0, mul: 1).mean;
+            var sig = LFTri.ar(
+                freq: [400.rand,~freq]+[0,1,5]+LFNoise0.ar(0.2,mul:10).lag(3), 
+                numharm: 3, phase: 0, mul: 1).mean;
 
         sig = sig.clip2(0.9);
+        sig = sig + SinOsc.ar([20]+[0,1], LFNoise1.ar(100), mul: 0.2);
         sig = RLPF.ar(sig, 300, 0.5);
         sig.dup;
     }

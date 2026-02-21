@@ -9,6 +9,7 @@ import {
 	Hover,
 	Position,
 	Range,
+	SignatureHelp,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { getSuperColliderMode } from './modes/scdmode';
@@ -20,6 +21,7 @@ export interface LanguageMode {
 	doValidation?: (document: TextDocument) => Diagnostic[];
 	doComplete?: (document: TextDocument, position: Position) => CompletionList;
 	doHover?: (document: TextDocument, position: Position) => Hover | null;
+	doSignatureHelp?: (document: TextDocument, position: Position) => SignatureHelp | null;
 	onDocumentRemoved(document: TextDocument): void;
 	dispose(): void;
 }

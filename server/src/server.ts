@@ -46,7 +46,11 @@ connection.onInitialize((_params: InitializeParams) => {
 				resolveProvider: false
 			},
 			// Tell the client that the server supports hover
-			hoverProvider: true
+			hoverProvider: true,
+			// Tell the client that the server supports signature help
+			signatureHelpProvider: {
+				triggerCharacters: ['(', ',']
+			}
 		}
 	};
 });
@@ -120,6 +124,14 @@ connection.onHover(async (textDocumentPosition, _token) => {
 	const result = mode.doHover(document, textDocumentPosition.position);
 	connection.console.log(`Hover result: ${JSON.stringify(result)?.substring(0, 100)}`);
 	return result;
+});
+
+connection.onSignatureHelp(async (textDocumentPosition, _token) => {
+	const document = documents.get(textDocumentPosition.textDocument.uri);
+	if (!document) return null;
+	const mode = languageModes.getModeAtPosition(document, textDocumentPosition.position);
+	if (!mode || !mode.doSignatureHelp) return null;
+	return mode.doSignatureHelp(document, textDocumentPosition.position);
 });
 
 // Make the text document manager listen on the connection

@@ -461,6 +461,55 @@ const SC_METHODS = [
     'scope', 'plot', 'gui',
     'asStream', 'embedInStream', 'reset', 'next', 'nextN', 'all'
 ];
+const SIGNATURE_DATA = {};
+function parseParamNames(paramsStr) {
+    if (!paramsStr.trim())
+        return [];
+    const parts = [];
+    let depth = 0;
+    let current = '';
+    for (const ch of paramsStr) {
+        if (ch === '(' || ch === '[' || ch === '{') {
+            depth++;
+            current += ch;
+        }
+        else if (ch === ')' || ch === ']' || ch === '}') {
+            depth--;
+            current += ch;
+        }
+        else if (ch === ',' && depth === 0) {
+            parts.push(current.trim());
+            current = '';
+        }
+        else {
+            current += ch;
+        }
+    }
+    if (current.trim())
+        parts.push(current.trim());
+    return parts.map(p => ({ label: p.split(/[:\s=]/)[0].trim() }));
+}
+(function buildSignatureData() {
+    for (const [className, doc] of Object.entries(CLASS_DOCS)) {
+        const sigs = {};
+        for (const line of doc.split('\n')) {
+            const t = line.trim();
+            // ClassName.method(params)
+            const dm = t.match(/^(\w+)\.(\w+)\(([^)]*)\)\s*;?\s*$/);
+            if (dm && dm[1] === className) {
+                sigs[dm[2]] = { label: `${className}.${dm[2]}(${dm[3]})`, params: parseParamNames(dm[3]) };
+                continue;
+            }
+            // ClassName(params) — stored as 'new'
+            const nm = t.match(/^(\w+)\(([^)]*)\)\s*;?\s*$/);
+            if (nm && nm[1] === className && !sigs['new']) {
+                sigs['new'] = { label: `${className}(${nm[2]})`, params: parseParamNames(nm[2]) };
+            }
+        }
+        if (Object.keys(sigs).length)
+            SIGNATURE_DATA[className] = sigs;
+    }
+})();
 function getWordAtPosition(document, position) {
     const text = document.getText();
     const offset = document.offsetAt(position);
@@ -562,6 +611,62 @@ function getSuperColliderMode() {
                         end: document.positionAt(end)
                     }
                 };
+            }
+            return null;
+        },
+        doSignatureHelp(document, position) {
+            const text = document.getText();
+            const offset = document.offsetAt(position);
+            // Walk backwards from cursor to find the unmatched '(' of the current call
+            let depth = 0;
+            let callStart = -1;
+            let activeParam = 0;
+            for (let i = offset - 1; i >= 0; i--) {
+                const ch = text[i];
+                if (ch === ')' || ch === ']' || ch === '}') {
+                    depth++;
+                }
+                else if (ch === '(' || ch === '[' || ch === '{') {
+                    if (depth === 0) {
+                        if (ch === '(')
+                            callStart = i;
+                        break;
+                    }
+                    depth--;
+                }
+                else if (ch === ',' && depth === 0) {
+                    activeParam++;
+                }
+            }
+            if (callStart < 0)
+                return null;
+            const before = text.substring(0, callStart);
+            // Try ClassName.method( pattern first
+            const dotMatch = before.match(/(\w+)\.(\w+)\s*$/);
+            if (dotMatch) {
+                const sig = SIGNATURE_DATA[dotMatch[1]]?.[dotMatch[2]];
+                if (sig) {
+                    return {
+                        signatures: [{ label: sig.label, parameters: sig.params }],
+                        activeSignature: 0,
+                        activeParameter: Math.min(activeParam, Math.max(0, sig.params.length - 1))
+                    };
+                }
+            }
+            // Try ClassName( pattern (constructor style, e.g. FFT, Synth, Pbind)
+            const bareMatch = before.match(/(\w+)\s*$/);
+            if (bareMatch) {
+                const classSigs = SIGNATURE_DATA[bareMatch[1]];
+                if (classSigs) {
+                    const sig = classSigs['new'] ?? Object.values(classSigs)[0];
+                    if (sig) {
+                        return {
+                            signatures: [{ label: sig.label, parameters: sig.params }],
+                            activeSignature: 0,
+                            activeParameter: Math.min(activeParam, Math.max(0, sig.params.length - 1))
+                        };
+                    }
+                }
             }
             return null;
         },
