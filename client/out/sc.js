@@ -160,7 +160,7 @@ async function executeCode(code) {
     }
 }
 exports.executeCode = executeCode;
-function sendCode(code) {
+function sendCode(code, silent = false) {
     if (!sclangProcess || !sclangProcess.stdin) {
         vscode_1.window.showErrorMessage('sclang is not running');
         return;
@@ -168,8 +168,9 @@ function sendCode(code) {
     const cleanCode = code.trim();
     if (!cleanCode)
         return;
-    postWindowOutput.appendLine(`\n-> ${cleanCode.split('\n')[0]}${cleanCode.includes('\n') ? '...' : ''}`);
-    sclangProcess.stdin.write(cleanCode + '\x1b');
+    // \x0c = kInterpretPrintCmdLine → prints "-> result" (SC IDE behaviour)
+    // \x1b = kInterpretCmdLine     → silent, no output
+    sclangProcess.stdin.write(cleanCode + (silent ? '\x1b' : '\x0c'));
 }
 exports.sendCode = sendCode;
 // ── Block detection (ported from supercollider-vscode) ────────────────────────
@@ -345,10 +346,10 @@ async function executeBlock(editor) {
         if (!sclangProcess || sclangProcess.killed) {
             if (!(await startSclang()))
                 return;
-            setTimeout(() => { sendCode(prelude); sendCode(wrappedCode); }, 1000);
+            setTimeout(() => { sendCode(prelude, true); sendCode(wrappedCode); }, 1000);
             return;
         }
-        sendCode(prelude);
+        sendCode(prelude, true); // silent: don't print -> /path/to/file
         sendCode(wrappedCode);
         return;
     }
