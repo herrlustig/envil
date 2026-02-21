@@ -208,6 +208,52 @@ iframe{width:100%;height:100%;border:none}</style></head>
         )
     );
 
+    // ── Signature help on cursor rest ─────────────────────────────────────────
+    //
+    // Fires editor.action.triggerParameterHints whenever the cursor is resting
+    // inside a known Class.method( call in a SuperCollider file, so you don't
+    // have to type '(' or ',' to see the argument tooltip.
+
+    let _sigHelpTimer = null;
+    context.subscriptions.push(
+        vscode.window.onDidChangeTextEditorSelection(e => {
+            if (e.textEditor.document.languageId !== 'supercollider') return;
+            if (!e.selections[0].isEmpty) return;           // ignore real selections
+
+            // Debounce: only fire after the cursor has been still for 400 ms
+            if (_sigHelpTimer) clearTimeout(_sigHelpTimer);
+            _sigHelpTimer = setTimeout(() => {
+                _sigHelpTimer = null;
+                const editor = vscode.window.activeTextEditor;
+                if (!editor || editor.document.languageId !== 'supercollider') return;
+
+                const doc    = editor.document;
+                const offset = doc.offsetAt(editor.selection.active);
+                const text   = doc.getText();
+
+                // Walk backwards to find an unmatched '(' that is preceded by
+                // a word character — i.e. a method/constructor call open paren.
+                let depth = 0;
+                for (let i = offset - 1; i >= 0; i--) {
+                    const ch = text[i];
+                    if (ch === ')' || ch === ']' || ch === '}') { depth++; }
+                    else if (ch === ']' || ch === '{') { if (depth) depth--; else break; }
+                    else if (ch === '(') {
+                        if (depth > 0) { depth--; continue; }
+                        // We found the unmatched '(' – check there's a word before it
+                        const before = text.substring(Math.max(0, i - 1), i);
+                        if (/\w/.test(before)) {
+                            vscode.commands.executeCommand('editor.action.triggerParameterHints');
+                        }
+                        break;
+                    } else if ((ch === '\n') && depth === 0) {
+                        break; // don't look past the current line at depth 0
+                    }
+                }
+            }, 400);
+        })
+    );
+
     // ── Environment commands (Hydra / settings) ───────────────────────────────
 
     const openEnvironmentCommand = vscode.commands.registerCommand('envil.start', async () => {
@@ -367,11 +413,7 @@ function startServersAndSockets(workspaceFolder) {
     });
 
     app.use(express.static(path.join(__dirname, 'hydra')));
-    if (workspaceFolder) {
-        app.use('/files', express.static(path.join(workspaceFolder, 'public')));
-    } else {
-        vscode.window.showErrorMessage("[envil] Can't serve local files: no workspace folder open.");
-    }
+    app.use('/files', express.static(path.join(__dirname, 'local', 'files')));
 
     isLoadingCompleted = true;
 }

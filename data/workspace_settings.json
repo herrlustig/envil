@@ -13,6 +13,7 @@
     "editor.scrollbar.horizontal": "hidden",
     "editor.scrollbar.vertical": "hidden",
     "workbench.colorCustomizations": {
+        "terminal.background": "#00000056",
         "scrollbarSlider.background": "#9aa0",
         "scrollbarSlider.activeBackground": "#f000",
         "scrollbarSlider.hoverBackground": "#ff00",

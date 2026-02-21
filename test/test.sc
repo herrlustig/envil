@@ -19,7 +19,11 @@ p.fadeTime = 0.5;
 
         sig = sig.clip2(0.9);
         sig = sig + SinOsc.ar([20]+[0,1], LFNoise1.ar(100), mul: 0.2);
+
+        //sig = sig * Decay2.ar(Impulse.ar(5), 0.05, 0.1);
         sig = RLPF.ar(sig, 300, 0.5);
+        sig = sig + Saw.ar(20);
+
         sig.dup;
     }
     )

@@ -12,7 +12,13 @@
     "custom-ui-style.stylesheet": {
         ".monaco-workbench": "background-color: #00000000 !important;",
         ".monaco-inputbox": "background-color: #00000000 !important; color: #ffffff !important;",
-        ".monaco-workbench .part.editor>.content .editor-group-container>.editor-container div.view-lines span": "display: inline-block; background-color: #00000056;"
+        ".monaco-workbench .part.editor>.content .editor-group-container>.editor-container div.view-lines span": "display: inline-block; background-color: #00000056;",
+        ".monaco-workbench .part.panel .view-lines span": "display: inline-block; background-color: #00000056;",
+        ".xterm-viewport": "background-color: #00000056 !important;",
+        ".xterm-screen": "background-color: #00000056 !important;",
+        ".parameter-hints-widget": "background-color: #00000077 !important; backdrop-filter: blur(8px) !important;",
+        ".parameter-hints-widget .body": "background-color: transparent !important;",
+        ".parameter-hints-widget .signature": "background-color: transparent !important;"
     },
     "custom-ui-style.electron": {
         "transparent": true,
