@@ -1,0 +1,18 @@
+{
+  "name": "envil-sc-client",
+  "version": "1.0.0",
+  "license": "GPL-3.0",
+  "engines": { "node": ">=16" },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "18.x",
+    "@types/vscode": "^1.86.0",
+    "typescript": "^5.3.3"
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -p . -w"
+  }
+}

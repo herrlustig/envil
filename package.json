@@ -1,8 +1,8 @@
 {
   "name": "envil",
   "displayName": "ENVIL",
-  "description": "A/V live-coding environment using Hydra and Supercollider",
-  "version": "1.0.3",
+  "description": "A/V live-coding environment using Hydra and SuperCollider",
+  "version": "1.1.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/inspektral/envil"
@@ -19,12 +19,17 @@
       "name": "Gabriel Bizzo",
       "email": "gabriel.bizzo@hotmail.it",
       "url": "https://github.com/killbizz"
+    },
+    {
+      "name": "Roger Vila",
+      "url": "https://github.com/rogervila"
     }
   ],
   "engines": {
     "vscode": "^1.86.0"
   },
   "categories": [
+    "Programming Languages",
     "Themes",
     "Visualization",
     "Other"
@@ -34,7 +39,8 @@
     "live coding",
     "hydra",
     "supercollider",
-    "audiovisual"
+    "audiovisual",
+    "scd"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -42,127 +48,14 @@
   "main": "extension.js",
   "icon": "resources/logo.png",
   "contributes": {
-    "commands": [
-      {
-        "command": "envil.start",
-        "title": "Envil: Open environment"
-      },
-      {
-        "command": "envil.stop",
-        "title": "Envil: Close environment"
-      },
-      {
-        "command": "envil.hydra.evaluate",
-        "title": "Envil: Evaluate - Hydra"
-      },
-      {
-        "command": "envil.supercollider.evaluate",
-        "title": "Envil: Evaluate - Supercollider"
-      },
-      {
-        "command": "envil.supercollider.startSCLang",
-        "title": "Envil: Start SCLang - Supercollider"
-      },
-      {
-        "command": "envil.supercollider.stopSCLang",
-        "title": "Envil: Stop SCLang - Supercollider"
-      },
-      {
-        "command": "envil.supercollider.toggleSCLang",
-        "title": "Envil: Start/Stop SCLang - Supercollider"
-      },
-      {
-        "command": "envil.supercollider.startSCSynth",
-        "title": "Envil: Boot SCSynth - Supercollider"
-      },
-      {
-        "command": "envil.supercollider.stopSCSynth",
-        "title": "Envil: Stop SCSynth - Supercollider"
-      },
-      {
-        "command": "envil.supercollider.toggleSCSynth",
-        "title": "Envil: Start/Stop SCSynth - Supercollider"
-      },
-      {
-        "command": "envil.supercollider.hush",
-        "title": "Envil: Hush - Supercollider"
-      },
-      {
-        "command": "envil.supercollider.search",
-        "title": "Envil: Search - Supercollider"
-      }
-    ],
-    "configuration": [
-      {
-        "type": "object",
-        "title": "Envil Extension Configuration",
-        "properties": {
-          "envil.environment.active": {
-            "type": "boolean",
-            "default": false,
-            "description": "A setting to check if the environment is active"
-          }
-        }
-      },
-      {
-        "type": "object",
-        "title": "SuperCollider",
-        "properties": {
-          "envil.supercollider.sclang.cmd": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "default": null,
-            "description": "Specifies the correct sclang command for your SuperCollider installation."
-          },
-          "envil.supercollider.sclang.sclang_conf": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "default": null,
-            "description": "Specifies the sclang_conf.yaml file to use on sclang start."
-          }
-        }
-      }
-    ],
-    "keybindings": [
-      {
-        "command": "envil.hydra.evaluate",
-        "key": "ctrl+enter",
-        "mac": "cmd+enter",
-        "when": "editorTextFocus && editorLangId == 'javascript' && config.envil.environment.active",
-        "comment": "Evaluate Hydra code in envil environment"
-      },
-      {
-        "command": "envil.supercollider.evaluate",
-        "key": "ctrl+enter",
-        "mac": "cmd+enter",
-        "when": "editorTextFocus && editorLangId == 'supercollider' && config.envil.environment.active",
-        "comment": "Evaluate Supercollider code in envil environment"
-      },
-      {
-        "command": "envil.supercollider.hush",
-        "key": "ctrl+.",
-        "mac": "cmd+.",
-        "when": "editorTextFocus && config.envil.environment.active",
-        "comment": "Safety-critical command to stop every sound played by Supercollider"
-      },
-      {
-        "command": "envil.supercollider.search",
-        "key": "ctrl+h",
-        "mac": "cmd+h",
-        "when": "editorTextFocus && editorLangId == 'supercollider' && config.envil.environment.active",
-        "comment": "Search Supercollider code in the Supercollider documentation"
-      }
-    ],
     "languages": [
       {
         "id": "supercollider",
         "aliases": [
           "SuperCollider",
-          "supercollider"
+          "supercollider",
+          "scd",
+          "sc"
         ],
         "extensions": [
           ".sc",
@@ -178,16 +71,145 @@
         "scopeName": "source.supercollider",
         "path": "./supercollider/syntaxes/supercollider.tmLanguage.json"
       }
+    ],
+    "commands": [
+      {
+        "command": "envil.start",
+        "title": "Envil: Open Environment"
+      },
+      {
+        "command": "envil.stop",
+        "title": "Envil: Close Environment"
+      },
+      {
+        "command": "envil.hydra.evaluate",
+        "title": "Envil: Evaluate \u2013 Hydra"
+      },
+      {
+        "command": "envil.supercollider.executeBlock",
+        "title": "Envil: Execute Block \u2013 SuperCollider"
+      },
+      {
+        "command": "envil.supercollider.startSCLang",
+        "title": "Envil: Start SCLang"
+      },
+      {
+        "command": "envil.supercollider.stopSCLang",
+        "title": "Envil: Stop SCLang"
+      },
+      {
+        "command": "envil.supercollider.toggleSCLang",
+        "title": "Envil: Toggle SCLang"
+      },
+      {
+        "command": "envil.supercollider.startSCSynth",
+        "title": "Envil: Boot SCSynth"
+      },
+      {
+        "command": "envil.supercollider.stopSCSynth",
+        "title": "Envil: Stop SCSynth"
+      },
+      {
+        "command": "envil.supercollider.toggleSCSynth",
+        "title": "Envil: Toggle SCSynth"
+      },
+      {
+        "command": "envil.supercollider.rebootServer",
+        "title": "Envil: Reboot Server \u2013 SuperCollider"
+      },
+      {
+        "command": "envil.supercollider.hush",
+        "title": "Envil: Hush / Stop All Sounds"
+      },
+      {
+        "command": "envil.supercollider.openHelpFor",
+        "title": "Envil: Open Help for Word Under Cursor"
+      },
+      {
+        "command": "envil.supercollider.search",
+        "title": "Envil: Search \u2013 SuperCollider"
+      }
+    ],
+    "configuration": [
+      {
+        "type": "object",
+        "title": "Envil",
+        "properties": {
+          "envil.environment.active": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether the ENVIL environment is currently active."
+          }
+        }
+      },
+      {
+        "type": "object",
+        "title": "SuperCollider",
+        "properties": {
+          "envil.supercollider.sclang.cmd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": "/usr/bin/sclang",
+            "description": "Path to the sclang executable."
+          },
+          "envil.supercollider.sclang.sclang_conf": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": "~/.config/SuperCollider/sclang_conf.yaml",
+            "description": "Path to the sclang_conf.yaml file."
+          }
+        }
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "envil.supercollider.executeBlock",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && editorLangId == 'supercollider'"
+      },
+      {
+        "command": "envil.supercollider.executeBlock",
+        "key": "shift+enter",
+        "when": "editorTextFocus && editorLangId == 'supercollider'"
+      },
+      {
+        "command": "envil.hydra.evaluate",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && editorLangId == 'javascript' && config.envil.environment.active"
+      },
+      {
+        "command": "envil.supercollider.hush",
+        "key": "ctrl+.",
+        "mac": "cmd+.",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "envil.supercollider.openHelpFor",
+        "key": "ctrl+d",
+        "mac": "cmd+d",
+        "when": "editorTextFocus && editorLangId == 'supercollider'"
+      },
+      {
+        "command": "envil.supercollider.search",
+        "key": "ctrl+h",
+        "mac": "cmd+h",
+        "when": "editorTextFocus && editorLangId == 'supercollider'"
+      }
     ]
   },
   "extensionDependencies": [
-    "subframe7536.custom-ui-style",
-    "draivin.hscopes"
+    "subframe7536.custom-ui-style"
   ],
   "scripts": {
-    "lint": "eslint .",
-    "pretest": "npm run lint",
-    "test": "vscode-test",
+    "vscode:prepublish": "npm run compile",
+    "compile": "cd client && npm install && tsc -p . && cd ../server && npm install && tsc -p .",
+    "watch": "tsc -b client server -w",
     "package": "vsce package",
     "publish": "vsce publish"
   },
@@ -204,12 +226,6 @@
     "express": "^4.18.2",
     "jsonc-parser": "^3.2.1",
     "osc": "^2.4.4",
-    "socket.io": "^4.7.4",
-    "supercolliderjs": "^1.0.1"
-  },
-  "files": [
-    "resources",
-    "README.md",
-    "package.json"
-  ]
+    "socket.io": "^4.7.4"
+  }
 }

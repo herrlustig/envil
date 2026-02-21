@@ -7,4 +7,10 @@ vsc-extension-quickstart.md
 **/jsconfig.json
 **/*.map
 **/.eslintrc.json
+client/src/**
+client/tsconfig.json
+client/package.json
+server/src/**
+server/tsconfig.json
+server/package.json
 **/.vscode-test.*
