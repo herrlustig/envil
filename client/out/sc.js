@@ -173,8 +173,97 @@ function sendCode(code) {
 }
 exports.sendCode = sendCode;
 // ── Block detection (ported from supercollider-vscode) ────────────────────────
+/**
+ * Returns a copy of `text` with the same length where every character that is
+ * inside a line comment (//…), a block comment (/* … *\/, nestable in SC),
+ * or a string literal ("…") is replaced with a space.
+ * Newlines are preserved so that line-number calculations stay accurate.
+ */
+function stripCommentsAndStrings(text) {
+    const out = text.split('');
+    let i = 0;
+    while (i < text.length) {
+        // Line comment  //
+        if (text[i] === '/' && text[i + 1] === '/') {
+            while (i < text.length && text[i] !== '\n' && text[i] !== '\r') {
+                out[i] = ' ';
+                i++;
+            }
+        }
+        // Block comment  /* … */  (SC allows nesting)
+        else if (text[i] === '/' && text[i + 1] === '*') {
+            let depth = 1;
+            out[i] = ' ';
+            out[i + 1] = ' ';
+            i += 2;
+            while (i < text.length && depth > 0) {
+                if (text[i] === '/' && text[i + 1] === '*') {
+                    out[i] = ' ';
+                    out[i + 1] = ' ';
+                    i += 2;
+                    depth++;
+                }
+                else if (text[i] === '*' && text[i + 1] === '/') {
+                    out[i] = ' ';
+                    out[i + 1] = ' ';
+                    i += 2;
+                    depth--;
+                }
+                else {
+                    if (text[i] !== '\n' && text[i] !== '\r')
+                        out[i] = ' ';
+                    i++;
+                }
+            }
+        }
+        // String literal  "…"
+        else if (text[i] === '"') {
+            out[i] = ' ';
+            i++;
+            while (i < text.length && text[i] !== '"') {
+                if (text[i] === '\\') {
+                    out[i] = ' ';
+                    i++;
+                }
+                if (i < text.length && text[i] !== '\n' && text[i] !== '\r')
+                    out[i] = ' ';
+                i++;
+            }
+            if (i < text.length) {
+                out[i] = ' ';
+                i++;
+            }
+        }
+        // Single-quoted symbol/string  '…'  (SC allows multi-line symbols)
+        // Skip if preceded by $ (e.g. $' is a Character literal, not a string)
+        else if (text[i] === '\'' && (i === 0 || text[i - 1] !== '$')) {
+            out[i] = ' ';
+            i++;
+            while (i < text.length && text[i] !== '\'') {
+                if (text[i] === '\\') {
+                    out[i] = ' ';
+                    i++;
+                }
+                if (i < text.length && text[i] !== '\n' && text[i] !== '\r')
+                    out[i] = ' ';
+                i++;
+            }
+            if (i < text.length) {
+                out[i] = ' ';
+                i++;
+            }
+        }
+        else {
+            i++;
+        }
+    }
+    return out.join('');
+}
 function findCodeBlock(document, position) {
     const text = document.getText();
+    // Use a comment/string-stripped copy for all paren scanning so that
+    // parens inside  // comments, /* */ comments, or "strings" are ignored.
+    const stripped = stripCommentsAndStrings(text);
     const offset = document.offsetAt(position);
     const isStartOfLine = (index) => {
         for (let j = index - 1; j >= 0; j--) {
@@ -189,10 +278,10 @@ function findCodeBlock(document, position) {
     };
     const findMatchingClosing = (startIndex) => {
         let depth = 0;
-        for (let i = startIndex; i < text.length; i++) {
-            if (text[i] === '(')
+        for (let i = startIndex; i < stripped.length; i++) {
+            if (stripped[i] === '(')
                 depth++;
-            else if (text[i] === ')') {
+            else if (stripped[i] === ')') {
                 depth--;
                 if (depth === 0)
                     return i;
@@ -201,17 +290,22 @@ function findCodeBlock(document, position) {
         return -1;
     };
     const isValidRegionEnd = (endIndex) => {
-        for (let i = endIndex + 1; i < text.length; i++) {
-            const c = text[i];
+        for (let i = endIndex + 1; i < stripped.length; i++) {
+            const c = stripped[i];
             if (c === ' ' || c === '\t')
                 continue;
             return c === '\n' || c === '\r' || c === ';';
         }
         return true;
     };
+    // Scan backwards from cursor, recording every valid enclosing block found.
+    // We keep overwriting `result` so the last (outermost) block wins –
+    // this matches standard SC IDE behaviour where the outermost ( at start
+    // of a line is evaluated, not the innermost one.
     let depth = 0;
+    let result = null;
     for (let i = offset; i >= 0; i--) {
-        const c = text[i];
+        const c = stripped[i];
         if (c === ')') {
             depth++;
         }
@@ -222,21 +316,43 @@ function findCodeBlock(document, position) {
                 if (closeIndex !== -1 && isValidRegionEnd(closeIndex)) {
                     const closePos = document.positionAt(closeIndex);
                     if (closeIndex >= offset || closePos.line === position.line) {
-                        return text.substring(i, closeIndex + 1);
+                        // Valid enclosing block – keep scanning for an outer one.
+                        result = text.substring(i, closeIndex + 1);
                     }
                 }
             }
         }
     }
-    return document.lineAt(position.line).text.trim();
+    return result ?? document.lineAt(position.line).text.trim();
 }
 exports.findCodeBlock = findCodeBlock;
 async function executeBlock(editor) {
     const { document, selection } = editor;
-    const code = selection.isEmpty
+    let code = selection.isEmpty
         ? (findCodeBlock(document, selection.active) ?? document.lineAt(selection.active.line).text)
         : document.getText(selection);
-    await executeCode(code);
+    const filePath = document.uri.fsPath;
+    const prelude = (filePath && !filePath.startsWith('untitled'))
+        ? `thisProcess.nowExecutingPath = ${JSON.stringify(filePath)};`
+        : null;
+    // Always wrap in ( … ) so that var declarations and multi-line blocks
+    // are evaluated as a single SC block.
+    // const wrappedCode = `(\n${code}\n)`;
+    const wrappedCode = `${code}`;
+    // If we have a prelude, send it as a separate message so `var` remains
+    // the first statement in the evaluated block.
+    if (prelude) {
+        if (!sclangProcess || sclangProcess.killed) {
+            if (!(await startSclang()))
+                return;
+            setTimeout(() => { sendCode(prelude); sendCode(wrappedCode); }, 1000);
+            return;
+        }
+        sendCode(prelude);
+        sendCode(wrappedCode);
+        return;
+    }
+    await executeCode(wrappedCode);
 }
 exports.executeBlock = executeBlock;
 // ── Server helpers ────────────────────────────────────────────────────────────
