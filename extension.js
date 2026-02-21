@@ -162,6 +162,52 @@ iframe{width:100%;height:100%;border:none}</style></head>
         console.error('[envil] LSP client failed to start:', err);
     }
 
+    // ── SCIDE-style bracket selection ────────────────────────────────────────
+    //
+    // Double-clicking on any bracket in a SuperCollider file selects the full
+    // content between the bracket pair, brackets included – exactly as SCIDE does.
+    //
+    // The same behaviour is also available as an explicit command bound to
+    // Ctrl+Shift+B (Cmd+Shift+B on Mac) for keyboard-driven workflows.
+
+    context.subscriptions.push(
+        vscode.window.onDidChangeTextEditorSelection(e => {
+            // Only react to mouse-driven selection changes
+            if (e.kind !== vscode.TextEditorSelectionChangeKind.Mouse) return;
+            const editor = e.textEditor;
+            if (editor.document.languageId !== 'supercollider') return;
+
+            // A double-click on a non-word character (like a bracket) produces
+            // a single-character selection.  Nothing to do for multi-char
+            // selections – those are already meaningful user selections.
+            if (e.selections.length !== 1) return;
+            const sel = e.selections[0];
+            if (sel.isEmpty) return;
+            const selectedText = editor.document.getText(sel);
+            if (selectedText.length !== 1) return;
+
+            const OPEN  = '([{';
+            const CLOSE = ')]}';
+            if (!OPEN.includes(selectedText) && !CLOSE.includes(selectedText)) return;
+
+            // Temporarily move the cursor to the clicked bracket so
+            // buildBracketSelection can resolve it via the active position.
+            editor.selection = new vscode.Selection(sel.start, sel.start);
+            const expanded = buildBracketSelection(editor);
+            if (expanded) editor.selection = expanded;
+        }),
+
+        vscode.commands.registerTextEditorCommand(
+            'envil.supercollider.selectBracketBlock',
+            (editor) => {
+                // If there is already a selection, try to expand to the next
+                // enclosing bracket pair; otherwise use the cursor position.
+                const expanded = buildBracketSelection(editor);
+                if (expanded) editor.selection = expanded;
+            }
+        )
+    );
+
     // ── Environment commands (Hydra / settings) ───────────────────────────────
 
     const openEnvironmentCommand = vscode.commands.registerCommand('envil.start', async () => {
@@ -376,6 +422,133 @@ function showNotification(message) {
         { location: vscode.ProgressLocation.Notification, title: message, cancellable: false },
         async () => { await checkLoadingCompletion(); }
     );
+}
+
+// ── SCIDE-style bracket selection ────────────────────────────────────────────
+//
+// Mirrors the stripCommentsAndStrings logic from client/src/sc.ts so that
+// brackets inside // comments, /* */ comments (nestable in SC), "strings"
+// and 'symbols' are completely ignored during matching.
+
+function stripSCCommentsAndStrings(text) {
+    const out = text.split('');
+    let i = 0;
+    while (i < text.length) {
+        // Line comment  //
+        if (text[i] === '/' && text[i + 1] === '/') {
+            while (i < text.length && text[i] !== '\n' && text[i] !== '\r') {
+                out[i] = ' '; i++;
+            }
+        }
+        // Block comment  /* … */  (SC allows nesting)
+        else if (text[i] === '/' && text[i + 1] === '*') {
+            let depth = 1;
+            out[i] = ' '; out[i + 1] = ' '; i += 2;
+            while (i < text.length && depth > 0) {
+                if (text[i] === '/' && text[i + 1] === '*') {
+                    out[i] = ' '; out[i + 1] = ' '; i += 2; depth++;
+                } else if (text[i] === '*' && text[i + 1] === '/') {
+                    out[i] = ' '; out[i + 1] = ' '; i += 2; depth--;
+                } else {
+                    if (text[i] !== '\n' && text[i] !== '\r') out[i] = ' ';
+                    i++;
+                }
+            }
+        }
+        // String literal  "…"
+        else if (text[i] === '"') {
+            out[i] = ' '; i++;
+            while (i < text.length && text[i] !== '"') {
+                if (text[i] === '\\') { out[i] = ' '; i++; }
+                if (i < text.length && text[i] !== '\n' && text[i] !== '\r') out[i] = ' ';
+                i++;
+            }
+            if (i < text.length) { out[i] = ' '; i++; }
+        }
+        // Single-quoted symbol  '…'  ($' is a Character literal, not a symbol)
+        else if (text[i] === '\'' && (i === 0 || text[i - 1] !== '$')) {
+            out[i] = ' '; i++;
+            while (i < text.length && text[i] !== '\'') {
+                if (text[i] === '\\') { out[i] = ' '; i++; }
+                if (i < text.length && text[i] !== '\n' && text[i] !== '\r') out[i] = ' ';
+                i++;
+            }
+            if (i < text.length) { out[i] = ' '; i++; }
+        }
+        else { i++; }
+    }
+    return out.join('');
+}
+
+/**
+ * Given a document and the character offset of a bracket, returns the offset
+ * of its matching counterpart, or -1 if not found.
+ * Uses comment/string-stripped text so brackets inside comments are ignored.
+ */
+function findMatchingBracketOffset(document, clickOffset, bracketChar) {
+    const OPEN  = '([{';
+    const CLOSE = ')]}';
+    const openIdx  = OPEN.indexOf(bracketChar);
+    const closeIdx = CLOSE.indexOf(bracketChar);
+    if (openIdx === -1 && closeIdx === -1) return -1;
+
+    const text     = document.getText();
+    const stripped = stripSCCommentsAndStrings(text);
+
+    if (openIdx !== -1) {
+        // Opening bracket → scan forward
+        const closeChar = CLOSE[openIdx];
+        let depth = 0;
+        for (let i = clickOffset; i < stripped.length; i++) {
+            if (stripped[i] === bracketChar) depth++;
+            else if (stripped[i] === closeChar) { depth--; if (depth === 0) return i; }
+        }
+    } else {
+        // Closing bracket → scan backward
+        const openChar = OPEN[closeIdx];
+        let depth = 0;
+        for (let i = clickOffset; i >= 0; i--) {
+            if (stripped[i] === bracketChar) depth++;
+            else if (stripped[i] === openChar) { depth--; if (depth === 0) return i; }
+        }
+    }
+    return -1;
+}
+
+/**
+ * Core logic shared by the double-click listener and the explicit command.
+ * Finds the enclosing / clicked bracket pair and returns a Selection that
+ * covers both brackets and everything between them, or null if not applicable.
+ */
+function buildBracketSelection(editor) {
+    const document = editor.document;
+    const OPEN  = '([{';
+    const CLOSE = ')]}';
+
+    const cursorOffset = document.offsetAt(editor.selection.active);
+    const text = document.getText();
+
+    // Look at the character at the cursor and the one before it so we catch
+    // the cursor sitting right after a closing bracket too.
+    const candidates = [cursorOffset, cursorOffset - 1].filter(o => o >= 0 && o < text.length);
+
+    for (const offset of candidates) {
+        const ch = text[offset];
+        if (!OPEN.includes(ch) && !CLOSE.includes(ch)) continue;
+
+        const matchOffset = findMatchingBracketOffset(document, offset, ch);
+        if (matchOffset === -1) continue;
+
+        const startOffset = OPEN.includes(ch) ? offset       : matchOffset;
+        const endOffset   = OPEN.includes(ch) ? matchOffset  : offset;
+
+        // Selection: from opening bracket to just after closing bracket
+        return new vscode.Selection(
+            document.positionAt(startOffset),
+            document.positionAt(endOffset + 1)
+        );
+    }
+    return null;
 }
 
 module.exports = { activate, deactivate };

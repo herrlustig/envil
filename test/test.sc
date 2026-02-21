@@ -8,7 +8,7 @@ p.fadeTime = 0.5;
 (
     var bla=0;
     (       
-        ~freq = {MouseX.kr(10, 200, 1).lag(0.1).poll(0.05)+100; };
+        ~freq = {MouseX.kr(10, 200.rand, 1).lag(0.1).poll(0.05)+100; };
     );
     ( 
         
