@@ -18,7 +18,11 @@
         ".xterm-screen": "background-color: #00000056 !important;",
         ".parameter-hints-widget": "background-color: #00000077 !important; backdrop-filter: blur(8px) !important;",
         ".parameter-hints-widget .body": "background-color: transparent !important;",
-        ".parameter-hints-widget .signature": "background-color: transparent !important;"
+        ".parameter-hints-widget .signature": "background-color: transparent !important;",
+        ".ghost-text-decoration": "background-color: #1a1a3a77 !important;",
+        ".suggest-widget": "backdrop-filter: blur(8px) !important;",
+        ".suggest-widget .monaco-list .monaco-list-row": "background-color: transparent !important;",
+        ".bracket-match": "background-color: #ffaa00aa !important; outline: 2px solid #ffcc00 !important;"
     },
     "custom-ui-style.electron": {
         "transparent": true,

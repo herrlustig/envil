@@ -1,11 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.addSuppressMarker = addSuppressMarker;
 exports.initOutputChannels = initOutputChannels;
 exports.isSclangRunning = isSclangRunning;
 exports.startSclang = startSclang;
 exports.stopSclang = stopSclang;
 exports.executeCode = executeCode;
 exports.sendCode = sendCode;
+exports.queryCode = queryCode;
 exports.findCodeBlock = findCodeBlock;
 exports.executeBlock = executeBlock;
 exports.bootServer = bootServer;
@@ -19,6 +21,44 @@ const vscode_1 = require("vscode");
 let sclangProcess = null;
 let sclangOutput;
 let postWindowOutput;
+const stdoutListeners = [];
+// ── Markers to suppress from Post Window ──────────────────────────────────────
+const suppressMarkers = new Set();
+let _stdoutBuf = '';
+function addSuppressMarker(marker) {
+    suppressMarkers.add(marker);
+}
+/**
+ * Strip any marker-delimited blocks from text before it reaches the Post Window.
+ * Accumulates partial data across chunks to handle split markers.
+ */
+function filterMarkers(text) {
+    if (suppressMarkers.size === 0)
+        return text;
+    _stdoutBuf += text;
+    // Remove each complete marker…marker block
+    for (const m of suppressMarkers) {
+        let startIdx;
+        while ((startIdx = _stdoutBuf.indexOf(m)) !== -1) {
+            const endIdx = _stdoutBuf.indexOf(m, startIdx + m.length);
+            if (endIdx === -1) {
+                // Partial — wait for more data.  Return everything before the marker.
+                const clean = _stdoutBuf.substring(0, startIdx);
+                _stdoutBuf = _stdoutBuf.substring(startIdx);
+                return clean;
+            }
+            // Remove the full block including trailing newline if present
+            let removeEnd = endIdx + m.length;
+            if (_stdoutBuf[removeEnd] === '\n')
+                removeEnd++;
+            _stdoutBuf = _stdoutBuf.substring(0, startIdx) + _stdoutBuf.substring(removeEnd);
+        }
+    }
+    // No partial marker pending — flush the whole buffer
+    const result = _stdoutBuf;
+    _stdoutBuf = '';
+    return result;
+}
 function initOutputChannels() {
     if (!sclangOutput) {
         sclangOutput = vscode_1.window.createOutputChannel('SuperCollider');
@@ -128,7 +168,14 @@ async function startSclang(fallbackToExe = true) {
                 vscode_1.window.showErrorMessage(msg);
                 sclangProcess = null;
             });
-            proc.stdout?.on('data', (data) => postWindowOutput.append(data.toString()));
+            proc.stdout?.on('data', (data) => {
+                const text = data.toString();
+                const filtered = filterMarkers(text);
+                if (filtered)
+                    postWindowOutput.append(filtered);
+                for (const fn of stdoutListeners)
+                    fn(text);
+            });
             proc.stderr?.on('data', (data) => postWindowOutput.append(data.toString()));
             proc.on('exit', (code) => {
                 sclangOutput.appendLine(`[SuperCollider] sclang exited with code ${code}`);
@@ -181,6 +228,50 @@ function sendCode(code, silent = false) {
     if (!silent) {
         postWindowOutput.show(true); // reveal SC Post Window, keep editor focus
     }
+}
+/**
+ * Send SC code that prints a marker-delimited response and capture it.
+ *
+ * The SC code MUST print:  <marker>…payload…<marker>
+ * We listen on stdout for the opening and closing markers and return
+ * the text between them.  Returns null on timeout or if sclang isn't running.
+ *
+ * Uses \x1b (silent interpret) so the result doesn't clutter the Post Window
+ * with a "-> …" echo line.
+ */
+function queryCode(scCode, marker, timeoutMs = 2000) {
+    return new Promise((resolve) => {
+        if (!sclangProcess || !sclangProcess.stdin) {
+            resolve(null);
+            return;
+        }
+        let buf = '';
+        let resolved = false;
+        const listener = (text) => {
+            buf += text;
+            const startIdx = buf.indexOf(marker);
+            if (startIdx === -1)
+                return;
+            const payloadStart = startIdx + marker.length;
+            const endIdx = buf.indexOf(marker, payloadStart);
+            if (endIdx === -1)
+                return; // haven't received closing marker yet
+            cleanup();
+            resolve(buf.substring(payloadStart, endIdx));
+        };
+        const cleanup = () => {
+            if (resolved)
+                return;
+            resolved = true;
+            const idx = stdoutListeners.indexOf(listener);
+            if (idx !== -1)
+                stdoutListeners.splice(idx, 1);
+        };
+        stdoutListeners.push(listener);
+        sclangProcess.stdin.write(scCode + '\x1b');
+        setTimeout(() => { cleanup(); if (!resolved)
+            resolve(null); }, timeoutMs);
+    });
 }
 // ── Block detection (ported from supercollider-vscode) ────────────────────────
 /**

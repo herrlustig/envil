@@ -10,6 +10,8 @@ const { registerHydraProviders } = require('./hydra-language-support');
 const { registerHoverSlider } = require('./hover-slider');
 const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
 const { extractExpressions } = require('./peek-expressions');
+const { registerTouchKnobs } = require('./touch-knobs');
+const { registerProxyCompletions } = require('./proxy-completions');
 const osc = require('osc');
 
 // SC + LSP modules are loaded lazily so a compile error never blocks activation
@@ -113,7 +115,24 @@ async function activate(context) {
 
         vscode.commands.registerCommand('envil.supercollider.startSCSynth', async () => {
             const sc = getSC(); if (!sc) return;
-            await sc.bootServer();
+            const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
+            if (autoInit) {
+                // ProxySpace.push MUST be at top level (main interpreter thread).
+                // s.waitForBoot runs on AppClock — push there only affects that thread.
+                await sc.executeCode([
+                    'if(currentEnvironment.isKindOf(ProxySpace).not, {',
+                    '  p = ProxySpace.push(s);',
+                    '  ~out.ar(2);',
+                    '  "[envil] ProxySpace pushed.".postln;',
+                    '});',
+                    's.waitForBoot {',
+                    '  ~out.play;',
+                    '  "[envil] ProxySpace ready.  ~out.ar(2).play".postln;',
+                    '};',
+                ].join('\n'));
+            } else {
+                await sc.bootServer();
+            }
             _isSCSynthRunning = true;
             updateScsynthBar(true);
         }),
@@ -135,7 +154,23 @@ async function activate(context) {
 
         vscode.commands.registerCommand('envil.supercollider.rebootServer', async () => {
             const sc = getSC(); if (!sc) return;
-            await sc.rebootServer();
+            const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
+            if (autoInit) {
+                await sc.executeCode([
+                    's.reboot;',
+                    'if(currentEnvironment.isKindOf(ProxySpace).not, {',
+                    '  p = ProxySpace.push(s);',
+                    '  ~out.ar(2);',
+                    '  "[envil] ProxySpace pushed.".postln;',
+                    '});',
+                    's.waitForBoot {',
+                    '  ~out.play;',
+                    '  "[envil] ProxySpace ready.  ~out.ar(2).play".postln;',
+                    '};',
+                ].join('\n'));
+            } else {
+                await sc.rebootServer();
+            }
         }),
 
         vscode.commands.registerCommand('envil.supercollider.hush', async () => {
@@ -446,6 +481,19 @@ iframe{width:100%;height:100%;border:none}</style></head>
 
     // Clickable ▶ Run / ▶ Eval buttons above code blocks
     registerBlockCodeLens(context);
+
+    // Touch knobs — draggable XY controllers → SC proxyspace
+    const touchKnobsAutoOpen = vscode.workspace.getConfiguration('envil').get('touchKnobs.autoOpen', true);
+    registerTouchKnobs(context, {
+        getSC,
+        getIO: () => io,
+        hydraOutput,
+        extensionPath: context.extensionPath,
+        autoOpen: touchKnobsAutoOpen,
+    });
+
+    // ProxySpace autocompletion — ~proxy suggestions from live sclang
+    registerProxyCompletions(context, { getSC });
 
     // SC block command — sends code directly to sclang
     context.subscriptions.push(

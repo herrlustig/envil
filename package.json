@@ -168,6 +168,15 @@
       {
         "command": "envil.peekClear",
         "title": "Envil: Clear Peek Overlay (Hydra)"
+      },
+      {
+        "command": "envil.touchKnobs.open",
+        "title": "Envil: Open Touch Knobs",
+        "icon": "$(record)"
+      },
+      {
+        "command": "envil.touchKnobs.close",
+        "title": "Envil: Close Touch Knobs"
       }
     ],
     "configuration": [
@@ -179,6 +188,11 @@
             "type": "boolean",
             "default": false,
             "description": "Whether the ENVIL environment is currently active."
+          },
+          "envil.touchKnobs.autoOpen": {
+            "type": "boolean",
+            "default": true,
+            "description": "Automatically open the Touch Knobs panel on startup (centre column)."
           }
         }
       },
@@ -193,6 +207,11 @@
             ],
             "default": "/usr/bin/sclang",
             "description": "Path to the sclang executable."
+          },
+          "envil.supercollider.proxySpace.autoInit": {
+            "type": "boolean",
+            "default": true,
+            "description": "After server boot: automatically push a ProxySpace and create ~out.ar(2).play."
           },
           "envil.supercollider.sclang.sclang_conf": {
             "type": [
@@ -276,6 +295,12 @@
         "key": "ctrl+shift+m",
         "mac": "cmd+shift+m",
         "when": "editorTextFocus && editorLangId == 'javascript' && config.envil.environment.active"
+      },
+      {
+        "command": "envil.touchKnobs.open",
+        "key": "ctrl+shift+k",
+        "mac": "cmd+shift+k",
+        "when": "config.envil.environment.active"
       }
     ]
   },

@@ -27,19 +27,29 @@
         "editorStickyScroll.background": "#f000",
         "editorGutter.addedBackground": "#f000",
         "editorGutter.deletedBackground": "#f000",
-        "editorGutter.modifiedBackground": "#f000"
+        "editorGutter.modifiedBackground": "#f000",
+        "editorBracketMatch.background": "#ffaa0088",
+        "editorBracketMatch.border": "#ffcc00",
+        "editorGhostText.background": "#1a1a3a77",
+        "editorGhostText.foreground": "#88aacccc",
+        "editorSuggestWidget.background": "#0a0a1acc",
+        "editorSuggestWidget.border": "#ffffff22"
     },
+    "editor.lineNumbersMinChars": 2,
+    "editor.glyphMargin": false,
+    "editor.folding": false,
     "editor.stickyScroll.enabled": false,
     "editor.codeLensFontSize": 14,
     "editor.rulers": [],
     "[supercollider]": {
         "editor.quickSuggestions": {
-            "other": "off",
+            "other": "on",
             "comments": "off",
             "strings": "off"
         },
         "editor.suggest.showSnippets": false,
         "editor.suggest.showWords": false,
+        "editor.suggest.showKeywords": false,
         "editor.inlineSuggest.enabled": true,
         "editor.tabCompletion": "onlySnippets",
         "editor.suggest.snippetsPreventQuickSuggestions": false

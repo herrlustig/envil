@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"/>
+<style>
+/* ── Reset ───────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vscode-editor-background, #1e1e1e); font-family: var(--vscode-font-family, 'Segoe UI', sans-serif); color: var(--vscode-editor-foreground, #ccc); user-select: none; -webkit-user-select: none; touch-action: none; display: flex; flex-direction: column; }
+
+/* ── Toolbar ──────────────────────────────────────────────────────────── */
+#toolbar {
+    flex-shrink: 0; height: 32px; z-index: 100;
+    display: flex; align-items: center; gap: 6px; padding: 0 8px;
+    background: var(--vscode-titleBar-activeBackground, #333);
+    border-bottom: 1px solid var(--vscode-panel-border, #444);
+    font-size: 12px;
+}
+#toolbar button {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff);
+    border: none; border-radius: 3px; padding: 3px 10px; cursor: pointer;
+    font-size: 11px; white-space: nowrap;
+}
+#toolbar button:hover { opacity: 0.85; }
+#toolbar button.danger {
+    background: var(--vscode-errorForeground, #c44);
+}
+#toolbar .spacer { flex: 1; }
+#toolbar .status { font-size: 11px; opacity: 0.6; }
+
+/* ── Canvas wrapper ───────────────────────────────────────────────────── */
+#canvas-wrap {
+    flex: 1; overflow: hidden; min-height: 0; position: relative;
+}
+#surface {
+    display: block; width: 100%; height: 100%;
+}
+
+/* ── Knob tooltip ─────────────────────────────────────────────────────── */
+#tooltip {
+    position: fixed; z-index: 200; pointer-events: none;
+    background: rgba(0,0,0,0.85); color: #0f0; padding: 3px 8px;
+    border-radius: 4px; font-size: 11px; font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    display: none; white-space: pre;
+}
+
+/* ── Rename dialog ────────────────────────────────────────────────────── */
+#rename-dialog {
+    position: fixed; z-index: 300; display: none;
+    background: var(--vscode-input-background, #333);
+    border: 1px solid var(--vscode-input-border, #555);
+    border-radius: 4px; padding: 8px;
+}
+#rename-dialog input {
+    background: var(--vscode-input-background, #3c3c3c);
+    color: var(--vscode-input-foreground, #ccc);
+    border: 1px solid var(--vscode-input-border, #555);
+    border-radius: 3px; padding: 4px 8px; font-size: 13px; width: 140px;
+    outline: none;
+}
+#rename-dialog input:focus { border-color: var(--vscode-focusBorder, #007fd4); }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+    <button id="btn-add" title="Add a new knob">＋ Add Knob</button>
+    <button id="btn-init-all" title="(Re)create all SC proxies">⟳ Init All</button>
+    <span class="spacer"></span>
+    <span class="status" id="status-text">0 knobs</span>
+</div>
+
+<div id="canvas-wrap"><canvas id="surface"></canvas></div>
+<div id="tooltip"></div>
+<div id="rename-dialog"><input id="rename-input" type="text" maxlength="16" placeholder="knob name"/></div>
+
+<script>
+// ── VS Code webview API ──────────────────────────────────────────────────
+const vscode = acquireVsCodeApi();
+
+// ── Config ───────────────────────────────────────────────────────────────
+const KNOB_RADIUS = 22;
+const KNOB_GRAB_RADIUS = 30;        // slightly larger touch target
+const EDGE_PAD = KNOB_RADIUS + 10;  // px inset so knobs reach full 0–1 at edges
+const MIN_SEND_INTERVAL_MS = 25;    // throttle: max ~40 msgs/sec per knob
+const PROXY_PREFIX = 'v';           // ~v_name in proxyspace
+const MIDI_BASE_NOTE = 60;           // first knob = C3 (MIDI 60), ascending chromatically
+
+// ── MIDI note name helper ────────────────────────────────────────────────
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+function midiNoteName(midi) {
+    const name = NOTE_NAMES[midi % 12];
+    const octave = Math.floor(midi / 12) - 2;   // C3 = 60 convention (middle C)
+    return name + octave;
+}
+function knobMidiNote(knob) { return knob.midiNote || (MIDI_BASE_NOTE + ((knob.note || knob.id) - 1)); }
+
+// ── Colour palette for knobs ─────────────────────────────────────────────
+const COLORS = [
+    '#0af', '#f80', '#0f0', '#f0f', '#ff0', '#0ff',
+    '#f44', '#8f0', '#08f', '#fa0', '#a0f', '#0fa',
+];
+
+// ── State ────────────────────────────────────────────────────────────────
+// Knob positions are stored NORMALISED (0–1).
+//   nx: 0 = left edge,  1 = right edge
+//   ny: 0 = top edge,   1 = bottom edge
+// SC output: x = nx (left→right 0–1), y = ny (top→bottom 0–1)
+let knobs = [];       // { id, name, nx, ny, color, lastSendTime }
+let nextId = 1;
+let dragKnob = null;
+let dragOffNX = 0, dragOffNY = 0;   // grab offset in normalised coords
+let contextKnob = null;
+let tapStartNX = 0, tapStartNY = 0;  // for tap-vs-drag detection
+let didDrag = false;                  // true once pointer moves past threshold
+const TAP_MOVE_THRESH = 0.02;         // normalised distance — below this = tap, not drag
+
+// ── Double-tap-hold state ────────────────────────────────────────────────
+let holdKnob = null;                  // knob currently held (noteOn sustained)
+let lastTapKnob_ = null;             // knob from previous tap
+let lastTapTime_ = 0;                // timestamp of previous tap
+const DOUBLE_TAP_MS = 400;           // max gap between taps for double-tap
+
+const canvas = document.getElementById('surface');
+const ctx = canvas.getContext('2d');
+const tooltip = document.getElementById('tooltip');
+const statusText = document.getElementById('status-text');
+const renameDialog = document.getElementById('rename-dialog');
+const renameInput = document.getElementById('rename-input');
+
+// ── Migrate old pixel-based knobs → normalised ──────────────────────────
+function migrateKnobs(arr) {
+    for (const k of arr) {
+        if (k.nx == null && k.x != null) {
+            // Old format stored absolute pixel x,y — approximate normalise
+            k.nx = Math.max(0, Math.min(1, k.x / 600));   // rough fallback
+            k.ny = Math.max(0, Math.min(1, k.y / 400));
+            delete k.x; delete k.y;
+        }
+        if (k.nx == null) k.nx = 0.5;
+        if (k.ny == null) k.ny = 0.5;
+        // Ensure stable note number + MIDI note (for old state without them)
+        if (k.note == null) k.note = k.id;
+        if (k.midiNote == null) k.midiNote = MIDI_BASE_NOTE + (k.note - 1);
+    }
+    return arr;
+}
+
+// ── Restore persisted state ──────────────────────────────────────────────
+const saved = vscode.getState();
+if (saved && saved.knobs) {
+    knobs = migrateKnobs(saved.knobs);
+    nextId = saved.nextId || knobs.length + 1;
+}
+
+// ── Canvas resize ────────────────────────────────────────────────────────
+const wrap = document.getElementById('canvas-wrap');
+function surfaceW() { return wrap.clientWidth  || 1; }
+function surfaceH() { return wrap.clientHeight || 1; }
+
+function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = surfaceW();
+    const h = surfaceH();
+    canvas.width  = w * dpr;
+    canvas.height = h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+}
+window.addEventListener('resize', resize);
+
+// ── Coordinate helpers ───────────────────────────────────────────────────
+// Normalised 0–1 → pixel, with EDGE_PAD inset so full range is reachable
+function pixelX(knob) { return EDGE_PAD + knob.nx * (surfaceW() - 2 * EDGE_PAD); }
+function pixelY(knob) { return EDGE_PAD + knob.ny * (surfaceH() - 2 * EDGE_PAD); }
+
+// Client (mouse/touch) → normalised, accounting for inset
+function clientToNormX(clientX) {
+    const rect = canvas.getBoundingClientRect();
+    return (clientX - rect.left - EDGE_PAD) / ((rect.width || 1) - 2 * EDGE_PAD);
+}
+function clientToNormY(clientY) {
+    const rect = canvas.getBoundingClientRect();
+    return (clientY - rect.top - EDGE_PAD) / ((rect.height || 1) - 2 * EDGE_PAD);
+}
+
+function clampNorm(v) { return Math.max(0, Math.min(1, v)); }
+
+// SC output values (both 0–1, same direction as visual)
+function scX(knob) { return clampNorm(knob.nx); }
+function scY(knob) { return clampNorm(knob.ny); }
+
+// ── Draw ─────────────────────────────────────────────────────────────────
+function draw() {
+    const w = surfaceW();
+    const h = surfaceH();
+    ctx.clearRect(0, 0, w, h);
+
+    // Grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x <= w; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+    for (let y = 0; y <= h; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+
+    // Crosshair lines at 50%
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Draw each knob
+    for (const k of knobs) {
+        const kx = pixelX(k);
+        const ky = pixelY(k);
+        const isActive = k === dragKnob;
+
+        // Shadow / glow
+        ctx.shadowColor = k.color;
+        ctx.shadowBlur = isActive ? 18 : 8;
+
+        // Outer ring
+        ctx.beginPath();
+        ctx.arc(kx, ky, KNOB_RADIUS, 0, Math.PI * 2);
+        ctx.fillStyle = isActive ? k.color : hexAlpha(k.color, 0.25);
+        ctx.fill();
+        ctx.strokeStyle = k.color;
+        ctx.lineWidth = isActive ? 2.5 : 1.5;
+        ctx.stroke();
+
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+
+        // Note name in centre of knob
+        ctx.font = 'bold 11px "JetBrains Mono", "Fira Code", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = isActive ? '#000' : '#222';
+        ctx.fillText(midiNoteName(knobMidiNote(k)), kx, ky);
+
+        // Label + value — flip above knob when near bottom edge
+        const labelBelow = ky + KNOB_RADIUS + 22 < h;
+        const ccLabel = '~' + PROXY_PREFIX + '_c' + knobMidiNote(k);
+        const nameLabel = k.name;
+        const PAD_X = 4, PAD_Y = 2;
+        const LABEL_BG = 'rgba(0,0,0,0.65)';  // dark bg so text pops
+
+        if (labelBelow) {
+            // Row 1: proxy name + user name
+            ctx.font = '11px "JetBrains Mono", "Fira Code", monospace';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+            const txt1 = ccLabel + '  ' + nameLabel;
+            const m1 = ctx.measureText(txt1);
+            const y1 = ky + KNOB_RADIUS + 4;
+            ctx.fillStyle = LABEL_BG;
+            ctx.fillRect(kx - m1.width / 2 - PAD_X, y1 - PAD_Y, m1.width + PAD_X * 2, 13 + PAD_Y * 2);
+            ctx.fillStyle = k.color;
+            ctx.fillText(txt1, kx, y1);
+
+            // Row 2: XY values
+            ctx.font = '10px monospace';
+            const txt2 = scX(k).toFixed(2) + '  ' + scY(k).toFixed(2);
+            const m2 = ctx.measureText(txt2);
+            const y2 = ky + KNOB_RADIUS + 17;
+            ctx.fillStyle = LABEL_BG;
+            ctx.fillRect(kx - m2.width / 2 - PAD_X, y2 - PAD_Y, m2.width + PAD_X * 2, 12 + PAD_Y * 2);
+            ctx.fillStyle = '#ffffffcc';
+            ctx.fillText(txt2, kx, y2);
+        } else {
+            // Row 1: proxy name + user name
+            ctx.font = '11px "JetBrains Mono", "Fira Code", monospace';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+            const txt1 = ccLabel + '  ' + nameLabel;
+            const m1 = ctx.measureText(txt1);
+            const y1 = ky - KNOB_RADIUS - 17;
+            ctx.fillStyle = LABEL_BG;
+            ctx.fillRect(kx - m1.width / 2 - PAD_X, y1 - 13 - PAD_Y, m1.width + PAD_X * 2, 13 + PAD_Y * 2);
+            ctx.fillStyle = k.color;
+            ctx.fillText(txt1, kx, y1);
+
+            // Row 2: XY values
+            ctx.font = '10px monospace';
+            const txt2 = scX(k).toFixed(2) + '  ' + scY(k).toFixed(2);
+            const m2 = ctx.measureText(txt2);
+            const y2 = ky - KNOB_RADIUS - 4;
+            ctx.fillStyle = LABEL_BG;
+            ctx.fillRect(kx - m2.width / 2 - PAD_X, y2 - 12 - PAD_Y, m2.width + PAD_X * 2, 12 + PAD_Y * 2);
+            ctx.fillStyle = '#ffffffcc';
+            ctx.fillText(txt2, kx, y2);
+        }
+    }
+
+    // ── Sustained glow ring while a knob is held ─────────────────────────
+    if (holdKnob) {
+        const hx = pixelX(holdKnob), hy = pixelY(holdKnob);
+        // Pulsing glow: radius oscillates gently
+        const pulse = Math.sin(Date.now() / 150) * 3;
+        const r = KNOB_RADIUS + 6 + pulse;
+        ctx.beginPath();
+        ctx.arc(hx, hy, r, 0, Math.PI * 2);
+        ctx.strokeStyle = hexAlpha(holdKnob.color, 0.8);
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        // Keep animating
+        requestAnimationFrame(() => draw());
+    }
+}
+
+function hexAlpha(hex, a) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${a})`;
+}
+
+function darkenHex(hex, factor = 0.65) {
+    const r = Math.round(parseInt(hex.slice(1, 3), 16) * factor);
+    const g = Math.round(parseInt(hex.slice(3, 5), 16) * factor);
+    const b = Math.round(parseInt(hex.slice(5, 7), 16) * factor);
+    return `rgb(${r},${g},${b})`;
+}
+
+// ── Hit test ─────────────────────────────────────────────────────────────
+function hitTest(normX, normY) {
+    // Compare in pixel space for consistent grab radius
+    const mx = EDGE_PAD + normX * (surfaceW() - 2 * EDGE_PAD);
+    const my = EDGE_PAD + normY * (surfaceH() - 2 * EDGE_PAD);
+    for (let i = knobs.length - 1; i >= 0; i--) {
+        const k = knobs[i];
+        const dx = mx - pixelX(k);
+        const dy = my - pixelY(k);
+        if (dx * dx + dy * dy <= KNOB_GRAB_RADIUS * KNOB_GRAB_RADIUS) return k;
+    }
+    return null;
+}
+
+// ── Send values to extension ─────────────────────────────────────────────
+function sendKnobValue(knob) {
+    const now = Date.now();
+    if (now - (knob.lastSendTime || 0) < MIN_SEND_INTERVAL_MS) return;
+    knob.lastSendTime = now;
+
+    vscode.postMessage({
+        type: 'knob-move',
+        id: knob.id,
+        name: knob.name,
+        midiNote: knobMidiNote(knob),
+        x: parseFloat(scX(knob).toFixed(4)),
+        y: parseFloat(scY(knob).toFixed(4)),
+    });
+}
+
+function sendKnobValueForce(knob) {
+    knob.lastSendTime = 0;
+    sendKnobValue(knob);
+}
+
+// ── Pointer (mouse + touch unified) ─────────────────────────────────────
+function getPointerNorm(e) {
+    const src = e.touches ? e.touches[0] : e;
+    return { nx: clientToNormX(src.clientX), ny: clientToNormY(src.clientY) };
+}
+
+// ── Mono guard: release any held note ─────────────────────────────────────
+function releaseHold() {
+    if (!holdKnob) return;
+    vscode.postMessage({
+        type: 'knob-hold-off',
+        id: holdKnob.id,
+        name: holdKnob.name,
+        note: knobMidiNote(holdKnob),
+    });
+    flashKnob(holdKnob);
+    holdKnob = null;
+}
+
+function onPointerDown(e) {
+    closeRenameDialog();
+    const { nx, ny } = getPointerNorm(e);
+    const hit = hitTest(nx, ny);
+    if (hit) {
+        const now = Date.now();
+        // Double-tap: only if the PREVIOUS interaction was a tap (not a drag)
+        const isDoubleTap = (hit === lastTapKnob_ && now - lastTapTime_ < DOUBLE_TAP_MS);
+
+        if (isDoubleTap) {
+            // ── Double-tap-hold: noteOn now, noteOff on release ──────────
+            releaseHold();  // mono: silence any previous note
+            holdKnob = hit;
+            dragKnob = null;
+            dragOffNX = nx - hit.nx;
+            dragOffNY = ny - hit.ny;
+            vscode.postMessage({
+                type: 'knob-hold-on',
+                id: hit.id,
+                name: hit.name,
+                note: knobMidiNote(hit),
+                x: parseFloat(scX(hit).toFixed(4)),
+                y: parseFloat(scY(hit).toFixed(4)),
+            });
+            // Reset double-tap tracker so a third tap doesn't re-trigger
+            lastTapKnob_ = null;
+            lastTapTime_ = 0;
+        } else {
+            // ── Normal press: begin drag / single-tap detection ──────────
+            releaseHold();  // mono: silence any previous note
+            dragKnob = hit;
+            dragOffNX = nx - hit.nx;
+            dragOffNY = ny - hit.ny;
+            tapStartNX = nx;
+            tapStartNY = ny;
+            didDrag = false;
+            // NOTE: lastTapKnob_/lastTapTime_ set in onPointerUp (only on tap,
+            // not drag) so that drag→quick-press doesn't misfire as double-tap
+        }
+
+        // Bring to front
+        knobs = knobs.filter(k => k !== hit);
+        knobs.push(hit);
+        draw();
+        e.preventDefault();
+    }
+}
+
+function onPointerMove(e) {
+    const { nx, ny } = getPointerNorm(e);
+
+    // While holding: allow dragging the held knob (sustain + move)
+    if (holdKnob) {
+        holdKnob.nx = clampNorm(nx - dragOffNX);
+        holdKnob.ny = clampNorm(ny - dragOffNY);
+        sendKnobValue(holdKnob);
+        updateTooltip(holdKnob);
+        draw();
+        e.preventDefault();
+        return;
+    }
+
+    if (dragKnob) {
+        // Check if movement is large enough to count as a drag
+        const dnx = nx - tapStartNX, dny = ny - tapStartNY;
+        if (Math.sqrt(dnx * dnx + dny * dny) > TAP_MOVE_THRESH) didDrag = true;
+
+        dragKnob.nx = clampNorm(nx - dragOffNX);
+        dragKnob.ny = clampNorm(ny - dragOffNY);
+        sendKnobValue(dragKnob);
+        updateTooltip(dragKnob);
+        draw();
+        e.preventDefault();
+    } else {
+        const hit = hitTest(nx, ny);
+        if (hit) {
+            updateTooltip(hit);
+            canvas.style.cursor = 'grab';
+        } else {
+            tooltip.style.display = 'none';
+            canvas.style.cursor = 'default';
+        }
+    }
+}
+
+function onPointerUp(e) {
+    // ── Release a held knob: send noteOff ─────────────────────────────
+    if (holdKnob) {
+        releaseHold();
+        lastTapKnob_ = null;   // reset so next tap is fresh
+        lastTapTime_ = 0;
+        tooltip.style.display = 'none';
+        canvas.style.cursor = 'default';
+        draw();
+        return;
+    }
+
+    // ── Release after drag or single tap ──────────────────────────────
+    if (dragKnob) {
+        if (!didDrag) {
+            // Tap! — send button trigger with MIDI note
+            vscode.postMessage({
+                type: 'knob-tap',
+                id: dragKnob.id,
+                name: dragKnob.name,
+                note: knobMidiNote(dragKnob),
+                x: parseFloat(scX(dragKnob).toFixed(4)),
+                y: parseFloat(scY(dragKnob).toFixed(4)),
+            });
+            flashKnob(dragKnob);
+            // Record this tap for double-tap detection
+            lastTapKnob_ = dragKnob;
+            lastTapTime_ = Date.now();
+        } else {
+            sendKnobValueForce(dragKnob);
+            // Was a drag — reset double-tap tracker
+            lastTapKnob_ = null;
+            lastTapTime_ = 0;
+        }
+        dragKnob = null;
+        tooltip.style.display = 'none';
+        canvas.style.cursor = 'default';
+        draw();
+        persistState();
+    }
+}
+
+// ── Tap flash animation ──────────────────────────────────────────────────
+function flashKnob(knob) {
+    let alpha = 1.0;
+    const origColor = knob.color;
+    function step() {
+        alpha -= 0.06;
+        if (alpha <= 0) { draw(); return; }
+        draw();
+        // Draw flash ring on top
+        const kx = pixelX(knob), ky = pixelY(knob);
+        const r = KNOB_RADIUS + 8 * (1 - alpha);
+        ctx.beginPath();
+        ctx.arc(kx, ky, r, 0, Math.PI * 2);
+        ctx.strokeStyle = hexAlpha(origColor, alpha);
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+}
+
+// Mouse events
+canvas.addEventListener('mousedown', onPointerDown);
+window.addEventListener('mousemove', onPointerMove);
+window.addEventListener('mouseup', onPointerUp);
+
+// Touch events
+canvas.addEventListener('touchstart', onPointerDown, { passive: false });
+window.addEventListener('touchmove', onPointerMove, { passive: false });
+window.addEventListener('touchend', onPointerUp);
+window.addEventListener('touchcancel', onPointerUp);
+
+// ── Right-click context menu (rename / delete) ──────────────────────────
+canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const { nx, ny } = getPointerNorm(e);
+    const hit = hitTest(nx, ny);
+    if (hit) {
+        contextKnob = hit;
+        openRenameDialog(e.clientX, e.clientY, hit);
+    }
+});
+
+// NOTE: rename via right-click / long-press context menu (see contextmenu handler above)
+
+// ── Tooltip ──────────────────────────────────────────────────────────────
+function updateTooltip(knob) {
+    const rect = canvas.getBoundingClientRect();
+    const kx = pixelX(knob);
+    const ky = pixelY(knob);
+    const mn = knobMidiNote(knob);
+    tooltip.textContent = `~${PROXY_PREFIX}_c${mn}  ~${PROXY_PREFIX}_n${mn}  ${midiNoteName(mn)}\n${knob.name}  x: ${scX(knob).toFixed(3)}  y: ${scY(knob).toFixed(3)}`;
+    tooltip.style.display = 'block';
+
+    // Measure then pick visible side
+    const tw = tooltip.offsetWidth  || 100;
+    const th = tooltip.offsetHeight || 30;
+    const gap = KNOB_RADIUS + 8;
+
+    let tx = (kx + gap + tw < rect.width)
+        ? rect.left + kx + gap
+        : rect.left + kx - gap - tw;
+    let ty = rect.top + ky - th / 2;
+    if (ty < rect.top + 2)           ty = rect.top + 2;
+    if (ty + th > rect.bottom - 2)   ty = rect.bottom - th - 2;
+
+    tooltip.style.left = tx + 'px';
+    tooltip.style.top  = ty + 'px';
+}
+
+// ── Rename dialog ────────────────────────────────────────────────────────
+function openRenameDialog(clientX, clientY, knob) {
+    renameDialog.style.display = 'block';
+    renameDialog.style.left = clientX + 'px';
+    renameDialog.style.top = clientY + 'px';
+    renameInput.value = knob.name;
+    renameInput.focus();
+    renameInput.select();
+}
+
+function closeRenameDialog() {
+    if (renameDialog.style.display === 'none') return;
+    renameDialog.style.display = 'none';
+    if (contextKnob && renameInput.value.trim()) {
+        const oldName = contextKnob.name;
+        const newName = renameInput.value.trim().replace(/[^a-zA-Z0-9_]/g, '');
+        if (newName && newName !== oldName) {
+            contextKnob.name = newName;
+            vscode.postMessage({ type: 'knob-rename', id: contextKnob.id, oldName, newName });
+            draw();
+            persistState();
+        }
+    }
+    contextKnob = null;
+}
+
+renameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') closeRenameDialog();
+    if (e.key === 'Escape') { renameDialog.style.display = 'none'; contextKnob = null; }
+});
+renameInput.addEventListener('blur', () => { closeRenameDialog(); });
+
+// ── Add knob ─────────────────────────────────────────────────────────────
+document.getElementById('btn-add').addEventListener('click', () => {
+    addKnob();
+});
+
+function addKnob(name, nx, ny) {
+    const id = nextId++;
+    const midiNote = MIDI_BASE_NOTE + (id - 1);  // C3, C#3, D3, ...
+    const knob = {
+        id,
+        note: id,        // stable index (1-based)
+        midiNote,        // actual MIDI note number (60, 61, 62, ...)
+        name: name || midiNoteName(midiNote),
+        nx: nx != null ? nx : 0.3 + Math.random() * 0.4,   // default: centre ± spread
+        ny: ny != null ? ny : 0.3 + Math.random() * 0.4,
+        color: COLORS[(id - 1) % COLORS.length],
+        lastSendTime: 0,
+    };
+    knobs.push(knob);
+    vscode.postMessage({ type: 'knob-add', id: knob.id, name: knob.name, midiNote, x: scX(knob), y: scY(knob) });
+    updateStatus();
+    draw();
+    persistState();
+    return knob;
+}
+
+// ── Delete knob ──────────────────────────────────────────────────────────
+function removeKnob(knob) {
+    knobs = knobs.filter(k => k !== knob);
+    vscode.postMessage({ type: 'knob-remove', id: knob.id, name: knob.name, midiNote: knobMidiNote(knob) });
+    updateStatus();
+    draw();
+    persistState();
+}
+
+// ── Init All — re-create all SC proxies ──────────────────────────────────
+document.getElementById('btn-init-all').addEventListener('click', () => {
+    vscode.postMessage({ type: 'init-all', knobs: knobs.map(k => ({ id: k.id, name: k.name, midiNote: knobMidiNote(k), x: scX(k), y: scY(k) })) });
+});
+
+// ── Keyboard shortcuts ───────────────────────────────────────────────────
+window.addEventListener('keydown', (e) => {
+    if ((e.key === 'Delete' || e.key === 'Backspace') && contextKnob && renameDialog.style.display === 'none') {
+        removeKnob(contextKnob);
+        contextKnob = null;
+    }
+    if (e.key === 'a' && document.activeElement !== renameInput) {
+        addKnob();
+    }
+});
+
+// ── Persist state ────────────────────────────────────────────────────────
+function persistState() {
+    vscode.setState({ knobs, nextId });
+}
+
+function updateStatus() {
+    statusText.textContent = knobs.length + ' knob' + (knobs.length !== 1 ? 's' : '');
+}
+
+// ── Messages from extension ──────────────────────────────────────────────
+window.addEventListener('message', (event) => {
+    const msg = event.data;
+    if (msg.type === 'restore-knobs') {
+        knobs = migrateKnobs(msg.knobs || []);
+        nextId = msg.nextId || knobs.length + 1;
+        knobs.forEach((k, i) => { if (!k.color) k.color = COLORS[i % COLORS.length]; });
+        updateStatus();
+        draw();
+        persistState();
+    }
+});
+
+// ── Init ─────────────────────────────────────────────────────────────────
+resize();
+updateStatus();
+
+// Starter knobs (only if no persisted state)
+if (knobs.length === 0) {
+    addKnob('k1', 0.35, 0.5);
+    addKnob('k2', 0.65, 0.5);
+}
+</script>
+</body>
+</html>
