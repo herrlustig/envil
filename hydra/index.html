@@ -12,6 +12,7 @@
     <!-- import the latest version of hydra synth-->
     <script src="https://unpkg.com/hydra-synth"></script>
     <script src="./global-hydra.js" defer></script>
+    <script src="./peek-overlay.js" defer></script>
     <script src="./hydra-startup-script.js" defer></script>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -48,6 +49,22 @@
                 line: 0,
                 col: 0
             });
+        });
+
+        // ── Peek monitor handler ─────────────────────────────────────────────
+        socket.on('monitor-expressions', function (msg) {
+            if (typeof peekSet === 'function') {
+                peekSet(msg.expressions || []);
+                peekShow();
+            }
+        });
+
+        socket.on('peek-toggle', function () {
+            if (typeof peekToggle === 'function') peekToggle();
+        });
+
+        socket.on('peek-clear', function () {
+            if (typeof peekClear === 'function') peekClear();
         });
 
         // ── Eval handler ─────────────────────────────────────────────────────

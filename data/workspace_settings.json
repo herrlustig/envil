@@ -30,6 +30,7 @@
         "editorGutter.modifiedBackground": "#f000"
     },
     "editor.stickyScroll.enabled": false,
+    "editor.codeLensFontSize": 14,
     "editor.rulers": [],
     "[supercollider]": {
         "editor.quickSuggestions": {

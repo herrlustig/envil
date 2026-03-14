@@ -7,6 +7,9 @@ const fs = require('fs');
 const jsonc = require('jsonc-parser');
 const { isEnvironmentActive, envilEnvironmentContextKey } = require('./supercollider/util');
 const { registerHydraProviders } = require('./hydra-language-support');
+const { registerHoverSlider } = require('./hover-slider');
+const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
+const { extractExpressions } = require('./peek-expressions');
 const osc = require('osc');
 
 // SC + LSP modules are loaded lazily so a compile error never blocks activation
@@ -394,12 +397,36 @@ iframe{width:100%;height:100%;border:none}</style></head>
         if (hydraOutput) {
             if (sentCount > 0) {
                 hydraOutput.appendLine(`  ✓ sent ${sentCount} statement${sentCount > 1 ? 's' : ''} to Hydra`);
+                // ── Peek: extract arrow-function expressions and send to browser ──
+                try {
+                    const exprs = extractExpressions(text);
+                    if (exprs.length > 0 && io) {
+                        io.sockets.emit('monitor-expressions', { expressions: exprs });
+                        hydraOutput.appendLine(`  👁 peek: monitoring ${exprs.length} expression${exprs.length > 1 ? 's' : ''} — ${exprs.map(e => e.label).join(', ')}`);
+                    }
+                } catch (e) {
+                    console.warn('[envil] peek extraction error:', e);
+                }
             } else {
                 hydraOutput.appendLine('  ⚠ nothing to evaluate (no semicolons found)');
             }
             hydraOutput.show(true); // reveal Hydra output, keep editor focus
         }
     });
+
+    // ── Peek toggle command ───────────────────────────────────────────────────
+    context.subscriptions.push(
+        vscode.commands.registerCommand('envil.peekToggle', () => {
+            if (!isEnvironmentActive() || !io) return;
+            io.sockets.emit('peek-toggle');
+            if (hydraOutput) hydraOutput.appendLine('  👁 peek overlay toggled');
+        }),
+        vscode.commands.registerCommand('envil.peekClear', () => {
+            if (!isEnvironmentActive() || !io) return;
+            io.sockets.emit('peek-clear');
+            if (hydraOutput) hydraOutput.appendLine('  👁 peek cleared');
+        })
+    );
 
     // AI inline-suggestion trigger with feedback
     const triggerAISuggest = vscode.commands.registerCommand('envil.triggerAISuggest', async () => {
@@ -413,6 +440,71 @@ iframe{width:100%;height:100%;border:none}</style></head>
     });
 
     context.subscriptions.push(openEnvironmentCommand, closeEnvironmentCommand, evaluateHydraCommand, triggerAISuggest);
+
+    // Interactive hover-slider for number literals (Hydra + SuperCollider)
+    registerHoverSlider(context);
+
+    // Clickable ▶ Run / ▶ Eval buttons above code blocks
+    registerBlockCodeLens(context);
+
+    // SC block command — sends code directly to sclang
+    context.subscriptions.push(
+        vscode.commands.registerCommand(CMD_RUN_SC_BLOCK, async (blockCode) => {
+            const sc = getSC();
+            if (!sc) return;
+            if (!sc.isSclangRunning()) {
+                vscode.window.showWarningMessage('sclang is not running. Start it first.');
+                return;
+            }
+            sc.sendCode(blockCode);
+        })
+    );
+
+    // Hydra block command — sends code via socket.io (same as Ctrl+Enter)
+    context.subscriptions.push(
+        vscode.commands.registerCommand(CMD_RUN_HYDRA_BLOCK, (blockCode) => {
+            if (!isEnvironmentActive() || !io) return;
+
+            let command = '';
+            let sentCount = 0;
+
+            for (const currentLine of blockCode.split('\n')) {
+                let line = currentLine;
+                if (line.trimStart().startsWith('//')) line = '';
+                if (line.includes('local/files/')) {
+                    line = line.replace('local/files/', 'http://localhost:3000/files/');
+                }
+                if (line !== '') {
+                    command += line;
+                    if (line.trimEnd().endsWith(';')) {
+                        io.sockets.emit('new-command', { data: command });
+                        if (hydraOutput) hydraOutput.appendLine(`▶ ${command}`);
+                        command = '';
+                        sentCount++;
+                    }
+                }
+            }
+
+            if (hydraOutput) {
+                if (sentCount > 0) {
+                    hydraOutput.appendLine(`  ✓ sent ${sentCount} statement${sentCount > 1 ? 's' : ''} to Hydra (CodeLens)`);
+                    // ── Peek: extract arrow-function expressions and send to browser ──
+                    try {
+                        const exprs = extractExpressions(blockCode);
+                        if (exprs.length > 0 && io) {
+                            io.sockets.emit('monitor-expressions', { expressions: exprs });
+                            hydraOutput.appendLine(`  👁 peek: monitoring ${exprs.length} expression${exprs.length > 1 ? 's' : ''} — ${exprs.map(e => e.label).join(', ')}`);
+                        }
+                    } catch (e) {
+                        console.warn('[envil] peek extraction error:', e);
+                    }
+                } else {
+                    hydraOutput.appendLine('  ⚠ nothing to evaluate');
+                }
+                hydraOutput.show(true);
+            }
+        })
+    );
 
     console.log('[envil] Activated successfully!');
 }

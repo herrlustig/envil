@@ -132,6 +132,42 @@
       {
         "command": "envil.supercollider.selectBracketBlock",
         "title": "Envil: Select Bracket Block \u2013 SuperCollider"
+      },
+      {
+        "command": "envil.numberAdjust",
+        "title": "Envil: Adjust Number (hover slider)"
+      },
+      {
+        "command": "envil.numberNudgeUp",
+        "title": "Envil: Nudge Number Up"
+      },
+      {
+        "command": "envil.numberNudgeDown",
+        "title": "Envil: Nudge Number Down"
+      },
+      {
+        "command": "envil.numberNudgeUpFine",
+        "title": "Envil: Nudge Number Up (fine)"
+      },
+      {
+        "command": "envil.numberNudgeDownFine",
+        "title": "Envil: Nudge Number Down (fine)"
+      },
+      {
+        "command": "envil.runSCBlock",
+        "title": "Envil: Run SC Block (CodeLens)"
+      },
+      {
+        "command": "envil.runHydraBlock",
+        "title": "Envil: Eval Hydra Block (CodeLens)"
+      },
+      {
+        "command": "envil.peekToggle",
+        "title": "Envil: Toggle Peek Overlay (Hydra)"
+      },
+      {
+        "command": "envil.peekClear",
+        "title": "Envil: Clear Peek Overlay (Hydra)"
       }
     ],
     "configuration": [
@@ -210,6 +246,36 @@
         "key": "ctrl+shift+b",
         "mac": "cmd+shift+b",
         "when": "editorTextFocus && editorLangId == 'supercollider'"
+      },
+      {
+        "command": "envil.numberNudgeUp",
+        "key": "ctrl+shift+up",
+        "mac": "cmd+shift+up",
+        "when": "editorTextFocus && config.envil.environment.active"
+      },
+      {
+        "command": "envil.numberNudgeDown",
+        "key": "ctrl+shift+down",
+        "mac": "cmd+shift+down",
+        "when": "editorTextFocus && config.envil.environment.active"
+      },
+      {
+        "command": "envil.numberNudgeUpFine",
+        "key": "ctrl+alt+up",
+        "mac": "cmd+alt+up",
+        "when": "editorTextFocus && config.envil.environment.active"
+      },
+      {
+        "command": "envil.numberNudgeDownFine",
+        "key": "ctrl+alt+down",
+        "mac": "cmd+alt+down",
+        "when": "editorTextFocus && config.envil.environment.active"
+      },
+      {
+        "command": "envil.peekToggle",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m",
+        "when": "editorTextFocus && editorLangId == 'javascript' && config.envil.environment.active"
       }
     ]
   },
