@@ -24,7 +24,7 @@ Tell me about it. summarize possible approaches.
 in SC livecoding, the proxyspace variables are the backbone of connecting different control and audio signals etc.
 It would be super need if when typing '~' the IDE would look into the current proxyspace and suggest by dropdown possible existing variables on the fly. is that doable with the vscode plugin. I think the plugin would need to communicate with sclang to get the current proxyspace variables/NodeProxies
 
-improve the SC proxyspace autocompletition: similar then hydras autocompletition dropdown list, it should still be possible to use AI code suggestions. please make the behaviour the same from a user action flow perspective as the solution used in hydra
+improve the SC proxyspace autocompletition: similar then hydras autocompletition dropdown list, it should still be possible to use AI code suggestions. please make the behaviour the same from a user action flow perspective as the solution used in hydra. maybe it already works like it ? check it, if not improve it
 
 ## startup default proxy anyways
 
