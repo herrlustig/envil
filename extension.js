@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const jsonc = require('jsonc-parser');
 const { isEnvironmentActive, envilEnvironmentContextKey } = require('./supercollider/util');
+const { registerHydraProviders } = require('./hydra-language-support');
 const osc = require('osc');
 
 // SC + LSP modules are loaded lazily so a compile error never blocks activation
@@ -38,6 +39,9 @@ let sclangStatusBar = null;
 let scsynthStatusBar = null;
 let _isSCSynthRunning = false;
 
+// Hydra output channel
+let hydraOutput = null;
+
 // ── Activate ─────────────────────────────────────────────────────────────────
 
 async function activate(context) {
@@ -56,6 +60,12 @@ async function activate(context) {
     updateSclangBar(false);
     updateScsynthBar(false);
     context.subscriptions.push(sclangStatusBar, scsynthStatusBar);
+
+    // Hydra output channel
+    if (!hydraOutput) {
+        hydraOutput = vscode.window.createOutputChannel('Hydra');
+        context.subscriptions.push(hydraOutput);
+    }
 
     // Restore environment if it was previously active
     const isEnvActive = vscode.workspace.getConfiguration().get(envilEnvironmentContextKey) || false;
@@ -162,6 +172,9 @@ iframe{width:100%;height:100%;border:none}</style></head>
         console.error('[envil] LSP client failed to start:', err);
     }
 
+    // ── Hydra language providers (hover, completion, signature help) ──────────
+    registerHydraProviders(context);
+
     // ── SCIDE-style bracket selection ────────────────────────────────────────
     //
     // Double-clicking on any bracket in a SuperCollider file selects the full
@@ -254,6 +267,46 @@ iframe{width:100%;height:100%;border:none}</style></head>
         })
     );
 
+    // ── Signature help auto-trigger for Hydra (JS files) ──────────────────────
+    //
+    // Same debounced cursor-rest approach as the SC block above, but for
+    // JavaScript files so Hydra argument tooltips appear automatically.
+
+    let _hydraSignHelpTimer = null;
+    context.subscriptions.push(
+        vscode.window.onDidChangeTextEditorSelection(e => {
+            if (e.textEditor.document.languageId !== 'javascript') return;
+            if (!e.selections[0].isEmpty) return;
+
+            if (_hydraSignHelpTimer) clearTimeout(_hydraSignHelpTimer);
+            _hydraSignHelpTimer = setTimeout(() => {
+                _hydraSignHelpTimer = null;
+                const editor = vscode.window.activeTextEditor;
+                if (!editor || editor.document.languageId !== 'javascript') return;
+
+                const doc    = editor.document;
+                const offset = doc.offsetAt(editor.selection.active);
+                const text   = doc.getText();
+
+                let depth = 0;
+                for (let i = offset - 1; i >= 0; i--) {
+                    const ch = text[i];
+                    if (ch === ')') { depth++; }
+                    else if (ch === '(') {
+                        if (depth > 0) { depth--; continue; }
+                        const before = text.substring(Math.max(0, i - 1), i);
+                        if (/\w/.test(before)) {
+                            vscode.commands.executeCommand('editor.action.triggerParameterHints');
+                        }
+                        break;
+                    } else if (ch === '\n' && depth === 0) {
+                        break;
+                    }
+                }
+            }, 400);
+        })
+    );
+
     // ── Environment commands (Hydra / settings) ───────────────────────────────
 
     const openEnvironmentCommand = vscode.commands.registerCommand('envil.start', async () => {
@@ -317,6 +370,7 @@ iframe{width:100%;height:100%;border:none}</style></head>
         const selection = editor.selection;
         let text = editor.document.getText(selection.isEmpty ? undefined : selection);
         let command = '';
+        let sentCount = 0;
 
         for (const currentLine of text.split('\n')) {
             let line = currentLine;
@@ -328,13 +382,37 @@ iframe{width:100%;height:100%;border:none}</style></head>
                 command += line;
                 if (line.trimEnd().endsWith(';')) {
                     io.sockets.emit('new-command', { data: command });
+                    if (hydraOutput) {
+                        hydraOutput.appendLine(`▶ ${command}`);
+                    }
                     command = '';
+                    sentCount++;
                 }
             }
         }
+
+        if (hydraOutput) {
+            if (sentCount > 0) {
+                hydraOutput.appendLine(`  ✓ sent ${sentCount} statement${sentCount > 1 ? 's' : ''} to Hydra`);
+            } else {
+                hydraOutput.appendLine('  ⚠ nothing to evaluate (no semicolons found)');
+            }
+            hydraOutput.show(true); // reveal Hydra output, keep editor focus
+        }
     });
 
-    context.subscriptions.push(openEnvironmentCommand, closeEnvironmentCommand, evaluateHydraCommand);
+    // AI inline-suggestion trigger with feedback
+    const triggerAISuggest = vscode.commands.registerCommand('envil.triggerAISuggest', async () => {
+        await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+        // Small delay to check if a suggestion appeared
+        setTimeout(() => {
+            if (hydraOutput) {
+                hydraOutput.appendLine('  ⓘ AI inline suggestion triggered (Alt+I)');
+            }
+        }, 200);
+    });
+
+    context.subscriptions.push(openEnvironmentCommand, closeEnvironmentCommand, evaluateHydraCommand, triggerAISuggest);
 
     console.log('[envil] Activated successfully!');
 }
@@ -403,7 +481,34 @@ function startServersAndSockets(workspaceFolder) {
     io = new Server(3001, { cors: { origin: '*' } });
     io.on('connection', (socket) => {
         console.log('[envil] Socket.io: client connected');
-        socket.on('disconnect', () => console.log('[envil] Socket.io: client disconnected'));
+        if (hydraOutput) hydraOutput.appendLine('── Hydra browser connected ──');
+        socket.on('disconnect', () => {
+            console.log('[envil] Socket.io: client disconnected');
+            if (hydraOutput) hydraOutput.appendLine('── Hydra browser disconnected ──');
+        });
+        socket.on('eval-result', (msg) => {
+            if (hydraOutput && msg && msg.data) {
+                hydraOutput.appendLine(`  ✓ ${msg.data}`);
+            }
+        });
+        socket.on('eval-error', (msg) => {
+            if (hydraOutput && msg && msg.data) {
+                hydraOutput.appendLine(`  ✖ ERROR: ${msg.data}`);
+                if (msg.code) {
+                    hydraOutput.appendLine(`    ↳ in: ${msg.code}`);
+                }
+                hydraOutput.show(true);
+            }
+        });
+        socket.on('runtime-error', (msg) => {
+            if (hydraOutput && msg && msg.data) {
+                hydraOutput.appendLine(`  ⚠ RUNTIME ERROR: ${msg.data}`);
+                if (msg.source && msg.line) {
+                    hydraOutput.appendLine(`    ↳ at ${msg.source}:${msg.line}:${msg.col}`);
+                }
+                hydraOutput.show(true);
+            }
+        });
     });
 
     oscPort = new osc.UDPPort({ localAddress: 'localhost', localPort: 3002 });

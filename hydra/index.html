@@ -24,9 +24,48 @@
     <script src="https://unpkg.com/socket.io-client@4/dist/socket.io.min.js"></script>
     <script>
         const socket = io("http://localhost:3001");
+
+        // ── Global error handlers — catch errors that escape try/catch ────────
+        // e.g. errors inside Hydra arrow-function callbacks during animation
+        window.onerror = function (message, source, lineno, colno, error) {
+            const detail = error ? error.toString() : message;
+            console.error('[Hydra runtime error]', detail);
+            socket.emit('runtime-error', {
+                data: detail,
+                source: source || '',
+                line: lineno || 0,
+                col: colno || 0
+            });
+            return true; // prevent default browser error overlay
+        };
+
+        window.addEventListener('unhandledrejection', function (event) {
+            const detail = event.reason ? event.reason.toString() : 'Unhandled promise rejection';
+            console.error('[Hydra async error]', detail);
+            socket.emit('runtime-error', {
+                data: detail,
+                source: 'promise',
+                line: 0,
+                col: 0
+            });
+        });
+
+        // ── Eval handler ─────────────────────────────────────────────────────
+        let _lastEvalCode = '';  // keep track for runtime-error context
+
         socket.on('new-command', function (msg) {
             console.log(msg.data);
-            eval(msg.data);
+            _lastEvalCode = msg.data;
+            try {
+                eval(msg.data);
+                socket.emit('eval-result', { data: 'OK — ' + msg.data.slice(0, 80) });
+            } catch (e) {
+                console.error('[Hydra eval error]', e);
+                socket.emit('eval-error', {
+                    data: e.toString(),
+                    code: msg.data.slice(0, 120)
+                });
+            }
         });
     </script>
 </body>

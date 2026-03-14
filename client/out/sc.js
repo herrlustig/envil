@@ -1,6 +1,18 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.openHelpForCursor = exports.stopAllSounds = exports.killServer = exports.rebootServer = exports.bootServer = exports.executeBlock = exports.findCodeBlock = exports.sendCode = exports.executeCode = exports.stopSclang = exports.startSclang = exports.isSclangRunning = exports.initOutputChannels = void 0;
+exports.initOutputChannels = initOutputChannels;
+exports.isSclangRunning = isSclangRunning;
+exports.startSclang = startSclang;
+exports.stopSclang = stopSclang;
+exports.executeCode = executeCode;
+exports.sendCode = sendCode;
+exports.findCodeBlock = findCodeBlock;
+exports.executeBlock = executeBlock;
+exports.bootServer = bootServer;
+exports.rebootServer = rebootServer;
+exports.killServer = killServer;
+exports.stopAllSounds = stopAllSounds;
+exports.openHelpForCursor = openHelpForCursor;
 const fs = require("fs");
 const child_process_1 = require("child_process");
 const vscode_1 = require("vscode");
@@ -15,11 +27,9 @@ function initOutputChannels() {
         postWindowOutput = vscode_1.window.createOutputChannel('SuperCollider Post Window');
     }
 }
-exports.initOutputChannels = initOutputChannels;
 function isSclangRunning() {
     return sclangProcess !== null && !sclangProcess.killed;
 }
-exports.isSclangRunning = isSclangRunning;
 // ── Path helpers ─────────────────────────────────────────────────────────────
 function getCommonMacOSPaths() {
     return [
@@ -137,7 +147,6 @@ async function startSclang(fallbackToExe = true) {
         return false;
     }
 }
-exports.startSclang = startSclang;
 function stopSclang() {
     if (sclangProcess && !sclangProcess.killed) {
         sclangOutput.appendLine('[SuperCollider] Stopping sclang...');
@@ -146,7 +155,6 @@ function stopSclang() {
         sclangOutput.appendLine('[SuperCollider] sclang stopped');
     }
 }
-exports.stopSclang = stopSclang;
 // ── Code execution ────────────────────────────────────────────────────────────
 async function executeCode(code) {
     if (!sclangProcess || sclangProcess.killed) {
@@ -159,7 +167,6 @@ async function executeCode(code) {
         sendCode(code);
     }
 }
-exports.executeCode = executeCode;
 function sendCode(code, silent = false) {
     if (!sclangProcess || !sclangProcess.stdin) {
         vscode_1.window.showErrorMessage('sclang is not running');
@@ -171,8 +178,10 @@ function sendCode(code, silent = false) {
     // \x0c = kInterpretPrintCmdLine → prints "-> result" (SC IDE behaviour)
     // \x1b = kInterpretCmdLine     → silent, no output
     sclangProcess.stdin.write(cleanCode + (silent ? '\x1b' : '\x0c'));
+    if (!silent) {
+        postWindowOutput.show(true); // reveal SC Post Window, keep editor focus
+    }
 }
-exports.sendCode = sendCode;
 // ── Block detection (ported from supercollider-vscode) ────────────────────────
 /**
  * Returns a copy of `text` with the same length where every character that is
@@ -326,7 +335,6 @@ function findCodeBlock(document, position) {
     }
     return result ?? document.lineAt(position.line).text.trim();
 }
-exports.findCodeBlock = findCodeBlock;
 async function executeBlock(editor) {
     const { document, selection } = editor;
     let code = selection.isEmpty
@@ -355,16 +363,11 @@ async function executeBlock(editor) {
     }
     await executeCode(wrappedCode);
 }
-exports.executeBlock = executeBlock;
 // ── Server helpers ────────────────────────────────────────────────────────────
 async function bootServer() { await executeCode('s.boot;'); }
-exports.bootServer = bootServer;
 async function rebootServer() { await executeCode('s.reboot;'); }
-exports.rebootServer = rebootServer;
 async function killServer() { await executeCode('s.quit;'); }
-exports.killServer = killServer;
 async function stopAllSounds() { await executeCode('CmdPeriod.run;'); }
-exports.stopAllSounds = stopAllSounds;
 async function openHelpForCursor(editor) {
     const wordRange = editor.document.getWordRangeAtPosition(editor.selection.active);
     const word = wordRange ? editor.document.getText(wordRange) : null;
@@ -374,5 +377,4 @@ async function openHelpForCursor(editor) {
     }
     await executeCode(`HelpBrowser.openHelpFor("${word}");`);
 }
-exports.openHelpForCursor = openHelpForCursor;
 //# sourceMappingURL=sc.js.map

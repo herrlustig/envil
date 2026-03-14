@@ -191,6 +191,9 @@ export function sendCode(code: string, silent = false): void {
     // \x0c = kInterpretPrintCmdLine → prints "-> result" (SC IDE behaviour)
     // \x1b = kInterpretCmdLine     → silent, no output
     sclangProcess.stdin.write(cleanCode + (silent ? '\x1b' : '\x0c'));
+    if (!silent) {
+        postWindowOutput.show(true); // reveal SC Post Window, keep editor focus
+    }
 }
 
 // ── Block detection (ported from supercollider-vscode) ────────────────────────

@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.stopClient = exports.startClient = void 0;
+exports.startClient = startClient;
+exports.stopClient = stopClient;
 const path = require("path");
 const fs = require("fs");
 const node_1 = require("vscode-languageclient/node");
@@ -22,12 +23,10 @@ function startClient(context) {
     client.start();
     console.log('[envil] SC Language Server started (hover + completion active)');
 }
-exports.startClient = startClient;
 async function stopClient() {
     if (client) {
         await client.stop();
         client = null;
     }
 }
-exports.stopClient = stopClient;
 //# sourceMappingURL=lsp.js.map

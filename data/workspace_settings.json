@@ -45,7 +45,7 @@
     },
     "[javascript]": {
         "editor.quickSuggestions": {
-            "other": "off",
+            "other": "on",
             "comments": "off",
             "strings": "off"
         },
