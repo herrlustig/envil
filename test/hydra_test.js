@@ -26,15 +26,15 @@ a.setScale(1);
 
 
   //.rotate(() => a.fft[0] * 0.1)
-  .scale(() => 0.9 + a.fft[2] * 0.1)
+  .scale(() => 0.9 + a.fft[2] * 0.01)
   .rotate(() => a.fft[2] * 0.00 + Math.sin(time)*0.1)
   //.layer(noise().luma(() => 0.1 + a.fft[1] * 0.2))
-  .scrollX( 1, () => 0.01 + 0.00001*Math.abs(a.fft[1]))
+  .scrollX( 1, () => 0.01 + 0.000001*Math.abs(a.fft[1]))
   
-  .scrollY(1, () => 0.00 + 0.0001*Math.abs(a.fft[2]))
+  .scrollY(1, () => 0.00 + 0.000001*Math.abs(a.fft[2]))
   //.asdasd()
   //asdsd
-  .color(0, 1, 0.7).shift(() => a.fft[0] * 0.1, 0, 0, 0)
+  .color(1, 1, 1).shift(() => a.fft[2] * -0, 0.1, 1, 0, 0)
   //.brightness(() => 0.1 + a.fft[0] * 0.1)
   .pixelate(() => 10 + Math.sin(time)*100%200, () => 2000 + time%100)
   

@@ -43,7 +43,8 @@ connection.onInitialize((_params: InitializeParams) => {
 			textDocumentSync: TextDocumentSyncKind.Full,
 			// Tell the client that the server supports code completion
 			completionProvider: {
-				resolveProvider: false
+				resolveProvider: false,
+				triggerCharacters: ['.']
 			},
 			// Tell the client that the server supports hover
 			hoverProvider: true,

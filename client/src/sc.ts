@@ -25,6 +25,14 @@ export function onSclangExit(cb: ExitCallback): void {
     exitCallbacks.push(cb);
 }
 
+// ── scsynth state change callbacks (driven by stdout pattern matching) ────────
+type ServerStateCallback = (running: boolean) => void;
+const serverStateCallbacks: ServerStateCallback[] = [];
+
+export function onServerStateChange(cb: ServerStateCallback): void {
+    serverStateCallbacks.push(cb);
+}
+
 // ── Markers to suppress from Post Window ──────────────────────────────────────
 const suppressMarkers: Set<string> = new Set();
 let _stdoutBuf = '';
@@ -193,6 +201,13 @@ export async function startSclang(fallbackToExe = true): Promise<boolean> {
                 const filtered = filterMarkers(text);
                 if (filtered) postWindowOutput.append(filtered);
                 for (const fn of stdoutListeners) fn(text);
+                // ── Detect scsynth state changes from sclang output ──
+                if (/SuperCollider 3 server ready|server ready\.|'localhost' is already running/.test(text)) {
+                    for (const cb of serverStateCallbacks) cb(true);
+                }
+                if (/server quit|Server quit|server failed to start|FAILURE IN SERVER|localhost not running/.test(text)) {
+                    for (const cb of serverStateCallbacks) cb(false);
+                }
             });
             proc.stderr?.on('data', (data: Buffer) => postWindowOutput.append(data.toString()));
 
@@ -290,7 +305,7 @@ export function queryCode(scCode: string, marker: string, timeoutMs = 2000): Pro
         stdoutListeners.push(listener);
         sclangProcess.stdin!.write(scCode + '\x1b');
 
-        setTimeout(() => { cleanup(); if (!resolved) resolve(null); }, timeoutMs);
+        setTimeout(() => { if (resolved) return; cleanup(); resolve(null); }, timeoutMs);
     });
 }
 
@@ -477,7 +492,7 @@ export async function checkServerRunning(): Promise<boolean> {
  * If found: set s.serverRunning_(true) and optionally push ProxySpace.
  * Existing nodes on the server are NOT touched — the livecoder decides.
  */
-export async function probeRunningServer(autoInitProxy = true): Promise<boolean> {
+export async function probeRunningServer(autoInitProxy = true, inputProxyCode = ''): Promise<boolean> {
     if (!sclangProcess || sclangProcess.killed) return false;
 
     // Wait for sclang class library to finish compiling
@@ -499,7 +514,8 @@ export async function probeRunningServer(autoInitProxy = true): Promise<boolean>
         '      p = ProxySpace.push(s);',
         '      ~out.ar(2);',
         '    });',
-    ].join('\n') : '';
+        inputProxyCode ? `    ${inputProxyCode.split('\n').join('\n    ')}` : '',
+    ].filter(Boolean).join('\n') : '';
 
     const scCode = [
         'fork {',

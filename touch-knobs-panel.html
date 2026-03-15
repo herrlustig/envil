@@ -81,6 +81,9 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 .seq-step.on { background: #0af; border-color: #0af; }
 .seq-step.current { box-shadow: 0 0 4px 1px #ff0; }
 .seq-step.on.current { box-shadow: 0 0 6px 2px #ff0; }
+.seq-step.paused { box-shadow: 0 0 4px 1px #f80; border-color: #f80; animation: pausePulse 1s ease-in-out infinite; }
+.seq-step.on.paused { box-shadow: 0 0 6px 2px #f80; animation: pausePulse 1s ease-in-out infinite; }
+@keyframes pausePulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
 .seq-step:hover { border-color: #aaa; }
 .seq-row .seq-remove {
     width: 18px; height: 18px; font-size: 10px; line-height: 16px;
@@ -266,6 +269,7 @@ const wrap = document.getElementById('canvas-wrap');
 function surfaceW() { return wrap.clientWidth  || 1; }
 function surfaceH() { return wrap.clientHeight || 1; }
 
+let _resizeRAF = 0;
 function resize() {
     const dpr = window.devicePixelRatio || 1;
     const w = surfaceW();
@@ -275,6 +279,12 @@ function resize() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     draw();
 }
+// ResizeObserver fires on initial layout + every container size change,
+// fixing the stale-dimensions problem on first load.
+new ResizeObserver(() => {
+    cancelAnimationFrame(_resizeRAF);
+    _resizeRAF = requestAnimationFrame(resize);
+}).observe(wrap);
 window.addEventListener('resize', resize);
 
 // ── Coordinate helpers ───────────────────────────────────────────────────
@@ -795,19 +805,22 @@ window.addEventListener('message', (event) => {
         persistState();
     }
     if (msg.type === 'seq-tempo-update') {
-        // SC TempoClock.default.tempo pushed from extension
-        if (!seqSyncSC) return;
+        // SC TempoClock.default.tempo pushed from extension host
         const newBpm = Math.round(msg.bpm);
-        if (newBpm !== seqBpm && newBpm >= 1 && newBpm <= 999) {
+        if (newBpm >= 1 && newBpm <= 999) {
             seqBpm = newBpm;
             seqBpmInput.value = seqBpm;
-            // Reschedule timer with new tempo
-            if (seqAnyPlaying()) {
-                if (seqGlobalTimer) clearTimeout(seqGlobalTimer);
-                scheduleNextTick();
-            }
             persistState();
         }
+    }
+    if (msg.type === 'seq-visual-tick') {
+        // Extension host drives the clock; we just update visuals
+        const ticks = msg.ticks || [];
+        for (const t of ticks) {
+            const s = seqs.find(x => x.name === t.name);
+            if (s) s.currentStep = t.step;
+        }
+        updateSeqStepVisuals();
     }
 });
 
@@ -822,8 +835,6 @@ let seqs = [];           // [{ name, steps, currentStep, color, playing }]
 let seqNextId = 1;
 let seqBpm = 120;
 let seqSubdiv = 4;       // steps per beat: 4 = 16th notes
-let seqGlobalTimer = null;  // single master clock shared by all seqs
-let seqStepCount = 0;       // global step counter
 
 const seqGrid       = document.getElementById('seq-grid');
 const seqArrow      = document.getElementById('seq-arrow');
@@ -874,10 +885,9 @@ function addSeq(name, steps, playing) {
     seqs.push(s);
     renderSeqRow(s);
     updateStatus();
-    ensureGlobalTimer();
 
-    // Notify extension (creates SC proxy)
-    vscode.postMessage({ type: 'seq-create', name: s.name, steps: s.steps });
+    // Notify extension (creates SC proxy + adds to host clock)
+    vscode.postMessage({ type: 'seq-create', name: s.name, steps: s.steps, playing: s.playing });
     return s;
 }
 
@@ -887,7 +897,6 @@ function removeSeq(s) {
     if (row) row.remove();
     vscode.postMessage({ type: 'seq-remove', name: s.name });
     updateStatus();
-    ensureGlobalTimer();
     persistState();
 }
 
@@ -913,12 +922,8 @@ function renderSeqRow(s) {
         playBtn.classList.toggle('playing', s.playing);
         playBtn.textContent = s.playing ? '⏸' : '▶';
         playBtn.title = s.playing ? 'Pause' : 'Play';
-        if (!s.playing) {
-            // Zero out the SC proxy and reset step position
-            vscode.postMessage({ type: 'seq-tick', name: s.name, step: s.currentStep, val: 0, steps: s.steps });
-            s.currentStep = -1;
-        }
-        ensureGlobalTimer();
+        // Pause keeps currentStep for resume — don't reset
+        vscode.postMessage({ type: 'seq-play-toggle', name: s.name, playing: s.playing });
         updateSeqStepVisuals();
         persistState();
     });
@@ -948,9 +953,10 @@ function renderSeqRow(s) {
     subBtn.textContent = '−';
     subBtn.title = 'Remove last step (' + s.steps.length + ')';
     subBtn.addEventListener('click', () => {
-        if (s.steps.length <= 2) return;
+        if (s.steps.length <= 1) return;
         s.steps.pop();
         if (s.currentStep >= s.steps.length) s.currentStep = s.currentStep % s.steps.length;
+        vscode.postMessage({ type: 'seq-update-steps', name: s.name, steps: s.steps });
         renderSeqRow(s);
         persistState();
     });
@@ -963,6 +969,7 @@ function renderSeqRow(s) {
     addBtn.title = 'Add step (' + s.steps.length + ')';
     addBtn.addEventListener('click', () => {
         s.steps.push(0);
+        vscode.postMessage({ type: 'seq-update-steps', name: s.name, steps: s.steps });
         renderSeqRow(s);
         persistState();
     });
@@ -1006,60 +1013,19 @@ function updateSeqStepVisuals() {
         if (!row) continue;
         const stepEls = row.querySelectorAll('.seq-step');
         stepEls.forEach((el, i) => {
-            el.classList.toggle('current', i === s.currentStep);
+            const isCurrent = (i === s.currentStep);
+            el.classList.toggle('current', isCurrent && s.playing);
+            el.classList.toggle('paused', isCurrent && !s.playing && s.currentStep >= 0);
         });
     }
 }
 
-// ── Transport (per-seq play, single shared master clock) ─────────────────
-function seqAnyPlaying() {
-    return seqs.some(s => s.playing);
-}
-
-function ensureGlobalTimer() {
-    if (seqAnyPlaying() && !seqGlobalTimer) {
-        scheduleNextTick();
-    } else if (!seqAnyPlaying() && seqGlobalTimer) {
-        clearTimeout(seqGlobalTimer);
-        seqGlobalTimer = null;
-    }
-}
-
-function scheduleNextTick() {
-    if (!seqAnyPlaying()) { seqGlobalTimer = null; return; }
-    const intervalMs = 60000 / (seqBpm * seqSubdiv);
-    seqGlobalTimer = setTimeout(() => {
-        seqTick();
-        scheduleNextTick();
-    }, intervalMs);
-}
-
-function seqTick() {
-    seqStepCount++;
-    for (const s of seqs) {
-        if (!s.playing) continue;
-        s.currentStep = (s.currentStep + 1) % s.steps.length;
-        const val = s.steps[s.currentStep];
-        vscode.postMessage({
-            type: 'seq-tick',
-            name: s.name,
-            step: s.currentStep,
-            val: val,
-            steps: s.steps,
-        });
-    }
-    updateSeqStepVisuals();
-}
-
+// ── Transport (clock runs on extension host — webview is UI only) ────────
 function seqStopAll() {
     seqs.forEach(s => {
-        // Zero out each SC proxy
-        vscode.postMessage({ type: 'seq-tick', name: s.name, step: s.currentStep, val: 0, steps: s.steps });
         s.playing = false;
         s.currentStep = -1;
     });
-    if (seqGlobalTimer) { clearTimeout(seqGlobalTimer); seqGlobalTimer = null; }
-    seqStepCount = 0;
     // Update play buttons in each row
     for (const s of seqs) {
         const row = document.getElementById('seq-row-' + s.id);
@@ -1068,7 +1034,7 @@ function seqStopAll() {
         if (pb) { pb.classList.remove('playing'); pb.textContent = '▶'; pb.title = 'Play'; }
     }
     updateSeqStepVisuals();
-    vscode.postMessage({ type: 'seq-stop' });
+    vscode.postMessage({ type: 'seq-stop-all' });
     persistState();
 }
 
@@ -1081,10 +1047,6 @@ function onBpmChange() {
     seqBpmInput.value = seqBpm;
     vscode.postMessage({ type: 'seq-set-bpm', bpm: seqBpm, subdiv: seqSubdiv });
     persistState();
-    if (seqAnyPlaying()) {
-        if (seqGlobalTimer) clearTimeout(seqGlobalTimer);
-        scheduleNextTick();
-    }
 }
 
 seqSubdivSel.addEventListener('change', onSubdivChange);
@@ -1092,10 +1054,6 @@ function onSubdivChange() {
     seqSubdiv = parseInt(seqSubdivSel.value, 10) || 4;
     vscode.postMessage({ type: 'seq-set-bpm', bpm: seqBpm, subdiv: seqSubdiv });
     persistState();
-    if (seqAnyPlaying()) {
-        if (seqGlobalTimer) clearTimeout(seqGlobalTimer);
-        scheduleNextTick();
-    }
 }
 
 // ── SC TempoClock sync ───────────────────────────────────────────────────

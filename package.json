@@ -225,6 +225,19 @@
             "default": true,
             "description": "After server boot: automatically push a ProxySpace and create ~out.ar(2).play."
           },
+          "envil.supercollider.proxySpace.numInputs": {
+            "type": "integer",
+            "default": 2,
+            "minimum": 0,
+            "maximum": 16,
+            "description": "Number of hardware audio inputs to pre-create as proxies on boot (~i0, ~i1, … with pitch detection ~f0, ~f1, … and amplitude ~a0, ~a1, …). Set to 0 to disable."
+          },
+          "envil.supercollider.proxySpace.pitchMethod": {
+            "type": "string",
+            "default": "Tartini",
+            "enum": ["Tartini", "Pitch", "ZeroCrossing"],
+            "description": "Pitch detection UGen for ~fN proxies. Tartini (sc3-plugins, best quality/perf tradeoff), Pitch (built-in, heavier), ZeroCrossing (lightest, rawer)."
+          },
           "envil.supercollider.sclang.sclang_conf": {
             "type": [
               "string",
@@ -236,6 +249,11 @@
         }
       }
     ],
+    "configurationDefaults": {
+      "[supercollider]": {
+        "editor.wordSeparators": "`!@#$%^&*()-=+[{]}\\|;:'\",.<>/?"
+      }
+    },
     "keybindings": [
       {
         "command": "envil.supercollider.executeBlock",

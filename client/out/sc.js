@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.onSclangExit = onSclangExit;
+exports.onServerStateChange = onServerStateChange;
 exports.addSuppressMarker = addSuppressMarker;
 exports.initOutputChannels = initOutputChannels;
 exports.isSclangRunning = isSclangRunning;
@@ -28,6 +29,10 @@ const stdoutListeners = [];
 const exitCallbacks = [];
 function onSclangExit(cb) {
     exitCallbacks.push(cb);
+}
+const serverStateCallbacks = [];
+function onServerStateChange(cb) {
+    serverStateCallbacks.push(cb);
 }
 // ── Markers to suppress from Post Window ──────────────────────────────────────
 const suppressMarkers = new Set();
@@ -182,6 +187,15 @@ async function startSclang(fallbackToExe = true) {
                     postWindowOutput.append(filtered);
                 for (const fn of stdoutListeners)
                     fn(text);
+                // ── Detect scsynth state changes from sclang output ──
+                if (/SuperCollider 3 server ready|server ready\.|'localhost' is already running/.test(text)) {
+                    for (const cb of serverStateCallbacks)
+                        cb(true);
+                }
+                if (/server quit|Server quit|server failed to start|FAILURE IN SERVER|localhost not running/.test(text)) {
+                    for (const cb of serverStateCallbacks)
+                        cb(false);
+                }
             });
             proc.stderr?.on('data', (data) => postWindowOutput.append(data.toString()));
             proc.on('exit', (code) => {
@@ -278,8 +292,8 @@ function queryCode(scCode, marker, timeoutMs = 2000) {
         };
         stdoutListeners.push(listener);
         sclangProcess.stdin.write(scCode + '\x1b');
-        setTimeout(() => { cleanup(); if (!resolved)
-            resolve(null); }, timeoutMs);
+        setTimeout(() => { if (resolved)
+            return; cleanup(); resolve(null); }, timeoutMs);
     });
 }
 // ── Block detection (ported from supercollider-vscode) ────────────────────────
@@ -485,7 +499,7 @@ async function checkServerRunning() {
  * If found: set s.serverRunning_(true) and optionally push ProxySpace.
  * Existing nodes on the server are NOT touched — the livecoder decides.
  */
-async function probeRunningServer(autoInitProxy = true) {
+async function probeRunningServer(autoInitProxy = true, inputProxyCode = '') {
     if (!sclangProcess || sclangProcess.killed)
         return false;
     // Wait for sclang class library to finish compiling
@@ -502,7 +516,8 @@ async function probeRunningServer(autoInitProxy = true) {
         '      p = ProxySpace.push(s);',
         '      ~out.ar(2);',
         '    });',
-    ].join('\n') : '';
+        inputProxyCode ? `    ${inputProxyCode.split('\n').join('\n    ')}` : '',
+    ].filter(Boolean).join('\n') : '';
     const scCode = [
         'fork {',
         '  var resp, running = false;',

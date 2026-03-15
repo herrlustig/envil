@@ -23,6 +23,13 @@ let _getIO = null;        // function → socket.io server (for future Hydra sup
 let _hydraOutput = null;  // output channel for logging
 let _layoutPath = null;   // path to persist knob layout on disk
 
+// ── Host-side sequencer state (clock runs here, never throttled) ─────────
+let _seqs = [];              // [{ name, steps, currentStep, playing }]
+let _seqBpm = 120;
+let _seqSubdiv = 4;
+let _seqTimer = null;        // setInterval ID
+let _seqSyncSC = true;       // sync to SC TempoClock
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,6 +99,7 @@ function openPanel(context) {
     _panel.webview.onDidReceiveMessage(handleMessage, null, context.subscriptions);
 
     _panel.onDidDispose(() => {
+        seqStopTimer();
         stopTempoSync();
         _panel = null;
     }, null, context.subscriptions);
@@ -253,32 +261,17 @@ function handleMessage(msg) {
         // ── Sequencer messages ───────────────────────────────────────────
 
         case 'seq-create': {
-            // Create a 1-channel control proxy for this sequencer:  ~seq_<name>
-            // Mirror footcontroller pattern: .mold first, then assign source
             const name = sanitizeName(msg.name);
+            const steps = msg.steps || new Array(8).fill(0);
+            const playing = msg.playing !== false;
+            // Create SC proxy — only if it doesn't already exist (preserves bus index)
             const proxyName = `~seq_${name}`;
             const seqSrc = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
-            sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${proxyName}.mold(1, \\control); ${proxyName} = ${seqSrc}; ${proxyName}.set(\\val, 0) })`);
-            log(`  ＋ seq ${proxyName}  steps=${(msg.steps || []).length}`);
-            break;
-        }
-
-        case 'seq-tick': {
-            // Sequencer step advance — set proxy value + emit to Hydra
-            // Auto-repair: if proxy has no source, re-create it on the fly
-            const name = sanitizeName(msg.name);
-            const proxyName = `~seq_${name}`;
-            const val = msg.val != null ? msg.val : 0;
-            const seqSrc = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
-            const code = `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil, { ${proxyName}.mold(1, \\control); ${proxyName} = ${seqSrc} }); ${proxyName}.set(\\val, ${val}) })`;
-            sendSC(code, true);
-            sendHydra('seq-step', { name, step: msg.step, val, steps: msg.steps });
-            break;
-        }
-
-        case 'seq-toggle-step': {
-            // Step toggled — just emit to Hydra (SC proxy only updates on tick)
-            sendHydra('seq-step', { name: sanitizeName(msg.name), step: msg.step, val: msg.val, steps: msg.steps });
+            sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil, { ${proxyName}.mold(1, \\control); ${proxyName} = ${seqSrc} }); ${proxyName}.set(\\val, 0) })`);
+            // Add to host-side state
+            _seqs.push({ name, steps: steps.slice(), currentStep: -1, playing });
+            seqEnsureTimer();
+            log(`  ＋ seq ${proxyName}  steps=${steps.length}  playing=${playing}`);
             break;
         }
 
@@ -286,40 +279,91 @@ function handleMessage(msg) {
             const name = sanitizeName(msg.name);
             const proxyName = `~seq_${name}`;
             sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${proxyName}.clear })`, true);
+            _seqs = _seqs.filter(s => s.name !== name);
+            seqEnsureTimer();
             log(`  ✖ removed seq ${proxyName}`);
             break;
         }
 
-        case 'seq-stop': {
-            // Reset all seq proxies to 0
-            // (The webview already reset its step counters)
-            log(`  ■ sequencer stopped`);
+        case 'seq-play-toggle': {
+            const name = sanitizeName(msg.name);
+            const s = _seqs.find(x => x.name === name);
+            if (!s) break;
+            s.playing = msg.playing;
+            if (!s.playing) {
+                // Pause: zero SC output but KEEP currentStep for resume
+                seqSetSCValue(s, 0);
+            } else if (s.currentStep >= 0 && s.currentStep < s.steps.length) {
+                // Resume from paused position: immediately emit the current step
+                const val = s.steps[s.currentStep];
+                seqSetSCValue(s, val);
+                sendHydra('seq-step', { name: s.name, step: s.currentStep, val, steps: s.steps });
+                if (_panel) {
+                    _panel.webview.postMessage({ type: 'seq-visual-tick', ticks: [{ name: s.name, step: s.currentStep, val }] });
+                }
+            }
+            seqEnsureTimer();
+            break;
+        }
+
+        case 'seq-stop-all': {
+            for (const s of _seqs) {
+                seqSetSCValue(s, 0);
+                s.playing = false;
+                s.currentStep = -1;
+            }
+            seqStopTimer();
             break;
         }
 
         case 'seq-set-bpm': {
-            log(`  ♩ seq BPM=${msg.bpm}  ÷${msg.subdiv}`);
+            if (msg.bpm != null) _seqBpm = Math.max(1, Math.min(999, msg.bpm));
+            if (msg.subdiv != null) _seqSubdiv = msg.subdiv;
+            seqReschedule();
+            log(`  ♩ seq BPM=${_seqBpm}  ÷${_seqSubdiv}`);
+            break;
+        }
+
+        case 'seq-toggle-step': {
+            const name = sanitizeName(msg.name);
+            const s = _seqs.find(x => x.name === name);
+            if (s && msg.steps) s.steps = msg.steps.slice();
+            sendHydra('seq-step', { name, step: msg.step, val: msg.val, steps: msg.steps });
+            break;
+        }
+
+        case 'seq-update-steps': {
+            // +/- step length changed
+            const name = sanitizeName(msg.name);
+            const s = _seqs.find(x => x.name === name);
+            if (s && msg.steps) {
+                s.steps = msg.steps.slice();
+                if (s.currentStep >= s.steps.length) s.currentStep = s.currentStep % s.steps.length;
+            }
             break;
         }
 
         case 'seq-tempo-sync': {
+            _seqSyncSC = true;
             startTempoSync();
             break;
         }
 
         case 'seq-tempo-unsync': {
+            _seqSyncSC = false;
             stopTempoSync();
             break;
         }
 
         case 'seq-rename': {
-            // Rename: clear old proxy, create new one
             const oldName = sanitizeName(msg.oldName);
             const newName = sanitizeName(msg.newName);
             const oldProxy = `~seq_${oldName}`;
             const newProxy = `~seq_${newName}`;
             const seqSrc = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
             sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${oldProxy}.clear; ${newProxy} = ${seqSrc} })`, true);
+            const s = _seqs.find(x => x.name === oldName);
+            if (s) s.name = newName;
             log(`  ✎ seq renamed ${oldProxy} → ${newProxy}`);
             break;
         }
@@ -337,7 +381,74 @@ function handleMessage(msg) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SC COMMUNICATION
+// SEQUENCER ENGINE (runs in Node.js — never throttled by Chromium)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SEQ_SRC = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
+
+function seqAnyPlaying() {
+    return _seqs.some(s => s.playing);
+}
+
+function seqEnsureTimer() {
+    if (seqAnyPlaying() && !_seqTimer) {
+        seqStartTimer();
+    } else if (!seqAnyPlaying() && _seqTimer) {
+        seqStopTimer();
+    }
+}
+
+function seqStartTimer() {
+    seqStopTimer();
+    const intervalMs = 60000 / (_seqBpm * _seqSubdiv);
+    _seqTimer = setInterval(seqTick, intervalMs);
+}
+
+function seqStopTimer() {
+    if (_seqTimer) { clearInterval(_seqTimer); _seqTimer = null; }
+}
+
+function seqReschedule() {
+    if (seqAnyPlaying()) {
+        seqStartTimer();
+    }
+}
+
+function seqTick() {
+    const ticks = [];  // batch visual updates
+    const scParts = []; // batch SC updates into one sendCode
+    for (const s of _seqs) {
+        if (!s.playing) continue;
+        s.currentStep = (s.currentStep + 1) % s.steps.length;
+        const val = s.steps[s.currentStep];
+        // Collect SC code for batching
+        scParts.push(seqSCCode(s, val));
+        // Hydra: emit step event
+        sendHydra('seq-step', { name: s.name, step: s.currentStep, val, steps: s.steps });
+        ticks.push({ name: s.name, step: s.currentStep, val });
+    }
+    // SC: send all proxy updates in ONE write (avoid stdin race)
+    if (scParts.length > 0) {
+        sendSC(scParts.join('; '), true);
+    }
+    // Webview: lightweight visual update only
+    if (_panel && ticks.length > 0) {
+        _panel.webview.postMessage({ type: 'seq-visual-tick', ticks });
+    }
+}
+
+function seqSCCode(s, val) {
+    const proxyName = `~seq_${s.name}`;
+    const v = val != null ? val : 0;
+    return `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil, { ${proxyName}.mold(1, \\control); ${proxyName} = ${SEQ_SRC} }); ${proxyName}.set(\\val, ${v}) })`;
+}
+
+function seqSetSCValue(s, val) {
+    sendSC(seqSCCode(s, val), true);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SC TEMPO SYNC (polls TempoClock.default.tempo → updates host-side BPM)
 // ─────────────────────────────────────────────────────────────────────────────
 
 let _tempoSyncInterval = null;
@@ -345,7 +456,6 @@ let _tempoSyncInterval = null;
 function startTempoSync() {
     stopTempoSync();
     log('  ♩ SC tempo sync ON');
-    // Poll immediately, then every 500ms
     pollSCTempo();
     _tempoSyncInterval = setInterval(pollSCTempo, 500);
 }
@@ -370,8 +480,13 @@ async function pollSCTempo() {
             const tempo = parseFloat(result);
             if (!isNaN(tempo) && tempo > 0) {
                 const bpm = Math.round(tempo * 60);
-                if (_panel) {
-                    _panel.webview.postMessage({ type: 'seq-tempo-update', bpm });
+                if (bpm !== _seqBpm && bpm >= 1 && bpm <= 999) {
+                    _seqBpm = bpm;
+                    seqReschedule();
+                    // Push updated BPM to webview for display
+                    if (_panel) {
+                        _panel.webview.postMessage({ type: 'seq-tempo-update', bpm });
+                    }
                 }
             }
         }
@@ -379,6 +494,10 @@ async function pollSCTempo() {
         // Silently ignore — sclang might not be ready
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SC COMMUNICATION
+// ─────────────────────────────────────────────────────────────────────────────
 
 function sendSC(code, silent = false) {
     const sc = _getSC ? _getSC() : null;

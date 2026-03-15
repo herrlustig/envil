@@ -393,6 +393,23 @@ const METHOD_DOCS: { [key: string]: string } = {
 	'mean': '**mean** - Average of elements\n\n```supercollider\n[1,2,3].mean  // 2.0\n```',
 	'sort': '**sort** - Sort elements\n\n```supercollider\n[3,1,2].sort  // [1,2,3]\n```',
 	'reverse': '**reverse** - Reverse order\n\n```supercollider\n[1,2,3].reverse  // [3,2,1]\n```',
+	'softclip': '**softclip** - Distortion: keeps signal below 1, rounds off above 0.5\n\n```supercollider\nsig.softclip   // soft saturation\n```',
+	'distort': '**distort** - Non-linear distortion mapping: x / (1 + abs(x))\n\n```supercollider\nsig.distort\n```',
+	'tanh': '**tanh** - Hyperbolic tangent saturation\n\n```supercollider\n(sig * drive).tanh\n```',
+	'squared': '**squared** - Square the value (x * x)\n\n```supercollider\n3.squared  // 9\n```',
+	'reciprocal': '**reciprocal** - 1 / x\n\n```supercollider\n4.reciprocal  // 0.25\n```',
+	'lag': '**lag** - Exponential lag (smoothing)\n\n```supercollider\nsig.lag(lagTime)\n```',
+	'range': '**range** - Scale bipolar signal to range\n\n```supercollider\nSinOsc.kr(1).range(200, 800)  // 200-800\n```',
+	'exprange': '**exprange** - Scale bipolar signal to exponential range\n\n```supercollider\nSinOsc.kr(1).exprange(200, 800)\n```',
+	'unipolar': '**unipolar** - Scale bipolar (-1..1) to unipolar (0..mul)\n\n```supercollider\nSinOsc.kr(1).unipolar  // 0..1\n```',
+	'bipolar': '**bipolar** - Scale unipolar (0..1) to bipolar (-mul..mul)\n\n```supercollider\nLFNoise0.kr(1).bipolar  // -1..1\n```',
+	'poll': '**poll** - Print signal values to post window\n\n```supercollider\nSinOsc.kr(1).poll(10, "val");\n```',
+	'mold': '**mold** - Set number of channels and rate of a NodeProxy\n\n```supercollider\n~proxy.mold(numChannels, rate)\n~proxy.mold(2, \\audio)\n```',
+	'isNil': '**isNil** - Test if object is nil\n\n```supercollider\nnil.isNil   // true\n1.isNil     // false\n```',
+	'notNil': '**notNil** - Test if object is not nil\n\n```supercollider\n1.notNil  // true\n```',
+	'choose': '**choose** - Pick a random element\n\n```supercollider\n[1,2,3].choose  // random\n```',
+	'scramble': '**scramble** - Randomize order\n\n```supercollider\n[1,2,3,4].scramble  // e.g. [3,1,4,2]\n```',
+	'normalize': '**normalize** - Scale to 0..1 (or min..max)\n\n```supercollider\n[3,1,5].normalize  // [0.5, 0, 1]\n```',
 };
 
 // Common SuperCollider classes (audio, patterns, collections, etc.)
@@ -488,7 +505,48 @@ const SC_METHODS = [
 	'asString', 'asSymbol', 'asInteger', 'asFloat', 'asArray',
 	'dup', 'blend', 'series', 'geom',
 	'scope', 'plot', 'gui',
-	'asStream', 'embedInStream', 'reset', 'next', 'nextN', 'all'
+	'asStream', 'embedInStream', 'reset', 'next', 'nextN', 'all',
+	// unary math / signal ops
+	'softclip', 'distort', 'tanh', 'reciprocal', 'squared', 'cubed', 'sqrt',
+	'sign', 'log', 'log2', 'log10', 'exp', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
+	'sinh', 'cosh', 'isPositive', 'isNegative', 'isStrictlyPositive',
+	'coin', 'degrad', 'raddeg', 'frac',
+	// binary math / signal ops
+	'pow', 'min', 'max', 'mod', 'div', 'lcm', 'gcd', 'thresh',
+	'atan2', 'hypot', 'ring1', 'ring2', 'ring3', 'ring4',
+	'sumsqr', 'difsqr', 'sqrsum', 'sqrdif', 'absdif',
+	'amclip', 'scaleneg', 'clip2', 'wrap2', 'fold2', 'excess',
+	// range / mapping
+	'range', 'exprange', 'unipolar', 'bipolar', 'lag', 'lag2', 'lag3',
+	'lagud', 'lag2ud', 'lag3ud', 'varlag',
+	// multichannel
+	'flop', 'flat', 'clump', 'reshape', 'stutter',
+	// buffer / bus
+	'numFrames', 'numChannels', 'duration', 'sampleRate', 'bufnum',
+	'read', 'write', 'loadToFloatArray', 'getToFloatArray',
+	// patterns
+	'asPattern', 'embedInStream', 'stutter', 'finDur', 'fin',
+	// node
+	'run', 'map', 'unmap', 'setn', 'getn', 'fill', 'moveBefore', 'moveAfter',
+	'moveToHead', 'moveToTail', 'isPlaying', 'isRunning',
+	// env / spec
+	'asSpec', 'asEnv', 'normalize', 'asSignal',
+	// general
+	'printOn', 'storeOn', 'cs', 'class', 'dump', 'inspect',
+	'respondsTo', 'isKindOf', 'isNil', 'notNil',
+	'if', 'while', 'switch', 'case', 'for', 'forBy',
+	'reverseDo', 'pairsDo', 'keysValuesDo',
+	'includes', 'indexOf', 'indexOfEqual',
+	'keep', 'drop', 'copyRange', 'copyToEnd', 'copyFromStart',
+	'wrapAt', 'clipAt', 'foldAt', 'wrapPut', 'clipPut',
+	'normalize', 'normalizeSum', 'integrate', 'differentiate',
+	'scramble', 'choose', 'wchoose', 'rotate', 'mirror', 'mirror1',
+	'pyramid', 'slide', 'lace', 'permute', 'powerset',
+	'bubble', 'unbubble', 'curdle', 'flop',
+	'poll', 'dpoll', 'checkBadValues',
+	'mold', 'source', 'clear', 'bus', 'index',
+	'fadeTime', 'quant', 'reshape',
+	'numOutputs', 'numInputs', 'rate'
 ];
 
 // ── Signature Help Data ──────────────────────────────────────────────────────
@@ -557,31 +615,40 @@ export function getSuperColliderMode(): LanguageMode {
 			return 'supercollider';
 		},
 		doComplete(document: TextDocument, position: Position): CompletionList {
-			const { word } = getWordAtPosition(document, position);
+			const text = document.getText();
+			const { word, start } = getWordAtPosition(document, position);
 			const items: CompletionItem[] = [];
 			const wordLower = word.toLowerCase();
 
+			// After a "." only methods are valid in SuperCollider (no classes/keywords)
+			const charBefore = start > 0 ? text.charAt(start - 1) : '';
+			const afterDot = charBefore === '.';
+
 			// Add matching keywords
-			for (const kw of SC_KEYWORDS) {
-				if (kw.toLowerCase().startsWith(wordLower)) {
-					items.push({
-						label: kw,
-						kind: CompletionItemKind.Keyword,
-						detail: 'SuperCollider keyword',
-						documentation: KEYWORD_DOCS[kw]
-					});
+			if (!afterDot) {
+				for (const kw of SC_KEYWORDS) {
+					if (kw.toLowerCase().startsWith(wordLower)) {
+						items.push({
+							label: kw,
+							kind: CompletionItemKind.Keyword,
+							detail: 'SuperCollider keyword',
+							documentation: KEYWORD_DOCS[kw]
+						});
+					}
 				}
 			}
 
-			// Add matching classes
-			for (const cls of SC_CLASSES) {
-				if (cls.toLowerCase().startsWith(wordLower)) {
-					items.push({
-						label: cls,
-						kind: CompletionItemKind.Class,
-						detail: 'SuperCollider class',
-						documentation: CLASS_DOCS[cls]
-					});
+			// Add matching classes (CamelCase — never valid after a dot)
+			if (!afterDot) {
+				for (const cls of SC_CLASSES) {
+					if (cls.toLowerCase().startsWith(wordLower)) {
+						items.push({
+							label: cls,
+							kind: CompletionItemKind.Class,
+							detail: 'SuperCollider class',
+							documentation: CLASS_DOCS[cls]
+						});
+					}
 				}
 			}
 

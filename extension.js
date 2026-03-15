@@ -48,6 +48,79 @@ let _isSCSynthRunning = false;
 // Hydra output channel
 let hydraOutput = null;
 
+// ── Input proxy SC code builder ───────────────────────────────────────────────
+//
+// Generates SC code that creates, for each hardware input channel:
+//   ~i0 … ~iN  — SoundIn.ar with LeakDC + gentle compression
+//   ~f0 … ~fN  — pitch detection (Tartini / Pitch / ZeroCrossing), latched
+//   ~a0 … ~aN  — amplitude follower
+//
+// Inspired by my_footcontroller.sc  e[\setupProxy]
+// Must be called from INSIDE s.waitForBoot (needs running server).
+
+function buildInputProxySCCode() {
+    const cfg = vscode.workspace.getConfiguration('envil.supercollider.proxySpace');
+    const n = cfg.get('numInputs', 2);
+    if (n <= 0) return '';
+
+    const method = cfg.get('pitchMethod', 'Tartini');
+
+    const lines = [];
+    lines.push(`  // ── audio inputs + analysis (numInputs=${n}, pitch=${method}) ──`);
+
+    for (let i = 0; i < n; i++) {
+        // ~iN — audio input proxy
+        lines.push(`  ~i${i}.ar(1);`);
+        lines.push(`  ~i${i} = {`);
+        lines.push(`    var in = SoundIn.ar(${i});`);
+        lines.push(`    in = LeakDC.ar(in);`);
+        lines.push(`    in = Compander.ar(in, in, thresh: 0.04, slopeBelow: 10, slopeAbove: 1, clampTime: 0.01, relaxTime: 0.01);`);
+        lines.push(`    in;`);
+        lines.push(`  };`);
+
+        // ~fN — pitch detection proxy (all var decls first — SC requirement)
+        // Tartini mode auto-falls back to Pitch.kr if sc3-plugins not installed
+        lines.push(`  ~f${i}.kr(1);`);
+        if (method === 'Tartini') {
+            lines.push(`  ~f${i} = { |threshold=0.9, maxFreq=2000|`);
+            lines.push(`    var in = Mix(~i${i}.ar);`);
+            lines.push(`    var freq, hasFreq, gate;`);
+            lines.push(`    #freq, hasFreq = if(\\Tartini.asClass.notNil, {`);
+            lines.push(`      \\Tartini.asClass.kr(in, n: 4096);`);
+            lines.push(`    }, {`);
+            lines.push(`      Pitch.kr(in, minFreq: 60, maxFreq: maxFreq, ampThreshold: 0.05);`);
+            lines.push(`    });`);
+            lines.push(`    gate = (hasFreq > threshold) * (freq < maxFreq);`);
+            lines.push(`    Latch.kr(freq, gate);`);
+            lines.push(`  };`);
+        } else if (method === 'Pitch') {
+            lines.push(`  ~f${i} = { |threshold=0.9, maxFreq=2000|`);
+            lines.push(`    var in = Mix(~i${i}.ar);`);
+            lines.push(`    var freq, hasFreq, gate;`);
+            lines.push(`    #freq, hasFreq = Pitch.kr(in, minFreq: 60, maxFreq: maxFreq, ampThreshold: 0.05);`);
+            lines.push(`    gate = (hasFreq > threshold) * (freq < maxFreq);`);
+            lines.push(`    Latch.kr(freq, gate);`);
+            lines.push(`  };`);
+        } else {
+            // ZeroCrossing — lightest, rawer
+            lines.push(`  ~f${i} = { |maxFreq=2000|`);
+            lines.push(`    var in = Mix(~i${i}.ar);`);
+            lines.push(`    var freq;`);
+            lines.push(`    in = LPF.ar(in, maxFreq);`);
+            lines.push(`    freq = ZeroCrossing.ar(in);`);
+            lines.push(`    freq.min(maxFreq);`);
+            lines.push(`  };`);
+        }
+
+        // ~aN — amplitude follower proxy
+        lines.push(`  ~a${i}.kr(1);`);
+        lines.push(`  ~a${i} = { Amplitude.kr(Mix(~i${i}.ar)) };`);
+    }
+
+    lines.push(`  "[envil] ${n} input proxies ready: ~i0..~i${n - 1}, ~f0..~f${n - 1}, ~a0..~a${n - 1}".postln;`);
+    return lines.join('\n');
+}
+
 // ── Activate ─────────────────────────────────────────────────────────────────
 
 async function activate(context) {
@@ -80,6 +153,10 @@ async function activate(context) {
         startServersAndSockets(workspaceFolder);
         sclangStatusBar.show();
         scsynthStatusBar.show();
+        // Heartbeat checks sclang (child process) + scsynth (OSC) every 3s
+        startHeartbeat();
+        // If both survived a window reload, reconnect ProxySpace
+        probeAndReconnect();
     }
 
     // ── SuperCollider commands (implementations from client/out/sc.js) ────────
@@ -95,11 +172,12 @@ async function activate(context) {
             const sc = getSC(); if (!sc) return;
             const ok = await sc.startSclang();
             if (ok) {
+                // Bar will update on next heartbeat tick, but set immediately for snappy UX
                 updateSclangBar(true);
-                startScsynthHeartbeat();
                 // Auto-detect a running scsynth left over from a previous session
                 const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
-                sc.probeRunningServer(autoInit).then(found => {
+                const inputCode = autoInit ? buildInputProxySCCode() : '';
+                sc.probeRunningServer(autoInit, inputCode).then(found => {
                     if (found) {
                         _isSCSynthRunning = true;
                         updateScsynthBar(true);
@@ -112,8 +190,7 @@ async function activate(context) {
             const sc = getSC(); if (!sc) return;
             sc.stopSclang();
             updateSclangBar(false);
-            updateScsynthBar(false);
-            _isSCSynthRunning = false;
+            // NOTE: do NOT touch scsynth bar — it's an independent process.
         }),
 
         vscode.commands.registerCommand('envil.supercollider.toggleSCLang', async () => {
@@ -131,6 +208,7 @@ async function activate(context) {
             if (autoInit) {
                 // ProxySpace.push MUST be at top level (main interpreter thread).
                 // s.waitForBoot runs on AppClock — push there only affects that thread.
+                const inputCode = buildInputProxySCCode();
                 await sc.executeCode([
                     'if(currentEnvironment.isKindOf(ProxySpace).not, {',
                     '  p = ProxySpace.push(s);',
@@ -139,6 +217,7 @@ async function activate(context) {
                     '});',
                     's.waitForBoot {',
                     '  ~out.play;',
+                    inputCode,
                     '  "[envil] ProxySpace ready.  ~out.ar(2).play".postln;',
                     '};',
                 ].join('\n'));
@@ -168,6 +247,7 @@ async function activate(context) {
             const sc = getSC(); if (!sc) return;
             const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
             if (autoInit) {
+                const inputCode = buildInputProxySCCode();
                 await sc.executeCode([
                     's.reboot;',
                     'if(currentEnvironment.isKindOf(ProxySpace).not, {',
@@ -177,6 +257,7 @@ async function activate(context) {
                     '});',
                     's.waitForBoot {',
                     '  ~out.play;',
+                    inputCode,
                     '  "[envil] ProxySpace ready.  ~out.ar(2).play".postln;',
                     '};',
                 ].join('\n'));
@@ -380,6 +461,8 @@ iframe{width:100%;height:100%;border:none}</style></head>
             startServersAndSockets(workspaceFolder);
             sclangStatusBar.show();
             scsynthStatusBar.show();
+            // Heartbeat checks sclang (child process) + scsynth (OSC) every 3s
+            startHeartbeat();
         } catch (error) {
             vscode.window.showErrorMessage(`Failed to load environment: ${error.message}`);
         } finally {
@@ -391,6 +474,7 @@ iframe{width:100%;height:100%;border:none}</style></head>
         try {
             showNotification('Closing ENVIL environment ...');
             closeServersAndSockets();
+            disposeHeartbeat();
             await updateCustomPropertyInSettings(false);
 
             if (workspaceFolder) {
@@ -619,6 +703,7 @@ async function deactivate() {
     }
 
     closeServersAndSockets();
+    disposeHeartbeat();
     scBridge.dispose();
     await updateCustomPropertyInSettings(undefined);
 
@@ -650,7 +735,13 @@ function updateScsynthBar(running) {
     scsynthStatusBar.text = running ? 'scsynth 🟢' : 'scsynth ⭕';
 }
 
-// ── sclang exit + scsynth heartbeat ───────────────────────────────────────────
+// ── sclang exit callback + scsynth heartbeat (OSC-based) ──────────────────────
+//
+// sclang detection:  it's our child process → just check sclangProcess liveness.
+// scsynth detection: send /status via raw UDP to 57110, listen for /status.reply.
+//                    Uses Node.js dgram directly — no sclang round-trip needed.
+
+const dgram = require('dgram');
 
 let _sclangExitRegistered = false;
 let _heartbeatTimer = null;
@@ -660,37 +751,101 @@ function registerSclangExitCallback() {
     const sc = getSC();
     if (!sc || !sc.onSclangExit) return;
     sc.onSclangExit((_code) => {
+        console.log('[envil] sclang exited');
         updateSclangBar(false);
-        _isSCSynthRunning = false;
-        updateScsynthBar(false);
-        stopScsynthHeartbeat();
+        // NOTE: do NOT touch scsynth bar or stop heartbeat here.
+        // scsynth is an independent process — the heartbeat will detect its state.
     });
     _sclangExitRegistered = true;
 }
 
-function startScsynthHeartbeat() {
-    registerSclangExitCallback();
-    stopScsynthHeartbeat();
-    // Poll every 5 seconds — lightweight: one queryCode round-trip
-    _heartbeatTimer = setInterval(async () => {
-        const sc = getSC();
-        if (!sc || !sc.isSclangRunning()) {
-            stopScsynthHeartbeat();
-            return;
-        }
-        const running = await sc.checkServerRunning();
-        if (running !== _isSCSynthRunning) {
-            _isSCSynthRunning = running;
-            updateScsynthBar(running);
-        }
-    }, 5000);
+// OSC /status message as raw bytes (12 bytes total):
+//   bytes 0-7:  "/status\0"   (address, null-terminated, 4-byte aligned)
+//   bytes 8-11: ",\0\0\0"     (type tag: just comma, no args, padded)
+const OSC_STATUS_MSG = Buffer.from([
+    0x2F, 0x73, 0x74, 0x61, 0x74, 0x75, 0x73, 0x00,  // /status\0
+    0x2C, 0x00, 0x00, 0x00,                            // ,\0\0\0
+]);
+
+/**
+ * Send /status to scsynth on UDP 57110 and resolve true if ANY reply
+ * comes back within `timeoutMs`.  Pure dgram — no library, no sclang.
+ */
+function pingScsynthOSC(timeoutMs = 1500) {
+    return new Promise((resolve) => {
+        let done = false;
+        let sock;
+        try {
+            sock = dgram.createSocket('udp4');
+        } catch (_) { resolve(false); return; }
+
+        const finish = (result) => {
+            if (done) return;
+            done = true;
+            try { sock.close(); } catch (_) {}
+            resolve(result);
+        };
+
+        sock.on('message', () => finish(true));
+        sock.on('error', () => finish(false));
+
+        sock.send(OSC_STATUS_MSG, 57110, '127.0.0.1', (err) => {
+            if (err) finish(false);
+        });
+
+        setTimeout(() => finish(false), timeoutMs);
+    });
 }
 
-function stopScsynthHeartbeat() {
+function startHeartbeat() {
+    registerSclangExitCallback();
+    stopHeartbeat();
+    console.log('[envil] ♥ heartbeat active');
+
+    // Do one immediate tick, then every 3 seconds
+    heartbeatTick();
+    _heartbeatTimer = setInterval(heartbeatTick, 3000);
+}
+
+async function heartbeatTick() {
+    // ── sclang: direct child-process check ──
+    const sc = getSC();
+    const sclangAlive = sc ? sc.isSclangRunning() : false;
+    updateSclangBar(sclangAlive);
+
+    // ── scsynth: direct OSC /status ping ──
+    const scsynthAlive = await pingScsynthOSC();
+    if (scsynthAlive !== _isSCSynthRunning) {
+        _isSCSynthRunning = scsynthAlive;
+        updateScsynthBar(scsynthAlive);
+    }
+}
+
+function stopHeartbeat() {
     if (_heartbeatTimer) {
         clearInterval(_heartbeatTimer);
         _heartbeatTimer = null;
     }
+}
+
+function disposeHeartbeat() {
+    stopHeartbeat();
+}
+
+/**
+ * One-shot: if sclang + scsynth survived a window reload, reconnect ProxySpace.
+ * (The heartbeat keeps the bars in sync from then on.)
+ */
+async function probeAndReconnect() {
+    const sc = getSC();
+    if (!sc || !sc.isSclangRunning()) return;
+    const scsynthAlive = await pingScsynthOSC();
+    if (!scsynthAlive) return;
+    _isSCSynthRunning = true;
+    updateScsynthBar(true);
+    const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
+    const inputCode = autoInit ? buildInputProxySCCode() : '';
+    sc.probeRunningServer(autoInit, inputCode);
 }
 
 // ── Server / socket helpers (unchanged from envil) ────────────────────────────
