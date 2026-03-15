@@ -56,3 +56,9 @@ do you maybe have some ideas 1. what could be piggy backed without making it ted
 - suggestions by AI (or autocompletion) should also have a text background color as the rest of the code, a bit different one.. b/c the IDE has a transparent background it is a necessecity to have this for readability
 
 - the knobs font color is still not ideal. maybe use a dark font color instead for the font inside the knob
+
+
+
+# stability etc
+
+another thing generally. when I switched between windows (vscode, chrome, others), I realized that there was a slight hiccup... from what component is this coming from ? is that a disadvantage of the webview panel (knob panel here) ? could this hiccup be migigated in some way ?

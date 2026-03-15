@@ -29,6 +29,84 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 #toolbar .spacer { flex: 1; }
 #toolbar .status { font-size: 11px; opacity: 0.6; }
 
+/* ── Sequencer section ────────────────────────────────────────────────── */
+#seq-section {
+    flex-shrink: 0; overflow-y: auto; max-height: 50vh;
+    border-bottom: 1px solid var(--vscode-panel-border, #444);
+}
+#seq-header {
+    display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+    background: var(--vscode-titleBar-activeBackground, #333);
+    cursor: pointer; font-size: 11px;
+}
+#seq-header:hover { background: #3a3a3a; }
+#seq-header .arrow { font-size: 10px; width: 12px; text-align: center; }
+#seq-transport {
+    display: flex; align-items: center; gap: 6px; padding: 2px 8px 4px;
+    background: var(--vscode-titleBar-activeBackground, #333);
+    font-size: 11px;
+}
+#seq-transport button {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff);
+    border: none; border-radius: 3px; padding: 2px 8px; cursor: pointer;
+    font-size: 11px;
+}
+#seq-transport button:hover { opacity: 0.85; }
+#seq-transport button.active { background: #0a4; }
+#seq-transport input[type=number] {
+    width: 54px; background: var(--vscode-input-background, #3c3c3c);
+    color: var(--vscode-input-foreground, #ccc);
+    border: 1px solid var(--vscode-input-border, #555);
+    border-radius: 3px; padding: 2px 4px; font-size: 11px;
+    text-align: center;
+}
+#seq-grid {
+    padding: 4px 8px 8px;
+}
+.seq-row {
+    display: flex; align-items: center; gap: 2px; margin-bottom: 3px;
+}
+.seq-row .seq-label {
+    width: 52px; font-size: 10px; text-align: right; padding-right: 4px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    opacity: 0.7; cursor: pointer;
+}
+.seq-row .seq-label:hover { opacity: 1; }
+.seq-step {
+    width: 22px; height: 22px; border: 1px solid #555; border-radius: 3px;
+    background: #2a2a2a; cursor: pointer; flex-shrink: 0;
+    transition: background 0.08s;
+}
+.seq-step.on { background: #0af; border-color: #0af; }
+.seq-step.current { box-shadow: 0 0 4px 1px #ff0; }
+.seq-step.on.current { box-shadow: 0 0 6px 2px #ff0; }
+.seq-step:hover { border-color: #aaa; }
+.seq-row .seq-remove {
+    width: 18px; height: 18px; font-size: 10px; line-height: 16px;
+    text-align: center; cursor: pointer; opacity: 0.3;
+    border: none; background: none; color: var(--vscode-editor-foreground, #ccc);
+    margin-left: 4px;
+}
+.seq-row .seq-remove:hover { opacity: 1; color: #f44; }
+.seq-row .seq-play-btn {
+    width: 20px; height: 20px; font-size: 10px; line-height: 18px;
+    text-align: center; cursor: pointer;
+    border: 1px solid #555; border-radius: 3px;
+    background: #2a2a2a; color: var(--vscode-editor-foreground, #ccc);
+    flex-shrink: 0; margin-right: 2px;
+}
+.seq-row .seq-play-btn:hover { border-color: #aaa; }
+.seq-row .seq-play-btn.playing { background: #0a4; color: #fff; border-color: #0a4; }
+.seq-row .seq-len-btn {
+    width: 18px; height: 18px; font-size: 13px; line-height: 16px;
+    text-align: center; cursor: pointer;
+    border: 1px solid #444; border-radius: 3px;
+    background: #2a2a2a; color: var(--vscode-editor-foreground, #ccc);
+    flex-shrink: 0; opacity: 0.4;
+}
+.seq-row .seq-len-btn:hover { opacity: 1; border-color: #aaa; }
+
 /* ── Canvas wrapper ───────────────────────────────────────────────────── */
 #canvas-wrap {
     flex: 1; overflow: hidden; min-height: 0; position: relative;
@@ -66,9 +144,38 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 
 <div id="toolbar">
     <button id="btn-add" title="Add a new knob">＋ Add Knob</button>
+    <button id="btn-add-seq" title="Add a new sequencer row">＋ Add Seq</button>
     <button id="btn-init-all" title="(Re)create all SC proxies">⟳ Init All</button>
     <span class="spacer"></span>
     <span class="status" id="status-text">0 knobs</span>
+</div>
+
+<!-- ── Sequencer section ──────────────────────────────────────────────── -->
+<div id="seq-section">
+    <div id="seq-header">
+        <span class="arrow" id="seq-arrow">▾</span>
+        <span>Sequencers</span>
+        <span class="spacer" style="flex:1"></span>
+        <span id="seq-count" style="opacity:0.5; font-size:10px;">0 seqs</span>
+    </div>
+    <div id="seq-body">
+        <div id="seq-transport">
+            <button id="seq-stop-all" title="Stop all sequencers (reset)">■ All</button>
+            <label style="font-size:10px; opacity:0.6;">BPM</label>
+            <input type="number" id="seq-bpm" value="120" min="1" max="999" step="1" title="Beats per minute"/>
+            <label style="font-size:10px; opacity:0.6;">÷</label>
+            <select id="seq-subdiv" title="Subdivision" style="background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,#555);border-radius:3px;font-size:11px;padding:2px;">
+                <option value="1">1 (quarter)</option>
+                <option value="2">2 (8th)</option>
+                <option value="4" selected>4 (16th)</option>
+                <option value="8">8 (32nd)</option>
+            </select>
+            <label style="font-size:10px; opacity:0.6; margin-left:6px; cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Sync BPM to SuperCollider TempoClock.default">
+                <input type="checkbox" id="seq-sync-sc" checked style="margin:0; cursor:pointer;"/>SC
+            </label>
+        </div>
+        <div id="seq-grid"></div>
+    </div>
 </div>
 
 <div id="canvas-wrap"><canvas id="surface"></canvas></div>
@@ -657,11 +764,13 @@ window.addEventListener('keydown', (e) => {
 
 // ── Persist state ────────────────────────────────────────────────────────
 function persistState() {
-    vscode.setState({ knobs, nextId });
+    vscode.setState({ knobs, nextId, seqs: seqs.map(s => ({ name: s.name, steps: s.steps.slice(), playing: s.playing })), seqNextId, seqBpm, seqSubdiv, seqSyncSC });
 }
 
 function updateStatus() {
-    statusText.textContent = knobs.length + ' knob' + (knobs.length !== 1 ? 's' : '');
+    statusText.textContent = knobs.length + ' knob' + (knobs.length !== 1 ? 's' : '') +
+        (seqs.length > 0 ? '  ·  ' + seqs.length + ' seq' + (seqs.length !== 1 ? 's' : '') : '');
+    document.getElementById('seq-count').textContent = seqs.length + ' seq' + (seqs.length !== 1 ? 's' : '');
 }
 
 // ── Messages from extension ──────────────────────────────────────────────
@@ -675,6 +784,336 @@ window.addEventListener('message', (event) => {
         draw();
         persistState();
     }
+    if (msg.type === 'restore-seqs') {
+        const arr = msg.seqs || [];
+        seqs = [];
+        arr.forEach(s => addSeq(s.name, s.steps, s.playing));
+        seqNextId = msg.seqNextId || seqs.length + 1;
+        if (msg.seqBpm) { seqBpm = msg.seqBpm; document.getElementById('seq-bpm').value = seqBpm; }
+        if (msg.seqSubdiv) { seqSubdiv = msg.seqSubdiv; document.getElementById('seq-subdiv').value = seqSubdiv; }
+        updateStatus();
+        persistState();
+    }
+    if (msg.type === 'seq-tempo-update') {
+        // SC TempoClock.default.tempo pushed from extension
+        if (!seqSyncSC) return;
+        const newBpm = Math.round(msg.bpm);
+        if (newBpm !== seqBpm && newBpm >= 1 && newBpm <= 999) {
+            seqBpm = newBpm;
+            seqBpmInput.value = seqBpm;
+            // Reschedule timer with new tempo
+            if (seqAnyPlaying()) {
+                if (seqGlobalTimer) clearTimeout(seqGlobalTimer);
+                scheduleNextTick();
+            }
+            persistState();
+        }
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── SEQUENCER SYSTEM ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+const SEQ_DEFAULT_STEPS = 8;
+const SEQ_COLORS = ['#0af','#f80','#0f0','#f0f','#ff0','#0ff','#f44','#8f0','#08f','#fa0'];
+
+let seqs = [];           // [{ name, steps, currentStep, color, playing }]
+let seqNextId = 1;
+let seqBpm = 120;
+let seqSubdiv = 4;       // steps per beat: 4 = 16th notes
+let seqGlobalTimer = null;  // single master clock shared by all seqs
+let seqStepCount = 0;       // global step counter
+
+const seqGrid       = document.getElementById('seq-grid');
+const seqArrow      = document.getElementById('seq-arrow');
+const seqBody       = document.getElementById('seq-body');
+const seqHeader     = document.getElementById('seq-header');
+const seqStopAllBtn = document.getElementById('seq-stop-all');
+const seqBpmInput   = document.getElementById('seq-bpm');
+const seqSubdivSel  = document.getElementById('seq-subdiv');
+const seqSyncCb     = document.getElementById('seq-sync-sc');
+let seqSyncSC = true;    // sync to SC TempoClock by default
+
+// ── Restore persisted sequencer state ────────────────────────────────────
+const savedState = vscode.getState();
+if (savedState && savedState.seqs) {
+    savedState.seqs.forEach(s => addSeq(s.name, s.steps, s.playing));
+    seqNextId = savedState.seqNextId || seqs.length + 1;
+    if (savedState.seqBpm) { seqBpm = savedState.seqBpm; seqBpmInput.value = seqBpm; }
+    if (savedState.seqSubdiv) { seqSubdiv = savedState.seqSubdiv; seqSubdivSel.value = seqSubdiv; }
+    if (savedState.seqSyncSC != null) { seqSyncSC = savedState.seqSyncSC; }
+}
+seqSyncCb.checked = seqSyncSC;
+seqBpmInput.disabled = seqSyncSC;
+seqBpmInput.style.opacity = seqSyncSC ? '0.4' : '1';
+// Request sync on startup if enabled
+if (seqSyncSC) {
+    vscode.postMessage({ type: 'seq-tempo-sync' });
+}
+
+// ── Collapse/expand ──────────────────────────────────────────────────────
+let seqCollapsed = false;
+seqHeader.addEventListener('click', () => {
+    seqCollapsed = !seqCollapsed;
+    seqBody.style.display = seqCollapsed ? 'none' : '';
+    seqArrow.textContent = seqCollapsed ? '▸' : '▾';
+});
+
+// ── Add sequencer row ────────────────────────────────────────────────────
+function addSeq(name, steps, playing) {
+    const id = seqNextId++;
+    const s = {
+        id,
+        name: name || 'sq' + id,
+        steps: steps || new Array(SEQ_DEFAULT_STEPS).fill(0),
+        currentStep: -1,
+        color: SEQ_COLORS[(id - 1) % SEQ_COLORS.length],
+        playing: playing !== false,  // auto-play by default
+    };
+    seqs.push(s);
+    renderSeqRow(s);
+    updateStatus();
+    ensureGlobalTimer();
+
+    // Notify extension (creates SC proxy)
+    vscode.postMessage({ type: 'seq-create', name: s.name, steps: s.steps });
+    return s;
+}
+
+function removeSeq(s) {
+    seqs = seqs.filter(x => x !== s);
+    const row = document.getElementById('seq-row-' + s.id);
+    if (row) row.remove();
+    vscode.postMessage({ type: 'seq-remove', name: s.name });
+    updateStatus();
+    ensureGlobalTimer();
+    persistState();
+}
+
+// ── Render one sequencer row ─────────────────────────────────────────────
+function renderSeqRow(s) {
+    // Preserve position if re-rendering an existing row
+    const existing = document.getElementById('seq-row-' + s.id);
+    const nextSibling = existing ? existing.nextSibling : null;
+    if (existing) existing.remove();
+
+    const row = document.createElement('div');
+    row.className = 'seq-row';
+    row.id = 'seq-row-' + s.id;
+    row.dataset.seqId = s.id;
+
+    // Play/pause button
+    const playBtn = document.createElement('div');
+    playBtn.className = 'seq-play-btn' + (s.playing ? ' playing' : '');
+    playBtn.textContent = s.playing ? '⏸' : '▶';
+    playBtn.title = s.playing ? 'Pause' : 'Play';
+    playBtn.addEventListener('click', () => {
+        s.playing = !s.playing;
+        playBtn.classList.toggle('playing', s.playing);
+        playBtn.textContent = s.playing ? '⏸' : '▶';
+        playBtn.title = s.playing ? 'Pause' : 'Play';
+        if (!s.playing) {
+            // Zero out the SC proxy and reset step position
+            vscode.postMessage({ type: 'seq-tick', name: s.name, step: s.currentStep, val: 0, steps: s.steps });
+            s.currentStep = -1;
+        }
+        ensureGlobalTimer();
+        updateSeqStepVisuals();
+        persistState();
+    });
+    row.appendChild(playBtn);
+
+    // Label
+    const label = document.createElement('span');
+    label.className = 'seq-label';
+    label.textContent = s.name;
+    label.title = 'Click to rename';
+    label.style.color = s.color;
+    label.addEventListener('click', () => {
+        const newName = prompt('Rename sequencer:', s.name);
+        if (newName && newName.trim()) {
+            const old = s.name;
+            s.name = newName.trim().replace(/[^a-zA-Z0-9_]/g, '');
+            label.textContent = s.name;
+            vscode.postMessage({ type: 'seq-rename', oldName: old, newName: s.name });
+            persistState();
+        }
+    });
+    row.appendChild(label);
+
+    // − button (remove last step) — left of grid
+    const subBtn = document.createElement('div');
+    subBtn.className = 'seq-len-btn';
+    subBtn.textContent = '−';
+    subBtn.title = 'Remove last step (' + s.steps.length + ')';
+    subBtn.addEventListener('click', () => {
+        if (s.steps.length <= 2) return;
+        s.steps.pop();
+        if (s.currentStep >= s.steps.length) s.currentStep = s.currentStep % s.steps.length;
+        renderSeqRow(s);
+        persistState();
+    });
+    row.appendChild(subBtn);
+
+    // + button (add step) — left of grid
+    const addBtn = document.createElement('div');
+    addBtn.className = 'seq-len-btn';
+    addBtn.textContent = '+';
+    addBtn.title = 'Add step (' + s.steps.length + ')';
+    addBtn.addEventListener('click', () => {
+        s.steps.push(0);
+        renderSeqRow(s);
+        persistState();
+    });
+    row.appendChild(addBtn);
+
+    // Step buttons
+    s.steps.forEach((val, i) => {
+        const btn = document.createElement('div');
+        btn.className = 'seq-step' + (val ? ' on' : '');
+        btn.dataset.step = i;
+        if (val) btn.style.background = s.color;
+        btn.addEventListener('click', () => {
+            s.steps[i] = s.steps[i] ? 0 : 1;
+            btn.classList.toggle('on', !!s.steps[i]);
+            btn.style.background = s.steps[i] ? s.color : '';
+            vscode.postMessage({ type: 'seq-toggle-step', name: s.name, step: i, val: s.steps[i], steps: s.steps });
+            persistState();
+        });
+        row.appendChild(btn);
+    });
+
+    // Remove button
+    const rm = document.createElement('span');
+    rm.className = 'seq-remove';
+    rm.textContent = '✕';
+    rm.title = 'Remove sequencer';
+    rm.addEventListener('click', () => removeSeq(s));
+    row.appendChild(rm);
+
+    if (nextSibling) {
+        seqGrid.insertBefore(row, nextSibling);
+    } else {
+        seqGrid.appendChild(row);
+    }
+}
+
+// ── Re-render all steps (after step advance) ─────────────────────────────
+function updateSeqStepVisuals() {
+    for (const s of seqs) {
+        const row = document.getElementById('seq-row-' + s.id);
+        if (!row) continue;
+        const stepEls = row.querySelectorAll('.seq-step');
+        stepEls.forEach((el, i) => {
+            el.classList.toggle('current', i === s.currentStep);
+        });
+    }
+}
+
+// ── Transport (per-seq play, single shared master clock) ─────────────────
+function seqAnyPlaying() {
+    return seqs.some(s => s.playing);
+}
+
+function ensureGlobalTimer() {
+    if (seqAnyPlaying() && !seqGlobalTimer) {
+        scheduleNextTick();
+    } else if (!seqAnyPlaying() && seqGlobalTimer) {
+        clearTimeout(seqGlobalTimer);
+        seqGlobalTimer = null;
+    }
+}
+
+function scheduleNextTick() {
+    if (!seqAnyPlaying()) { seqGlobalTimer = null; return; }
+    const intervalMs = 60000 / (seqBpm * seqSubdiv);
+    seqGlobalTimer = setTimeout(() => {
+        seqTick();
+        scheduleNextTick();
+    }, intervalMs);
+}
+
+function seqTick() {
+    seqStepCount++;
+    for (const s of seqs) {
+        if (!s.playing) continue;
+        s.currentStep = (s.currentStep + 1) % s.steps.length;
+        const val = s.steps[s.currentStep];
+        vscode.postMessage({
+            type: 'seq-tick',
+            name: s.name,
+            step: s.currentStep,
+            val: val,
+            steps: s.steps,
+        });
+    }
+    updateSeqStepVisuals();
+}
+
+function seqStopAll() {
+    seqs.forEach(s => {
+        // Zero out each SC proxy
+        vscode.postMessage({ type: 'seq-tick', name: s.name, step: s.currentStep, val: 0, steps: s.steps });
+        s.playing = false;
+        s.currentStep = -1;
+    });
+    if (seqGlobalTimer) { clearTimeout(seqGlobalTimer); seqGlobalTimer = null; }
+    seqStepCount = 0;
+    // Update play buttons in each row
+    for (const s of seqs) {
+        const row = document.getElementById('seq-row-' + s.id);
+        if (!row) continue;
+        const pb = row.querySelector('.seq-play-btn');
+        if (pb) { pb.classList.remove('playing'); pb.textContent = '▶'; pb.title = 'Play'; }
+    }
+    updateSeqStepVisuals();
+    vscode.postMessage({ type: 'seq-stop' });
+    persistState();
+}
+
+seqStopAllBtn.addEventListener('click', seqStopAll);
+
+seqBpmInput.addEventListener('input', onBpmChange);
+seqBpmInput.addEventListener('change', onBpmChange);
+function onBpmChange() {
+    seqBpm = Math.max(1, Math.min(999, parseInt(seqBpmInput.value, 10) || 120));
+    seqBpmInput.value = seqBpm;
+    vscode.postMessage({ type: 'seq-set-bpm', bpm: seqBpm, subdiv: seqSubdiv });
+    persistState();
+    if (seqAnyPlaying()) {
+        if (seqGlobalTimer) clearTimeout(seqGlobalTimer);
+        scheduleNextTick();
+    }
+}
+
+seqSubdivSel.addEventListener('change', onSubdivChange);
+function onSubdivChange() {
+    seqSubdiv = parseInt(seqSubdivSel.value, 10) || 4;
+    vscode.postMessage({ type: 'seq-set-bpm', bpm: seqBpm, subdiv: seqSubdiv });
+    persistState();
+    if (seqAnyPlaying()) {
+        if (seqGlobalTimer) clearTimeout(seqGlobalTimer);
+        scheduleNextTick();
+    }
+}
+
+// ── SC TempoClock sync ───────────────────────────────────────────────────
+seqSyncCb.addEventListener('change', () => {
+    seqSyncSC = seqSyncCb.checked;
+    seqBpmInput.disabled = seqSyncSC;
+    seqBpmInput.style.opacity = seqSyncSC ? '0.4' : '1';
+    if (seqSyncSC) {
+        vscode.postMessage({ type: 'seq-tempo-sync' });
+    } else {
+        vscode.postMessage({ type: 'seq-tempo-unsync' });
+    }
+    persistState();
+});
+
+document.getElementById('btn-add-seq').addEventListener('click', () => {
+    addSeq();
+    persistState();
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────
@@ -685,6 +1124,15 @@ updateStatus();
 if (knobs.length === 0) {
     addKnob('k1', 0.35, 0.5);
     addKnob('k2', 0.65, 0.5);
+}
+
+// Starter sequencers (only if no persisted state)
+if (seqs.length === 0) {
+    //                    steps: 1  2  3  4  5  6  7  8
+    addSeq('kick',  [1, 0, 0, 0, 1, 0, 0, 0]);
+    addSeq('snare', [0, 0, 1, 0, 0, 0, 1, 0]);
+    addSeq('hihat', [1, 0, 1, 0, 1, 0, 1, 0]);
+    persistState();
 }
 </script>
 </body>

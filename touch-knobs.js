@@ -92,6 +92,7 @@ function openPanel(context) {
     _panel.webview.onDidReceiveMessage(handleMessage, null, context.subscriptions);
 
     _panel.onDidDispose(() => {
+        stopTempoSync();
         _panel = null;
     }, null, context.subscriptions);
 
@@ -249,6 +250,80 @@ function handleMessage(msg) {
             break;
         }
 
+        // ── Sequencer messages ───────────────────────────────────────────
+
+        case 'seq-create': {
+            // Create a 1-channel control proxy for this sequencer:  ~seq_<name>
+            // Mirror footcontroller pattern: .mold first, then assign source
+            const name = sanitizeName(msg.name);
+            const proxyName = `~seq_${name}`;
+            const seqSrc = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
+            sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${proxyName}.mold(1, \\control); ${proxyName} = ${seqSrc}; ${proxyName}.set(\\val, 0) })`);
+            log(`  ＋ seq ${proxyName}  steps=${(msg.steps || []).length}`);
+            break;
+        }
+
+        case 'seq-tick': {
+            // Sequencer step advance — set proxy value + emit to Hydra
+            // Auto-repair: if proxy has no source, re-create it on the fly
+            const name = sanitizeName(msg.name);
+            const proxyName = `~seq_${name}`;
+            const val = msg.val != null ? msg.val : 0;
+            const seqSrc = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
+            const code = `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil, { ${proxyName}.mold(1, \\control); ${proxyName} = ${seqSrc} }); ${proxyName}.set(\\val, ${val}) })`;
+            sendSC(code, true);
+            sendHydra('seq-step', { name, step: msg.step, val, steps: msg.steps });
+            break;
+        }
+
+        case 'seq-toggle-step': {
+            // Step toggled — just emit to Hydra (SC proxy only updates on tick)
+            sendHydra('seq-step', { name: sanitizeName(msg.name), step: msg.step, val: msg.val, steps: msg.steps });
+            break;
+        }
+
+        case 'seq-remove': {
+            const name = sanitizeName(msg.name);
+            const proxyName = `~seq_${name}`;
+            sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${proxyName}.clear })`, true);
+            log(`  ✖ removed seq ${proxyName}`);
+            break;
+        }
+
+        case 'seq-stop': {
+            // Reset all seq proxies to 0
+            // (The webview already reset its step counters)
+            log(`  ■ sequencer stopped`);
+            break;
+        }
+
+        case 'seq-set-bpm': {
+            log(`  ♩ seq BPM=${msg.bpm}  ÷${msg.subdiv}`);
+            break;
+        }
+
+        case 'seq-tempo-sync': {
+            startTempoSync();
+            break;
+        }
+
+        case 'seq-tempo-unsync': {
+            stopTempoSync();
+            break;
+        }
+
+        case 'seq-rename': {
+            // Rename: clear old proxy, create new one
+            const oldName = sanitizeName(msg.oldName);
+            const newName = sanitizeName(msg.newName);
+            const oldProxy = `~seq_${oldName}`;
+            const newProxy = `~seq_${newName}`;
+            const seqSrc = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
+            sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${oldProxy}.clear; ${newProxy} = ${seqSrc} })`, true);
+            log(`  ✎ seq renamed ${oldProxy} → ${newProxy}`);
+            break;
+        }
+
         default:
             break;
     }
@@ -264,6 +339,46 @@ function handleMessage(msg) {
 // ─────────────────────────────────────────────────────────────────────────────
 // SC COMMUNICATION
 // ─────────────────────────────────────────────────────────────────────────────
+
+let _tempoSyncInterval = null;
+
+function startTempoSync() {
+    stopTempoSync();
+    log('  ♩ SC tempo sync ON');
+    // Poll immediately, then every 500ms
+    pollSCTempo();
+    _tempoSyncInterval = setInterval(pollSCTempo, 500);
+}
+
+function stopTempoSync() {
+    if (_tempoSyncInterval) {
+        clearInterval(_tempoSyncInterval);
+        _tempoSyncInterval = null;
+        log('  ♩ SC tempo sync OFF');
+    }
+}
+
+async function pollSCTempo() {
+    const sc = _getSC ? _getSC() : null;
+    if (!sc || !sc.isSclangRunning() || !sc.queryCode) return;
+    try {
+        const marker = '__ENVIL_TEMPO__';
+        if (sc.addSuppressMarker) sc.addSuppressMarker(marker);
+        const code = `"${marker}".post; TempoClock.default.tempo.asString.post; "${marker}".postln`;
+        const result = await sc.queryCode(code, marker, 1000);
+        if (result != null) {
+            const tempo = parseFloat(result);
+            if (!isNaN(tempo) && tempo > 0) {
+                const bpm = Math.round(tempo * 60);
+                if (_panel) {
+                    _panel.webview.postMessage({ type: 'seq-tempo-update', bpm });
+                }
+            }
+        }
+    } catch (e) {
+        // Silently ignore — sclang might not be ready
+    }
+}
 
 function sendSC(code, silent = false) {
     const sc = _getSC ? _getSC() : null;

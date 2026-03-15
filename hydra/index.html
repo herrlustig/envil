@@ -13,6 +13,8 @@
     <script src="./lib/hydra-synth.min.js"></script>
     <script src="./global-hydra.js" defer></script>
     <script src="./knob-proxy.js" defer></script>
+    <script src="./sc-proxy.js" defer></script>
+    <script src="./seq-proxy.js" defer></script>
     <script src="./peek-overlay.js" defer></script>
     <script src="./hydra-startup-script.js" defer></script>
 
@@ -84,6 +86,22 @@
         socket.on('knob-note-off', function (msg) {
             if (typeof _vKnobNoteOff === 'function') {
                 _vKnobNoteOff(msg.note);
+            }
+        });
+
+        // ── SC proxy bridge ────────────────────────────────────────────────
+        // Update sc.<name> from scsynth bus polling
+        socket.on('sc-proxy-update', function (msg) {
+            if (typeof _scProxyUpdate === 'function') {
+                _scProxyUpdate(msg.name, msg.values);
+            }
+        });
+
+        // ── Sequencer proxy ───────────────────────────────────────────────
+        // Update seq.<name> from sequencer step changes
+        socket.on('seq-step', function (msg) {
+            if (typeof _seqStepUpdate === 'function') {
+                _seqStepUpdate(msg.name, msg.step, msg.val, msg.steps);
             }
         });
 

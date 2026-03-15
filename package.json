@@ -177,6 +177,18 @@
       {
         "command": "envil.touchKnobs.close",
         "title": "Envil: Close Touch Knobs"
+      },
+      {
+        "command": "envil.scBridge.watch",
+        "title": "Envil: Watch SC Proxy → Hydra"
+      },
+      {
+        "command": "envil.scBridge.unwatch",
+        "title": "Envil: Unwatch SC Proxy"
+      },
+      {
+        "command": "envil.scBridge.refresh",
+        "title": "Envil: Refresh SC Proxy Bus Indices"
       }
     ],
     "configuration": [

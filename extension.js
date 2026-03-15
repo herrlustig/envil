@@ -12,6 +12,7 @@ const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require
 const { extractExpressions } = require('./peek-expressions');
 const { registerTouchKnobs } = require('./touch-knobs');
 const { registerProxyCompletions } = require('./proxy-completions');
+const scBridge = require('./sc-bridge');
 const osc = require('osc');
 
 // SC + LSP modules are loaded lazily so a compile error never blocks activation
@@ -504,6 +505,43 @@ iframe{width:100%;height:100%;border:none}</style></head>
     // ProxySpace autocompletion — ~proxy suggestions from live sclang
     registerProxyCompletions(context, { getSC });
 
+    // SC→Hydra proxy bridge — polls scsynth buses, forwards to browser
+    scBridge.initBridge({
+        getSC,
+        getIO: () => io,
+        log: (msg) => { if (hydraOutput) hydraOutput.appendLine(msg); },
+    });
+
+    context.subscriptions.push(
+        // Watch a SC proxy:  user types proxy name in quick-pick
+        vscode.commands.registerCommand('envil.scBridge.watch', async () => {
+            const name = await vscode.window.showInputBox({
+                prompt: 'SC proxy name to watch (without ~)',
+                placeHolder: 'out',
+            });
+            if (!name) return;
+            const ok = await scBridge.watchProxy(name.trim());
+            if (ok) {
+                vscode.window.showInformationMessage(`sc-bridge: watching ~${name.trim()}`);
+            } else {
+                vscode.window.showWarningMessage(`sc-bridge: could not resolve ~${name.trim()} (no bus?)`);
+            }
+        }),
+        vscode.commands.registerCommand('envil.scBridge.unwatch', async () => {
+            const names = scBridge.getWatchedNames();
+            if (names.length === 0) {
+                vscode.window.showInformationMessage('sc-bridge: no proxies being watched');
+                return;
+            }
+            const pick = await vscode.window.showQuickPick(names, { placeHolder: 'Proxy to stop watching' });
+            if (pick) scBridge.unwatchProxy(pick);
+        }),
+        vscode.commands.registerCommand('envil.scBridge.refresh', async () => {
+            await scBridge.refreshAll();
+            vscode.window.showInformationMessage('sc-bridge: refreshed all proxy bus indices');
+        }),
+    );
+
     // SC block command — sends code directly to sclang
     context.subscriptions.push(
         vscode.commands.registerCommand(CMD_RUN_SC_BLOCK, async (blockCode) => {
@@ -581,6 +619,7 @@ async function deactivate() {
     }
 
     closeServersAndSockets();
+    scBridge.dispose();
     await updateCustomPropertyInSettings(undefined);
 
     const currentWorkspaceFolder = vscode.workspace.workspaceFolders
