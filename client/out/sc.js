@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.onSclangExit = onSclangExit;
 exports.addSuppressMarker = addSuppressMarker;
 exports.initOutputChannels = initOutputChannels;
 exports.isSclangRunning = isSclangRunning;
@@ -14,6 +15,8 @@ exports.bootServer = bootServer;
 exports.rebootServer = rebootServer;
 exports.killServer = killServer;
 exports.stopAllSounds = stopAllSounds;
+exports.checkServerRunning = checkServerRunning;
+exports.probeRunningServer = probeRunningServer;
 exports.openHelpForCursor = openHelpForCursor;
 const fs = require("fs");
 const child_process_1 = require("child_process");
@@ -22,6 +25,10 @@ let sclangProcess = null;
 let sclangOutput;
 let postWindowOutput;
 const stdoutListeners = [];
+const exitCallbacks = [];
+function onSclangExit(cb) {
+    exitCallbacks.push(cb);
+}
 // ── Markers to suppress from Post Window ──────────────────────────────────────
 const suppressMarkers = new Set();
 let _stdoutBuf = '';
@@ -180,6 +187,8 @@ async function startSclang(fallbackToExe = true) {
             proc.on('exit', (code) => {
                 sclangOutput.appendLine(`[SuperCollider] sclang exited with code ${code}`);
                 sclangProcess = null;
+                for (const cb of exitCallbacks)
+                    cb(code);
             });
             return proc;
         };
@@ -459,6 +468,59 @@ async function bootServer() { await executeCode('s.boot;'); }
 async function rebootServer() { await executeCode('s.reboot;'); }
 async function killServer() { await executeCode('s.quit;'); }
 async function stopAllSounds() { await executeCode('CmdPeriod.run;'); }
+/**
+ * Lightweight scsynth liveness check — sends s.serverRunning via queryCode.
+ * Returns true if scsynth is running according to sclang's own state.
+ */
+async function checkServerRunning() {
+    if (!sclangProcess || sclangProcess.killed)
+        return false;
+    const marker = '<<E_HB>>';
+    addSuppressMarker(marker);
+    const result = await queryCode(`"${marker}".post; s.serverRunning.asString.post; "${marker}".postln;`, marker, 2000);
+    return result?.trim() === 'true';
+}
+/**
+ * Probe for a running scsynth / supernova on the default port (57110).
+ * If found: set s.serverRunning_(true) and optionally push ProxySpace.
+ * Existing nodes on the server are NOT touched — the livecoder decides.
+ */
+async function probeRunningServer(autoInitProxy = true) {
+    if (!sclangProcess || sclangProcess.killed)
+        return false;
+    // Wait for sclang class library to finish compiling
+    const rdyMarker = '<<E_RDY>>';
+    addSuppressMarker(rdyMarker);
+    const rdy = await queryCode(`"${rdyMarker}1${rdyMarker}".postln;`, rdyMarker, 15000);
+    if (rdy?.trim() !== '1')
+        return false;
+    // Probe scsynth via raw OSC /status ping
+    const marker = '<<E_PROBE>>';
+    addSuppressMarker(marker);
+    const proxyBlock = autoInitProxy ? [
+        '    if(currentEnvironment.isKindOf(ProxySpace).not, {',
+        '      p = ProxySpace.push(s);',
+        '      ~out.ar(2);',
+        '    });',
+    ].join('\n') : '';
+    const scCode = [
+        'fork {',
+        '  var resp, running = false;',
+        '  resp = OSCFunc({ |msg| running = true; resp.free }, \'/status.reply\');',
+        '  s.addr.sendMsg(\'/status\');',
+        '  1.5.wait;',
+        '  resp.free;',
+        '  if(running, {',
+        '    s.serverRunning_(true);',
+        proxyBlock,
+        '    "[envil] ✓ Reconnected to running scsynth (existing nodes untouched)".postln;',
+        '  });',
+        `  "${marker}".post; running.asString.post; "${marker}".postln;`,
+        '};',
+    ].filter(Boolean).join('\n');
+    const result = await queryCode(scCode, marker, 5000);
+    return result?.trim() === 'true';
+}
 async function openHelpForCursor(editor) {
     const wordRange = editor.document.getWordRangeAtPosition(editor.selection.active);
     const word = wordRange ? editor.document.getText(wordRange) : null;

@@ -12,6 +12,7 @@
     <!-- import hydra synth (local bundle for offline use) -->
     <script src="./lib/hydra-synth.min.js"></script>
     <script src="./global-hydra.js" defer></script>
+    <script src="./knob-proxy.js" defer></script>
     <script src="./peek-overlay.js" defer></script>
     <script src="./hydra-startup-script.js" defer></script>
 
@@ -62,6 +63,28 @@
 
         socket.on('peek-clear', function () {
             if (typeof peekClear === 'function') peekClear();
+        });
+
+        // ── Knob proxy handlers ──────────────────────────────────────────────
+        // Update v.c<num>.x / .y from touch-knob movements
+        socket.on('knob-update', function (msg) {
+            if (typeof _vKnobUpdate === 'function') {
+                _vKnobUpdate(msg.note, msg.x, msg.y);
+            }
+        });
+
+        // Note on — v.n<num>.val = val, v.n.val = num, v.n_val.val = val
+        socket.on('knob-note', function (msg) {
+            if (typeof _vKnobNoteOn === 'function') {
+                _vKnobNoteOn(msg.note, msg.val);
+            }
+        });
+
+        // Note off — v.n<num>.val = 0, v.n_val.val = 0
+        socket.on('knob-note-off', function (msg) {
+            if (typeof _vKnobNoteOff === 'function') {
+                _vKnobNoteOff(msg.note);
+            }
         });
 
         // ── Eval handler ─────────────────────────────────────────────────────

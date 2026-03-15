@@ -17,6 +17,14 @@ let postWindowOutput: OutputChannel;
 type StdoutListener = (text: string) => void;
 const stdoutListeners: StdoutListener[] = [];
 
+// ── sclang exit callbacks ─────────────────────────────────────────────────────
+type ExitCallback = (code: number | null) => void;
+const exitCallbacks: ExitCallback[] = [];
+
+export function onSclangExit(cb: ExitCallback): void {
+    exitCallbacks.push(cb);
+}
+
 // ── Markers to suppress from Post Window ──────────────────────────────────────
 const suppressMarkers: Set<string> = new Set();
 let _stdoutBuf = '';
@@ -191,6 +199,7 @@ export async function startSclang(fallbackToExe = true): Promise<boolean> {
             proc.on('exit', (code) => {
                 sclangOutput.appendLine(`[SuperCollider] sclang exited with code ${code}`);
                 sclangProcess = null;
+                for (const cb of exitCallbacks) cb(code);
             });
 
             return proc;
@@ -446,6 +455,71 @@ export async function bootServer(): Promise<void>    { await executeCode('s.boot
 export async function rebootServer(): Promise<void>  { await executeCode('s.reboot;'); }
 export async function killServer(): Promise<void>    { await executeCode('s.quit;'); }
 export async function stopAllSounds(): Promise<void> { await executeCode('CmdPeriod.run;'); }
+
+/**
+ * Lightweight scsynth liveness check — sends s.serverRunning via queryCode.
+ * Returns true if scsynth is running according to sclang's own state.
+ */
+export async function checkServerRunning(): Promise<boolean> {
+    if (!sclangProcess || sclangProcess.killed) return false;
+    const marker = '<<E_HB>>';
+    addSuppressMarker(marker);
+    const result = await queryCode(
+        `"${marker}".post; s.serverRunning.asString.post; "${marker}".postln;`,
+        marker,
+        2000,
+    );
+    return result?.trim() === 'true';
+}
+
+/**
+ * Probe for a running scsynth / supernova on the default port (57110).
+ * If found: set s.serverRunning_(true) and optionally push ProxySpace.
+ * Existing nodes on the server are NOT touched — the livecoder decides.
+ */
+export async function probeRunningServer(autoInitProxy = true): Promise<boolean> {
+    if (!sclangProcess || sclangProcess.killed) return false;
+
+    // Wait for sclang class library to finish compiling
+    const rdyMarker = '<<E_RDY>>';
+    addSuppressMarker(rdyMarker);
+    const rdy = await queryCode(
+        `"${rdyMarker}1${rdyMarker}".postln;`,
+        rdyMarker,
+        15000,   // class library can take a while
+    );
+    if (rdy?.trim() !== '1') return false;
+
+    // Probe scsynth via raw OSC /status ping
+    const marker = '<<E_PROBE>>';
+    addSuppressMarker(marker);
+
+    const proxyBlock = autoInitProxy ? [
+        '    if(currentEnvironment.isKindOf(ProxySpace).not, {',
+        '      p = ProxySpace.push(s);',
+        '      ~out.ar(2);',
+        '    });',
+    ].join('\n') : '';
+
+    const scCode = [
+        'fork {',
+        '  var resp, running = false;',
+        '  resp = OSCFunc({ |msg| running = true; resp.free }, \'/status.reply\');',
+        '  s.addr.sendMsg(\'/status\');',
+        '  1.5.wait;',
+        '  resp.free;',
+        '  if(running, {',
+        '    s.serverRunning_(true);',
+        proxyBlock,
+        '    "[envil] ✓ Reconnected to running scsynth (existing nodes untouched)".postln;',
+        '  });',
+        `  "${marker}".post; running.asString.post; "${marker}".postln;`,
+        '};',
+    ].filter(Boolean).join('\n');
+
+    const result = await queryCode(scCode, marker, 5000);
+    return result?.trim() === 'true';
+}
 
 export async function openHelpForCursor(editor: TextEditor): Promise<void> {
     const wordRange = editor.document.getWordRangeAtPosition(editor.selection.active);

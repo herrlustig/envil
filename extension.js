@@ -93,7 +93,18 @@ async function activate(context) {
         vscode.commands.registerCommand('envil.supercollider.startSCLang', async () => {
             const sc = getSC(); if (!sc) return;
             const ok = await sc.startSclang();
-            if (ok) updateSclangBar(true);
+            if (ok) {
+                updateSclangBar(true);
+                startScsynthHeartbeat();
+                // Auto-detect a running scsynth left over from a previous session
+                const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
+                sc.probeRunningServer(autoInit).then(found => {
+                    if (found) {
+                        _isSCSynthRunning = true;
+                        updateScsynthBar(true);
+                    }
+                });
+            }
         }),
 
         vscode.commands.registerCommand('envil.supercollider.stopSCLang', () => {
@@ -598,6 +609,49 @@ function updateSclangBar(running) {
 function updateScsynthBar(running) {
     if (!scsynthStatusBar) return;
     scsynthStatusBar.text = running ? 'scsynth 🟢' : 'scsynth ⭕';
+}
+
+// ── sclang exit + scsynth heartbeat ───────────────────────────────────────────
+
+let _sclangExitRegistered = false;
+let _heartbeatTimer = null;
+
+function registerSclangExitCallback() {
+    if (_sclangExitRegistered) return;
+    const sc = getSC();
+    if (!sc || !sc.onSclangExit) return;
+    sc.onSclangExit((_code) => {
+        updateSclangBar(false);
+        _isSCSynthRunning = false;
+        updateScsynthBar(false);
+        stopScsynthHeartbeat();
+    });
+    _sclangExitRegistered = true;
+}
+
+function startScsynthHeartbeat() {
+    registerSclangExitCallback();
+    stopScsynthHeartbeat();
+    // Poll every 5 seconds — lightweight: one queryCode round-trip
+    _heartbeatTimer = setInterval(async () => {
+        const sc = getSC();
+        if (!sc || !sc.isSclangRunning()) {
+            stopScsynthHeartbeat();
+            return;
+        }
+        const running = await sc.checkServerRunning();
+        if (running !== _isSCSynthRunning) {
+            _isSCSynthRunning = running;
+            updateScsynthBar(running);
+        }
+    }, 5000);
+}
+
+function stopScsynthHeartbeat() {
+    if (_heartbeatTimer) {
+        clearInterval(_heartbeatTimer);
+        _heartbeatTimer = null;
+    }
 }
 
 // ── Server / socket helpers (unchanged from envil) ────────────────────────────

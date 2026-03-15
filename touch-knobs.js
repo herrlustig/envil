@@ -118,20 +118,22 @@ function handleMessage(msg) {
             const noteNum = msg.midiNote || msg.id;
             const proxyName = `~${PROXY_PREFIX}_c${noteNum}`;
             const src = `{ |x=0, y=0, lagTime=${DEFAULT_LAG_TIME}| [Lag.kr(x, lagTime), Lag.kr(y, lagTime)] }`;
-            const code = `if(currentEnvironment.isKindOf(ProxySpace), { ${proxyName}.clear; ${proxyName}.kr(2); ${proxyName} = ${src}; ${proxyName}.set(\\x, ${msg.x || 0}, \\y, ${msg.y || 0}) })`;
+            const code = `if(currentEnvironment.isKindOf(ProxySpace), { ${proxyName}.mold(2, \\control); ${proxyName} = ${src}; ${proxyName}.set(\\x, ${msg.x || 0}, \\y, ${msg.y || 0}) })`;
             sendSC(code);
+            sendHydra('knob-update', { note: noteNum, x: msg.x || 0, y: msg.y || 0 });
             log(`  ＋ knob ${proxyName}  (x: ${fmt(msg.x)}, y: ${fmt(msg.y)})`);
             break;
         }
 
         case 'knob-move': {
-            // Auto-init CC proxy if missing (late sclang start / ProxySpace.push / reboot)
+            // Auto-init or repair CC proxy if missing / wrong channel count
             // ~v_c<midiNote> — mirrors footcontroller ~l_c<ccNum>
             const noteNum = msg.midiNote || msg.id;
             const proxyName = `~${PROXY_PREFIX}_c${noteNum}`;
             const src = `{ |x=0, y=0, lagTime=${DEFAULT_LAG_TIME}| [Lag.kr(x, lagTime), Lag.kr(y, lagTime)] }`;
-            const code = `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil, { ${proxyName} = ${src} }); ${proxyName}.set(\\x, ${msg.x}, \\y, ${msg.y}) })`;
+            const code = `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil or: { ${proxyName}.numChannels != 2 }, { ${proxyName}.mold(2, \\control); ${proxyName} = ${src} }); ${proxyName}.set(\\x, ${msg.x}, \\y, ${msg.y}) })`;
             sendSC(code, true);
+            sendHydra('knob-update', { note: noteNum, x: msg.x, y: msg.y });
             break;
         }
 
@@ -173,6 +175,8 @@ function handleMessage(msg) {
                 `})`,
             ].join('');
             sendSC(code, true);
+            sendHydra('knob-note', { note: noteNum, val: 1 });
+            setTimeout(() => sendHydra('knob-note-off', { note: noteNum }), 100);
             log(`  ⚡ tap ${perNote}  (~${PROXY_PREFIX}_n=${noteNum})`);
             break;
         }
@@ -196,6 +200,7 @@ function handleMessage(msg) {
                 `})`,
             ].join('');
             sendSC(code, true);
+            sendHydra('knob-note', { note: noteNum, val: 1 });
             log(`  ⚡ hold-ON ${perNote}  (~${PROXY_PREFIX}_n=${noteNum})`);
             break;
         }
@@ -212,6 +217,7 @@ function handleMessage(msg) {
                 `})`,
             ].join('');
             sendSC(code, true);
+            sendHydra('knob-note-off', { note: noteNum });
             log(`  ⚡ hold-OFF ${perNote}`);
             break;
         }
@@ -230,10 +236,15 @@ function handleMessage(msg) {
             const lines = knobList.map(k => {
                 const mn = k.midiNote || k.id;
                 const pn = `~${PROXY_PREFIX}_c${mn}`;
-                return `${pn}.clear; ${pn}.kr(2); ${pn} = ${src}; ${pn}.set(\\x, ${k.x || 0}, \\y, ${k.y || 0})`;
+                return `${pn}.mold(2, \\control); ${pn} = ${src}; ${pn}.set(\\x, ${k.x || 0}, \\y, ${k.y || 0})`;
             });
             // Wrap in ProxySpace check so it's safe if no ProxySpace is pushed
             sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${lines.join('; ')} })`);
+            // Sync all knob values to Hydra
+            knobList.forEach(k => {
+                const mn = k.midiNote || k.id;
+                sendHydra('knob-update', { note: mn, x: k.x || 0, y: k.y || 0 });
+            });
             log(`  ⟳ initialised ${knobList.length} CC proxies`);
             break;
         }
@@ -258,6 +269,13 @@ function sendSC(code, silent = false) {
     const sc = _getSC ? _getSC() : null;
     if (!sc || !sc.isSclangRunning()) return;
     sc.sendCode(code, silent);
+}
+
+/** Emit a socket.io event to the Hydra browser page. */
+function sendHydra(event, data) {
+    const io = _getIO ? _getIO() : null;
+    if (!io) return;
+    io.sockets.emit(event, data);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
