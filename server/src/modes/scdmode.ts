@@ -620,46 +620,22 @@ export function getSuperColliderMode(): LanguageMode {
 			const items: CompletionItem[] = [];
 			const wordLower = word.toLowerCase();
 
-			// After a "." only methods are valid in SuperCollider (no classes/keywords)
+			// After a "." → classes/methods are handled by the client-side
+			// sc-completions.js provider (dynamic sclang queries).
+			// The LSP only provides keywords (never valid after a dot).
 			const charBefore = start > 0 ? text.charAt(start - 1) : '';
-			const afterDot = charBefore === '.';
+			if (charBefore === '.') {
+				return CompletionList.create([], false);
+			}
 
 			// Add matching keywords
-			if (!afterDot) {
-				for (const kw of SC_KEYWORDS) {
-					if (kw.toLowerCase().startsWith(wordLower)) {
-						items.push({
-							label: kw,
-							kind: CompletionItemKind.Keyword,
-							detail: 'SuperCollider keyword',
-							documentation: KEYWORD_DOCS[kw]
-						});
-					}
-				}
-			}
-
-			// Add matching classes (CamelCase — never valid after a dot)
-			if (!afterDot) {
-				for (const cls of SC_CLASSES) {
-					if (cls.toLowerCase().startsWith(wordLower)) {
-						items.push({
-							label: cls,
-							kind: CompletionItemKind.Class,
-							detail: 'SuperCollider class',
-							documentation: CLASS_DOCS[cls]
-						});
-					}
-				}
-			}
-
-			// Add matching methods
-			for (const method of SC_METHODS) {
-				if (method.toLowerCase().startsWith(wordLower)) {
+			for (const kw of SC_KEYWORDS) {
+				if (kw.toLowerCase().startsWith(wordLower)) {
 					items.push({
-						label: method,
-						kind: CompletionItemKind.Method,
-						detail: 'SuperCollider method',
-						documentation: METHOD_DOCS[method]
+						label: kw,
+						kind: CompletionItemKind.Keyword,
+						detail: 'SuperCollider keyword',
+						documentation: KEYWORD_DOCS[kw]
 					});
 				}
 			}
