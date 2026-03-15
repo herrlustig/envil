@@ -9,20 +9,17 @@
     <!-- import the webpage's stylesheet -->
     <link rel="stylesheet" href="./style.css" />
 
-    <!-- import the latest version of hydra synth-->
-    <script src="https://unpkg.com/hydra-synth"></script>
+    <!-- import hydra synth (local bundle for offline use) -->
+    <script src="./lib/hydra-synth.min.js"></script>
     <script src="./global-hydra.js" defer></script>
     <script src="./peek-overlay.js" defer></script>
     <script src="./hydra-startup-script.js" defer></script>
 
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Libre+Barcode+128+Text&display=swap" rel="stylesheet">
 </head>
 
 <body>
     <canvas id="main-hydra-canvas"></canvas>
-    <script src="https://unpkg.com/socket.io-client@4/dist/socket.io.min.js"></script>
+    <script src="./lib/socket.io.min.js"></script>
     <script>
         const socket = io("http://localhost:3001");
 

@@ -271,7 +271,7 @@ iframe{width:100%;height:100%;border:none}</style></head>
             if (e.textEditor.document.languageId !== 'supercollider') return;
             if (!e.selections[0].isEmpty) return;           // ignore real selections
 
-            // Debounce: only fire after the cursor has been still for 400 ms
+            // Debounce: only fire after the cursor has been still for 200 ms
             if (_sigHelpTimer) clearTimeout(_sigHelpTimer);
             _sigHelpTimer = setTimeout(() => {
                 _sigHelpTimer = null;
@@ -288,7 +288,7 @@ iframe{width:100%;height:100%;border:none}</style></head>
                 for (let i = offset - 1; i >= 0; i--) {
                     const ch = text[i];
                     if (ch === ')' || ch === ']' || ch === '}') { depth++; }
-                    else if (ch === ']' || ch === '{') { if (depth) depth--; else break; }
+                    else if (ch === '[' || ch === '{') { if (depth) depth--; else break; }
                     else if (ch === '(') {
                         if (depth > 0) { depth--; continue; }
                         // We found the unmatched '(' – check there's a word before it
@@ -297,11 +297,9 @@ iframe{width:100%;height:100%;border:none}</style></head>
                             vscode.commands.executeCommand('editor.action.triggerParameterHints');
                         }
                         break;
-                    } else if ((ch === '\n') && depth === 0) {
-                        break; // don't look past the current line at depth 0
                     }
                 }
-            }, 400);
+            }, 200);
         })
     );
 
