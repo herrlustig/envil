@@ -30,6 +30,11 @@ let _seqSubdiv = 4;
 let _seqTimer = null;        // setInterval ID
 let _seqSyncSC = true;       // sync to SC TempoClock
 
+// ── Host-side macro curve state ──────────────────────────────────────────
+let _macros = [];            // [{ name, macroNum, points, position, playing, durationSec, durationBeats, loop }]
+let _macroTimer = null;
+let _macroLastTickMs = 0;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +105,7 @@ function openPanel(context) {
 
     _panel.onDidDispose(() => {
         seqStopTimer();
+        macroStopTimer();
         stopTempoSync();
         _panel = null;
     }, null, context.subscriptions);
@@ -313,6 +319,7 @@ function handleMessage(msg) {
                 s.currentStep = -1;
             }
             seqStopTimer();
+            macroStopAll();
             break;
         }
 
@@ -355,6 +362,20 @@ function handleMessage(msg) {
             break;
         }
 
+        case 'seq-tempo-tap': {
+            if (_seqSyncSC) {
+                sendSC(`try { var tap = e[\\timeSyncInput]; if(tap.notNil) { tap.value; } } { |err| err }`, true);
+                setTimeout(() => {
+                    if (_seqSyncSC) pollSCTempo();
+                }, 150);
+                setTimeout(() => {
+                    if (_seqSyncSC) pollSCTempo();
+                }, 450);
+                log('  ♩ tap → SC time sync input');
+            }
+            break;
+        }
+
         case 'seq-rename': {
             const oldName = sanitizeName(msg.oldName);
             const newName = sanitizeName(msg.newName);
@@ -365,6 +386,111 @@ function handleMessage(msg) {
             const s = _seqs.find(x => x.name === oldName);
             if (s) s.name = newName;
             log(`  ✎ seq renamed ${oldProxy} → ${newProxy}`);
+            break;
+        }
+
+        // ── Macro curve messages ───────────────────────────────────────
+
+        case 'macro-create': {
+            const name = sanitizeName(msg.name || `macro${_macros.length + 1}`);
+            const points = normalizeMacroPoints(msg.points);
+            const playing = msg.playing !== false;
+            const durationSec = positiveNumber(msg.durationSec, 30);
+            const durationBeats = positiveNumber(msg.durationBeats, 64);
+            const loop = msg.loop !== false;
+            const macroNum = positiveInteger(msg.macroNum, _macros.length + 1);
+            const position = clamp01(msg.currentPos != null ? msg.currentPos : 0);
+            const proxyName = macroProxyName({ macroNum });
+                sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${macroEnsureSCCode(proxyName)} })`, true);
+            let m = _macros.find(x => x.name === name);
+            if (m) {
+                m.macroNum = macroNum;
+                m.points = points;
+                m.playing = playing;
+                m.durationSec = durationSec;
+                m.durationBeats = durationBeats;
+                m.loop = loop;
+                m.position = position;
+            } else {
+                m = { name, macroNum, points, position, playing, durationSec, durationBeats, loop };
+                _macros.push(m);
+            }
+            macroEmitImmediate(m, { includePoints: true });
+            macroEnsureTimer();
+            log(`  ＋ macro ${proxyName}  points=${points.length}  playing=${playing}`);
+            break;
+        }
+
+        case 'macro-remove': {
+            const name = sanitizeName(msg.name);
+            const m = _macros.find(x => x.name === name);
+            if (!m) break;
+            const proxyName = macroProxyName(m);
+            sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${proxyName}.clear })`, true);
+            _macros = _macros.filter(x => x !== m);
+            macroEnsureTimer();
+            sendHydra('macro-remove', { name });
+            log(`  ✖ removed macro ${proxyName}`);
+            break;
+        }
+
+        case 'macro-play-toggle': {
+            const name = sanitizeName(msg.name);
+            const m = _macros.find(x => x.name === name);
+            if (!m) break;
+            m.playing = !!msg.playing;
+            if (msg.loop != null) m.loop = !!msg.loop;
+            if (msg.currentPos != null) m.position = clamp01(msg.currentPos);
+            macroEmitImmediate(m, { includePoints: false });
+            macroEnsureTimer();
+            break;
+        }
+
+        case 'macro-update-curve': {
+            const name = sanitizeName(msg.name);
+            const m = _macros.find(x => x.name === name);
+            if (!m) break;
+            m.points = normalizeMacroPoints(msg.points);
+            if (msg.currentPos != null) m.position = clamp01(msg.currentPos);
+            macroEmitImmediate(m, { includePoints: true });
+            break;
+        }
+
+        case 'macro-set-duration': {
+            const name = sanitizeName(msg.name);
+            const m = _macros.find(x => x.name === name);
+            if (!m) break;
+            m.durationSec = positiveNumber(msg.durationSec, m.durationSec || 30);
+            m.durationBeats = positiveNumber(msg.durationBeats, m.durationBeats || 64);
+            break;
+        }
+
+        case 'macro-set-loop': {
+            const name = sanitizeName(msg.name);
+            const m = _macros.find(x => x.name === name);
+            if (!m) break;
+            m.loop = !!msg.loop;
+            break;
+        }
+
+        case 'macro-seek': {
+            const name = sanitizeName(msg.name);
+            const m = _macros.find(x => x.name === name);
+            if (!m) break;
+            m.position = clamp01(msg.position);
+            macroEmitImmediate(m, { includePoints: false });
+            break;
+        }
+
+        case 'macro-rename': {
+            const oldName = sanitizeName(msg.oldName);
+            const newName = sanitizeName(msg.newName);
+            const m = _macros.find(x => x.name === oldName);
+            if (!m) break;
+            sendHydra('macro-remove', { name: oldName });
+            m.name = newName;
+            macroEmitImmediate(m, { includePoints: true });
+            log(`  ✎ macro renamed ${oldName} → ${newName}  (${macroProxyName(m)})`);
             break;
         }
 
@@ -385,6 +511,8 @@ function handleMessage(msg) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SEQ_SRC = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
+const MACRO_SRC = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
+const MACRO_TICK_MS = 33;
 
 function seqAnyPlaying() {
     return _seqs.some(s => s.playing);
@@ -445,6 +573,138 @@ function seqSCCode(s, val) {
 
 function seqSetSCValue(s, val) {
     sendSC(seqSCCode(s, val), true);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MACRO CURVE ENGINE (runs in Node.js — shared transport with sequencers)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function macroAnyPlaying() {
+    return _macros.some(m => m.playing);
+}
+
+function macroEnsureTimer() {
+    if (macroAnyPlaying() && !_macroTimer) {
+        macroStartTimer();
+    } else if (!macroAnyPlaying() && _macroTimer) {
+        macroStopTimer();
+    }
+}
+
+function macroStartTimer() {
+    macroStopTimer();
+    _macroLastTickMs = Date.now();
+    _macroTimer = setInterval(macroTick, MACRO_TICK_MS);
+}
+
+function macroStopTimer() {
+    if (_macroTimer) {
+        clearInterval(_macroTimer);
+        _macroTimer = null;
+    }
+}
+
+function macroStopAll() {
+    const scParts = [];
+    const updates = [];
+    for (const m of _macros) {
+        m.playing = false;
+        m.position = 0;
+        const val = macroSampleValue(m, m.position);
+        scParts.push(macroSCCode(m, val));
+        sendHydra('macro-update', macroHydraPayload(m, val, false));
+        updates.push({ name: m.name, position: m.position, val, playing: false, loop: !!m.loop });
+    }
+    macroStopTimer();
+    if (scParts.length > 0) sendSC(scParts.join('; '), true);
+    if (_panel && updates.length > 0) {
+        _panel.webview.postMessage({ type: 'macro-visual-update', macros: updates });
+    }
+}
+
+function macroTick() {
+    const now = Date.now();
+    const deltaMs = Math.max(1, now - (_macroLastTickMs || now));
+    _macroLastTickMs = now;
+
+    const scParts = [];
+    const updates = [];
+
+    for (const m of _macros) {
+        if (!m.playing) continue;
+        const durationMs = macroDurationMs(m);
+        if (!(durationMs > 0)) continue;
+
+        const nextPos = m.position + (deltaMs / durationMs);
+        const reachedEnd = nextPos >= 1;
+        if (m.loop && reachedEnd) {
+            m.position = nextPos % 1;
+        } else {
+            m.position = clamp01(nextPos);
+            if (reachedEnd) m.playing = false;
+        }
+
+        const val = macroSampleValue(m, m.position);
+        scParts.push(macroSCCode(m, val));
+        sendHydra('macro-update', macroHydraPayload(m, val, reachedEnd));
+        updates.push({ name: m.name, position: m.position, val, playing: m.playing, loop: !!m.loop });
+    }
+
+    if (scParts.length > 0) sendSC(scParts.join('; '), true);
+    if (_panel && updates.length > 0) {
+        _panel.webview.postMessage({ type: 'macro-visual-update', macros: updates });
+    }
+
+    macroEnsureTimer();
+}
+
+function macroDurationMs(m) {
+    if (_seqSyncSC) {
+        const beats = positiveNumber(m.durationBeats, 64);
+        return beats * (60000 / Math.max(1, _seqBpm));
+    }
+    return positiveNumber(m.durationSec, 30) * 1000;
+}
+
+function macroSampleValue(m, position) {
+    const points = normalizeMacroPoints(m.points);
+    if (points.length === 1) return clamp01(points[0]);
+    const scaled = clamp01(position) * (points.length - 1);
+    const idx = Math.floor(scaled);
+    const frac = scaled - idx;
+    const a = clamp01(points[idx]);
+    const b = clamp01(points[Math.min(points.length - 1, idx + 1)]);
+    return clamp01(a + ((b - a) * frac));
+}
+
+function macroSCCode(m, val) {
+    const proxyName = macroProxyName(m);
+    const v = clamp01(val != null ? val : 0);
+        return `if(currentEnvironment.isKindOf(ProxySpace), { ${macroEnsureSCCode(proxyName)}; ${proxyName}.set(\\val, ${v}) })`;
+}
+
+function macroHydraPayload(m, val, includePoints = false) {
+    return {
+        name: m.name,
+        pos: clamp01(m.position),
+        val: clamp01(val != null ? val : 0),
+        length: Array.isArray(m.points) ? m.points.length : 0,
+        playing: !!m.playing,
+        loop: !!m.loop,
+        points: includePoints ? normalizeMacroPoints(m.points) : undefined,
+    };
+}
+
+function macroEmitImmediate(m, { includePoints = false } = {}) {
+    const val = macroSampleValue(m, m.position);
+    sendSC(macroSCCode(m, val), true);
+    sendHydra('macro-update', macroHydraPayload(m, val, includePoints));
+    if (_panel) {
+        _panel.webview.postMessage({
+            type: 'macro-visual-update',
+            macros: [{ name: m.name, position: clamp01(m.position), val, playing: !!m.playing, loop: !!m.loop }],
+        });
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -552,6 +812,32 @@ function saveLayout(knobs, nextId) {
 
 function sanitizeName(name) {
     return (name || 'k0').replace(/[^a-zA-Z0-9_]/g, '');
+}
+
+function macroEnsureSCCode(proxyName) {
+    return `if(${proxyName}.source.isNil, { ${proxyName} = ${MACRO_SRC} }); ${proxyName}.mold(1, \\control)`;
+}
+
+function macroProxyName(m) {
+    return `~mcr_${positiveInteger(m && m.macroNum, 1)}`;
+}
+
+function clamp01(v) {
+    return Math.max(0, Math.min(1, Number(v) || 0));
+}
+
+function normalizeMacroPoints(points) {
+    if (!Array.isArray(points) || points.length === 0) return [0.5];
+    return points.map(clamp01);
+}
+
+function positiveNumber(value, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function positiveInteger(value, fallback) {
+    return Math.max(1, Math.floor(positiveNumber(value, fallback)));
 }
 
 function fmt(n) {

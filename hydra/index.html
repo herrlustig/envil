@@ -13,6 +13,7 @@
     <script src="./lib/hydra-synth.min.js"></script>
     <script src="./global-hydra.js" defer></script>
     <script src="./knob-proxy.js" defer></script>
+    <script src="./macro-proxy.js" defer></script>
     <script src="./sc-proxy.js" defer></script>
     <script src="./seq-proxy.js" defer></script>
     <script src="./peek-overlay.js" defer></script>
@@ -86,6 +87,19 @@
         socket.on('knob-note-off', function (msg) {
             if (typeof _vKnobNoteOff === 'function') {
                 _vKnobNoteOff(msg.note);
+            }
+        });
+
+        // ── Macro proxy handlers ───────────────────────────────────────────
+        socket.on('macro-update', function (msg) {
+            if (typeof _macroUpdate === 'function') {
+                _macroUpdate(msg.name, msg.pos, msg.val, msg.playing, msg.length, msg.points, msg.loop);
+            }
+        });
+
+        socket.on('macro-remove', function (msg) {
+            if (typeof _macroRemove === 'function') {
+                _macroRemove(msg.name);
             }
         });
 
