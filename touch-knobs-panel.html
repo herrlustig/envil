@@ -1559,11 +1559,9 @@ function wireMacroDurationDrag(inputEl, m, applyDurationValue) {
         if (!isPrimaryPress) return;
         drag = {
             pointerId: e.pointerId,
-            startY: e.clientY,
-            startValue: macroDurationDisplay(m),
             lastY: e.clientY,
             lastTime: performance.now(),
-            velocity: 0,
+            accumValue: macroDurationDisplay(m),
             dragging: false,
         };
         inputEl.setPointerCapture(e.pointerId);
@@ -1571,24 +1569,23 @@ function wireMacroDurationDrag(inputEl, m, applyDurationValue) {
 
     inputEl.addEventListener('pointermove', (e) => {
         if (!drag || drag.pointerId !== e.pointerId) return;
-        const now = performance.now();
-        const deltaY = drag.startY - e.clientY;
-        if (!drag.dragging && Math.abs(deltaY) < 3) return;
+        const stepY = drag.lastY - e.clientY;   // positive = drag up = increase
+        if (!drag.dragging && Math.abs(stepY) < 3) return;
         drag.dragging = true;
 
-        const stepY = drag.lastY - e.clientY;
+        const now = performance.now();
         const stepTime = Math.max(8, now - drag.lastTime);
-        const instantVelocity = Math.abs(stepY) / stepTime;
-        drag.velocity = (drag.velocity * 0.6) + (instantVelocity * 0.4);
         drag.lastY = e.clientY;
         drag.lastTime = now;
 
-        const currentValue = macroDurationDisplay(m);
-        const valueFactor = Math.max(0.35, Math.pow(Math.max(currentValue, 0.1), 0.55));
-        const speedFactor = 1 + Math.min(4, drag.velocity * 6);
-        const baseSensitivity = e.shiftKey ? 0.0035 : 0.012;
-        const nextValue = Math.max(0.1, drag.startValue + (deltaY * baseSensitivity * valueFactor * speedFactor));
-        inputEl.value = formatMacroDurationValue(nextValue);
+        // Acceleration: faster drag → bigger steps (but applied per-increment, not total)
+        const speed = Math.abs(stepY) / stepTime;   // px/ms
+        const accel = 1 + Math.min(3, speed * 4);   // 1× to 4× boost
+        // Scale sensitivity to the current value so small values get fine control
+        const valueFactor = Math.max(0.25, Math.pow(Math.max(drag.accumValue, 0.1), 0.55));
+        const baseSensitivity = e.shiftKey ? 0.003 : 0.015;
+        drag.accumValue = Math.max(0.1, drag.accumValue + stepY * baseSensitivity * valueFactor * accel);
+        inputEl.value = formatMacroDurationValue(drag.accumValue);
         applyDurationValue(false);
         e.preventDefault();
     });

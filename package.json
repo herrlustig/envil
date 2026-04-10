@@ -179,6 +179,11 @@
         "title": "Envil: Close Touch Knobs"
       },
       {
+        "command": "envil.initWorkspace",
+        "title": "Envil: Init Workspace",
+        "icon": "$(folder-active)"
+      },
+      {
         "command": "envil.scBridge.watch",
         "title": "Envil: Watch SC Proxy → Hydra"
       },

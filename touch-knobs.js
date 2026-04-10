@@ -13,15 +13,20 @@
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const PROXY_PREFIX = 'v';           // → ~v_name
 const DEFAULT_LAG_TIME = 0.05;      // 50ms lag for smooth SC control
+const STATE_VERSION = 1;            // bump when state schema changes
+const ENVIL_DIR = '.envil';         // workspace-local config directory
+const STATE_FILE = 'state.json';    // knob/macro/seq state
 
 let _panel = null;
 let _getSC = null;        // function → sc module (lazy)
 let _getIO = null;        // function → socket.io server (for future Hydra support)
 let _hydraOutput = null;  // output channel for logging
-let _layoutPath = null;   // path to persist knob layout on disk
+let _layoutPath = null;   // path to persist knob layout on disk (workspace-local)
+let _workspacePath = null; // workspace root (if available)
 
 // ── Host-side sequencer state (clock runs here, never throttled) ─────────
 let _seqs = [];              // [{ name, steps, currentStep, playing }]
@@ -44,16 +49,47 @@ let _macroLastTickMs = 0;
  * Call from extension.js activate().
  * @param {object} opts
  * @param {boolean} [opts.autoOpen=false] - open panel immediately on activation
+ * @param {string|null} [opts.workspacePath] - workspace root; state saved to .envil/state.json there
  */
-function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath, autoOpen }) {
+function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath, autoOpen, workspacePath }) {
     _getSC = getSC;
     _getIO = getIO;
     _hydraOutput = hydraOutput;
-    _layoutPath = path.join(extensionPath, 'touch-knobs-layout.json');
+    _workspacePath = workspacePath || null;
+
+    // Compute state file path: prefer workspace-local .envil/state.json,
+    // fall back to extension-global touch-knobs-layout.json
+    if (_workspacePath) {
+        _layoutPath = path.join(_workspacePath, ENVIL_DIR, STATE_FILE);
+    } else {
+        _layoutPath = path.join(extensionPath, 'touch-knobs-layout.json');
+    }
+
+    // Migrate: if workspace already has .envil/ dir but no state.json,
+    // and old extension-global layout file exists, copy it over.
+    // (Only migrates into workspaces the user has already init'd)
+    if (_workspacePath && hasEnvilDir(_workspacePath)) {
+        const oldGlobal = path.join(extensionPath, 'touch-knobs-layout.json');
+        if (!fs.existsSync(_layoutPath) && fs.existsSync(oldGlobal)) {
+            try {
+                const dir = path.dirname(_layoutPath);
+                if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                const old = JSON.parse(fs.readFileSync(oldGlobal, 'utf-8'));
+                old.autoOpen = true;
+                old._version = STATE_VERSION;
+                old._migratedFrom = 'extension-global';
+                fs.writeFileSync(_layoutPath, JSON.stringify(old, null, 2));
+                log(`  ⟳ migrated touch-knobs state → ${path.relative(_workspacePath, _layoutPath)}`);
+            } catch (e) {
+                console.warn('[touch-knobs] migration failed:', e);
+            }
+        }
+    }
 
     context.subscriptions.push(
         vscode.commands.registerCommand('envil.touchKnobs.open', () => openPanel(context)),
         vscode.commands.registerCommand('envil.touchKnobs.close', () => closePanel()),
+        vscode.commands.registerCommand('envil.initWorkspace', () => initWorkspace(context)),
     );
 
     // Auto-open on startup (small delay so editors have time to settle)
@@ -791,21 +827,43 @@ function saveLayoutFromPanel() {
 function loadLayout() {
     try {
         if (_layoutPath && fs.existsSync(_layoutPath)) {
-            return JSON.parse(fs.readFileSync(_layoutPath, 'utf-8'));
+            const raw = fs.readFileSync(_layoutPath, 'utf-8');
+            const data = JSON.parse(raw);
+            return data;
         }
     } catch (e) {
         console.warn('[touch-knobs] failed to load layout:', e);
+        // Attempt to recover from backup
+        const bak = _layoutPath + '.bak';
+        if (bak && fs.existsSync(bak)) {
+            try {
+                console.warn('[touch-knobs] trying backup…');
+                return JSON.parse(fs.readFileSync(bak, 'utf-8'));
+            } catch (_) { /* give up */ }
+        }
     }
     return null;
 }
 
 function saveLayout(state) {
     try {
-        if (_layoutPath) {
-            fs.writeFileSync(_layoutPath, JSON.stringify(state || {}, null, 2));
-        }
+        if (!_layoutPath) return;
+        // Ensure directory exists
+        const dir = path.dirname(_layoutPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        // Stamp version
+        const out = Object.assign({}, state || {}, { _version: STATE_VERSION });
+        const json = JSON.stringify(out, null, 2);
+        // Atomic write: write to .tmp then rename
+        const tmp = _layoutPath + '.tmp';
+        fs.writeFileSync(tmp, json);
+        fs.renameSync(tmp, _layoutPath);
     } catch (e) {
         console.warn('[touch-knobs] failed to save layout:', e);
+        // Direct-write fallback (rename can fail across filesystems, though unlikely here)
+        try {
+            fs.writeFileSync(_layoutPath, JSON.stringify(state || {}, null, 2));
+        } catch (_) { /* give up */ }
     }
 }
 
@@ -855,4 +913,68 @@ function log(msg) {
     if (_hydraOutput) _hydraOutput.appendLine(msg);
 }
 
-module.exports = { registerTouchKnobs };
+// ─────────────────────────────────────────────────────────────────────────────
+// WORKSPACE INIT
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Returns true if the workspace has a .envil/ directory (i.e. was previously
+ * initialised for envil use).
+ */
+function hasEnvilDir(workspacePath) {
+    if (!workspacePath) return false;
+    try { return fs.existsSync(path.join(workspacePath, ENVIL_DIR)); }
+    catch { return false; }
+}
+
+/**
+ * Command handler:  Envil: Init Workspace
+ * Creates .envil/ directory + default state.json, optionally opens touch knobs.
+ */
+async function initWorkspace(context) {
+    if (!_workspacePath) {
+        vscode.window.showWarningMessage('Envil: No workspace folder open — cannot initialise.');
+        return;
+    }
+    const dir = path.join(_workspacePath, ENVIL_DIR);
+    const stateFile = path.join(dir, STATE_FILE);
+
+    if (fs.existsSync(stateFile)) {
+        const choice = await vscode.window.showInformationMessage(
+            `Workspace already has ${ENVIL_DIR}/${STATE_FILE}. Open Touch Knobs?`,
+            'Open', 'Cancel',
+        );
+        if (choice === 'Open') openPanel(context);
+        return;
+    }
+
+    // Create directory + empty state
+    try {
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(stateFile, JSON.stringify({ autoOpen: true, _version: STATE_VERSION }, null, 2));
+        log(`  ✔ created ${ENVIL_DIR}/${STATE_FILE}`);
+    } catch (e) {
+        vscode.window.showErrorMessage(`Envil: Failed to create ${ENVIL_DIR}/: ${e.message}`);
+        return;
+    }
+
+    // Suggest .gitignore entry
+    const gitignorePath = path.join(_workspacePath, '.gitignore');
+    if (fs.existsSync(gitignorePath)) {
+        const content = fs.readFileSync(gitignorePath, 'utf-8');
+        if (!content.includes(ENVIL_DIR)) {
+            const addIt = await vscode.window.showInformationMessage(
+                `Add "${ENVIL_DIR}/" to .gitignore? (personal knob state shouldn't be committed)`,
+                'Yes', 'No',
+            );
+            if (addIt === 'Yes') {
+                fs.appendFileSync(gitignorePath, `\n# envil workspace state (touch knobs / macros)\n${ENVIL_DIR}/\n`);
+            }
+        }
+    }
+
+    vscode.window.showInformationMessage(`Envil workspace initialised.  Touch Knobs state will be saved in ${ENVIL_DIR}/${STATE_FILE}`);
+    openPanel(context);
+}
+
+module.exports = { registerTouchKnobs, hasEnvilDir };

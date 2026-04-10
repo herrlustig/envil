@@ -10,7 +10,7 @@ const { registerHydraProviders } = require('./hydra-language-support');
 const { registerHoverSlider } = require('./hover-slider');
 const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
 const { extractExpressions } = require('./peek-expressions');
-const { registerTouchKnobs } = require('./touch-knobs');
+const { registerTouchKnobs, hasEnvilDir } = require('./touch-knobs');
 const { registerProxyCompletions } = require('./proxy-completions');
 const { registerSCCompletions, clearSCCompletionCaches } = require('./sc-completions');
 const scBridge = require('./sc-bridge');
@@ -579,13 +579,24 @@ iframe{width:100%;height:100%;border:none}</style></head>
     registerBlockCodeLens(context);
 
     // Touch knobs — draggable XY controllers → SC proxyspace
-    const touchKnobsAutoOpen = vscode.workspace.getConfiguration('envil').get('touchKnobs.autoOpen', true);
+    // Auto-open when: .envil/ exists AND state.json has autoOpen: true (default)
+    // The VS Code setting acts as a global kill-switch.
+    const touchKnobsCfgAutoOpen = vscode.workspace.getConfiguration('envil').get('touchKnobs.autoOpen', true);
+    let touchKnobsAutoOpen = false;
+    if (touchKnobsCfgAutoOpen && hasEnvilDir(workspaceFolder)) {
+        try {
+            const stateRaw = fs.readFileSync(path.join(workspaceFolder, '.envil', 'state.json'), 'utf-8');
+            const stateObj = JSON.parse(stateRaw);
+            touchKnobsAutoOpen = stateObj.autoOpen !== false; // default true if key missing
+        } catch (_) { touchKnobsAutoOpen = true; /* .envil exists, state unreadable → open anyway */ }
+    }
     registerTouchKnobs(context, {
         getSC,
         getIO: () => io,
         hydraOutput,
         extensionPath: context.extensionPath,
         autoOpen: touchKnobsAutoOpen,
+        workspacePath: workspaceFolder,
     });
 
     // ProxySpace autocompletion — ~proxy suggestions from live sclang
