@@ -84,21 +84,14 @@ function openPanel(context) {
     );
 
     // Load HTML
-    const htmlPath = path.join(context.extensionPath, 'touch-knobs-panel.html');
-    _panel.webview.html = fs.readFileSync(htmlPath, 'utf-8');
-
-    // Restore saved layout
     const saved = loadLayout();
-    if (saved && saved.knobs && saved.knobs.length > 0) {
-        // Small delay to let webview initialise
-        setTimeout(() => {
-            _panel.webview.postMessage({
-                type: 'restore-knobs',
-                knobs: saved.knobs,
-                nextId: saved.nextId,
-            });
-        }, 300);
-    }
+    const htmlPath = path.join(context.extensionPath, 'touch-knobs-panel.html');
+    const rawHtml = fs.readFileSync(htmlPath, 'utf-8');
+    const initialStateScript = `globalThis.__ENVIL_INITIAL_STATE__ = ${serializeForWebview(saved || {})};`;
+    _panel.webview.html = rawHtml.replace(
+        'const vscode = acquireVsCodeApi();',
+        `const vscode = acquireVsCodeApi();\n${initialStateScript}`,
+    );
 
     // Handle messages from webview
     _panel.webview.onDidReceiveMessage(handleMessage, null, context.subscriptions);
@@ -243,6 +236,11 @@ function handleMessage(msg) {
             break;
         }
 
+        case 'panel-state-cache': {
+            if (msg.state) saveLayout(msg.state);
+            break;
+        }
+
         case 'init-all': {
             // Recreate all CC proxies ~v_c<midiNote> (useful after SC reboot / ProxySpace.push)
             const knobList = msg.knobs || [];
@@ -364,14 +362,16 @@ function handleMessage(msg) {
 
         case 'seq-tempo-tap': {
             if (_seqSyncSC) {
-                sendSC(`try { var tap = e[\\timeSyncInput]; if(tap.notNil) { tap.value; } } { |err| err }`, true);
+                const tappedBpm = Math.max(1, Math.min(999, Number(msg.bpm) || _seqBpm || 120));
+                const tappedTempo = Math.max(0.001, tappedBpm / 60);
+                sendSC(`try { var tap = if(e.notNil) { e[\\timeSyncInput] } { nil }; var tappedTempo = ${tappedTempo}; if(tap.notNil) { tap.value; } { TempoClock.default.tempo = tappedTempo; } } { |err| err }`, true);
                 setTimeout(() => {
                     if (_seqSyncSC) pollSCTempo();
                 }, 150);
                 setTimeout(() => {
                     if (_seqSyncSC) pollSCTempo();
                 }, 450);
-                log('  ♩ tap → SC time sync input');
+                log(`  ♩ tap → SC sync (${Number(msg.bpm) > 0 ? `fallback bpm=${tappedBpm}` : 'fallback armed'})`);
             }
             break;
         }
@@ -513,6 +513,7 @@ function handleMessage(msg) {
 const SEQ_SRC = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
 const MACRO_SRC = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
 const MACRO_TICK_MS = 33;
+const LOCAL_MACRO_BASE_BPM = 120;
 
 function seqAnyPlaying() {
     return _seqs.some(s => s.playing);
@@ -663,7 +664,9 @@ function macroDurationMs(m) {
         const beats = positiveNumber(m.durationBeats, 64);
         return beats * (60000 / Math.max(1, _seqBpm));
     }
-    return positiveNumber(m.durationSec, 30) * 1000;
+    const seconds = positiveNumber(m.durationSec, 30);
+    const localRate = Math.max(0.01, Math.max(1, _seqBpm) / LOCAL_MACRO_BASE_BPM);
+    return (seconds * 1000) / localRate;
 }
 
 function macroSampleValue(m, position) {
@@ -796,14 +799,18 @@ function loadLayout() {
     return null;
 }
 
-function saveLayout(knobs, nextId) {
+function saveLayout(state) {
     try {
         if (_layoutPath) {
-            fs.writeFileSync(_layoutPath, JSON.stringify({ knobs, nextId }, null, 2));
+            fs.writeFileSync(_layoutPath, JSON.stringify(state || {}, null, 2));
         }
     } catch (e) {
         console.warn('[touch-knobs] failed to save layout:', e);
     }
+}
+
+function serializeForWebview(value) {
+    return JSON.stringify(value || {}).replace(/</g, '\\u003c');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

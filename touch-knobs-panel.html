@@ -31,7 +31,8 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 
 /* ── Sequencer section ────────────────────────────────────────────────── */
 #seq-section {
-    flex-shrink: 0; overflow-y: auto; overflow-x: auto; max-height: 50vh;
+    flex-shrink: 0; overflow-y: auto; overflow-x: auto;
+    min-height: 220px;
     border-bottom: 1px solid var(--vscode-panel-border, #444);
 }
 #seq-header {
@@ -46,6 +47,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     background: var(--vscode-titleBar-activeBackground, #333);
     font-size: 11px;
 }
+#seq-transport .seq-transport-spacer { flex: 1; }
 #seq-transport button {
     background: var(--vscode-button-background, #0e639c);
     color: var(--vscode-button-foreground, #fff);
@@ -115,23 +117,47 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 .macro-row .macro-loop-btn:hover { border-color: #aaa; }
 .macro-row .macro-loop-btn.active { background: #0e639c; color: #fff; border-color: #0e639c; }
 .macro-row .macro-duration {
-    width: 84px; height: 28px; background: var(--vscode-input-background, #3c3c3c);
+    width: 62px; height: auto; min-height: 68px; align-self: stretch;
+    background: var(--vscode-input-background, #3c3c3c);
     color: var(--vscode-input-foreground, #ccc);
     border: 1px solid var(--vscode-input-border, #555);
-    border-radius: 4px; padding: 4px 8px; font-size: 13px; font-weight: 600;
+    border-radius: 6px; padding: 4px 6px; font-size: 13px; font-weight: 600;
     text-align: center; flex-shrink: 0; touch-action: none; cursor: ns-resize;
 }
 .macro-row .macro-unit {
     width: 38px; font-size: 11px; opacity: 0.7; text-align: center; flex-shrink: 0;
 }
 .macro-row .macro-canvas-wrap {
-    flex: 1; min-width: 120px; height: 52px; position: relative;
+    flex: 1; min-width: 120px; min-height: 0; height: 68px; position: relative;
     border: 1px solid #444; border-radius: 4px; overflow: hidden;
     background: linear-gradient(to bottom, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+    display: flex; flex-direction: column;
 }
 .macro-row .macro-canvas {
-    display: block; width: 100%; height: 100%;
+    display: block; width: 100%; height: 0; min-height: 0; flex: 1 1 auto;
     cursor: crosshair;
+}
+.macro-row .macro-seekbar {
+    position: relative; height: 16px; flex-shrink: 0;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    background: linear-gradient(to bottom, rgba(255,255,255,0.03), rgba(0,0,0,0.18));
+    cursor: ew-resize; touch-action: none;
+}
+.macro-row .macro-seekfill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    background: linear-gradient(to right, rgba(255,255,255,0.08), rgba(255,255,255,0.16));
+    pointer-events: none;
+}
+.macro-row .macro-seekhead {
+    position: absolute; top: 1px; bottom: 1px; width: 10px;
+    margin-left: -5px; border-radius: 8px;
+    background: #fff3a0; box-shadow: 0 0 6px rgba(255,245,160,0.45);
+    pointer-events: none;
+}
+.macro-row .macro-seeklabel {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    font-size: 9px; opacity: 0.55; letter-spacing: 0.04em;
+    pointer-events: none;
 }
 .macro-row .macro-remove {
     width: 18px; height: 18px; font-size: 10px; line-height: 16px;
@@ -187,8 +213,28 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 .seq-row .seq-len-btn:hover { opacity: 1; border-color: #aaa; }
 
 /* ── Canvas wrapper ───────────────────────────────────────────────────── */
+#layout-splitter {
+    flex-shrink: 0;
+    height: 10px;
+    cursor: row-resize;
+    position: relative;
+    background: linear-gradient(to bottom, rgba(255,255,255,0.02), rgba(0,0,0,0.18));
+    touch-action: none;
+}
+#layout-splitter::before {
+    content: '';
+    position: absolute;
+    left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: 84px; height: 3px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.18);
+}
+#layout-splitter:hover::before,
+#layout-splitter.dragging::before {
+    background: rgba(255,255,255,0.34);
+}
 #canvas-wrap {
-    flex: 1; overflow: hidden; min-height: 0; position: relative;
+    flex: 1; overflow: hidden; min-height: 140px; position: relative;
 }
 #surface {
     display: block; width: 100%; height: 100%;
@@ -241,7 +287,6 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     <div id="seq-body">
         <div id="seq-transport">
             <button id="seq-stop-all" title="Stop all macros + sequencers (reset)">■ All</button>
-            <button id="seq-tap" class="seq-tap-btn" title="Tap tempo">TAP</button>
             <label style="font-size:10px; opacity:0.6;">BPM</label>
             <input type="number" id="seq-bpm" value="120" min="1" max="999" step="1" title="Beats per minute"/>
             <label style="font-size:10px; opacity:0.6;">÷</label>
@@ -254,12 +299,15 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
             <label style="font-size:10px; opacity:0.6; margin-left:6px; cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Sync BPM to SuperCollider TempoClock.default">
                 <input type="checkbox" id="seq-sync-sc" checked style="margin:0; cursor:pointer;"/>SC
             </label>
+            <span class="seq-transport-spacer"></span>
+            <button id="seq-tap" class="seq-tap-btn" title="Tap tempo">TAP</button>
         </div>
         <div id="macro-grid" class="macro-grid"></div>
         <div id="seq-grid"></div>
     </div>
 </div>
 
+<div id="layout-splitter" title="Drag to resize macro/sequencer area"></div>
 <div id="canvas-wrap"><canvas id="surface"></canvas></div>
 <div id="tooltip"></div>
 <div id="rename-dialog"><input id="rename-input" type="text" maxlength="16" placeholder="knob name"/></div>
@@ -267,6 +315,12 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 <script>
 // ── VS Code webview API ──────────────────────────────────────────────────
 const vscode = acquireVsCodeApi();
+
+function getInitialPersistedState() {
+    const hostState = globalThis.__ENVIL_INITIAL_STATE__;
+    if (hostState && Object.keys(hostState).length > 0) return hostState;
+    return vscode.getState() || null;
+}
 
 // ── Config ───────────────────────────────────────────────────────────────
 const KNOB_RADIUS = 22;
@@ -317,6 +371,14 @@ const tooltip = document.getElementById('tooltip');
 const statusText = document.getElementById('status-text');
 const renameDialog = document.getElementById('rename-dialog');
 const renameInput = document.getElementById('rename-input');
+const toolbarEl = document.getElementById('toolbar');
+const seqSection = document.getElementById('seq-section');
+const layoutSplitter = document.getElementById('layout-splitter');
+
+const MIN_SEQ_SECTION_HEIGHT = 220;
+const MIN_CANVAS_HEIGHT = 140;
+const DEFAULT_SEQ_SECTION_VH = 58;
+let seqSectionHeight = null;
 
 // ── Migrate old pixel-based knobs → normalised ──────────────────────────
 function migrateKnobs(arr) {
@@ -337,7 +399,7 @@ function migrateKnobs(arr) {
 }
 
 // ── Restore persisted state ──────────────────────────────────────────────
-const saved = vscode.getState();
+const saved = getInitialPersistedState();
 if (saved && saved.knobs) {
     knobs = migrateKnobs(saved.knobs);
     nextId = saved.nextId || knobs.length + 1;
@@ -356,6 +418,7 @@ function resize() {
     canvas.width  = w * dpr;
     canvas.height = h * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (typeof applySeqSectionHeight === 'function') applySeqSectionHeight(seqSectionHeight, false);
     draw();
     if (typeof drawAllMacros === 'function') drawAllMacros();
 }
@@ -853,8 +916,10 @@ window.addEventListener('keydown', (e) => {
 });
 
 // ── Persist state ────────────────────────────────────────────────────────
-function persistState() {
-    vscode.setState({
+let _runtimePersistTimer = null;
+
+function buildPersistedState() {
+    return {
         knobs,
         nextId,
         macros: macros.map(m => ({
@@ -873,7 +938,74 @@ function persistState() {
         seqBpm,
         seqSubdiv,
         seqSyncSC,
+        seqSectionHeight,
+    };
+}
+
+function defaultSeqSectionHeight() {
+    const available = window.innerHeight - (toolbarEl ? toolbarEl.offsetHeight : 32) - 10 - MIN_CANVAS_HEIGHT;
+    return Math.round(Math.max(MIN_SEQ_SECTION_HEIGHT, available * (DEFAULT_SEQ_SECTION_VH / 100)));
+}
+
+function maxSeqSectionHeight() {
+    const available = window.innerHeight - (toolbarEl ? toolbarEl.offsetHeight : 32) - 10 - MIN_CANVAS_HEIGHT;
+    return Math.max(MIN_SEQ_SECTION_HEIGHT, Math.round(available));
+}
+
+function clampSeqSectionHeight(height) {
+    const n = Math.round(Number(height) || defaultSeqSectionHeight());
+    return Math.max(MIN_SEQ_SECTION_HEIGHT, Math.min(maxSeqSectionHeight(), n));
+}
+
+function applySeqSectionHeight(height, shouldPersist = false) {
+    seqSectionHeight = clampSeqSectionHeight(height);
+    if (seqSection) seqSection.style.height = `${seqSectionHeight}px`;
+    if (shouldPersist) persistState();
+}
+
+function wireLayoutSplitter() {
+    let dragPointerId = null;
+
+    layoutSplitter.addEventListener('pointerdown', (e) => {
+        const isPrimaryPress = e.button === 0 || e.pointerType === 'touch' || e.pointerType === 'pen';
+        if (!isPrimaryPress) return;
+        dragPointerId = e.pointerId;
+        layoutSplitter.classList.add('dragging');
+        layoutSplitter.setPointerCapture(e.pointerId);
+        e.preventDefault();
     });
+
+    layoutSplitter.addEventListener('pointermove', (e) => {
+        if (dragPointerId == null || e.pointerId !== dragPointerId) return;
+        const top = seqSection.getBoundingClientRect().top;
+        applySeqSectionHeight(e.clientY - top, false);
+        e.preventDefault();
+    });
+
+    const stopDrag = (e) => {
+        if (dragPointerId == null || e.pointerId !== dragPointerId) return;
+        dragPointerId = null;
+        layoutSplitter.classList.remove('dragging');
+        persistState();
+        e.preventDefault();
+    };
+
+    layoutSplitter.addEventListener('pointerup', stopDrag);
+    layoutSplitter.addEventListener('pointercancel', stopDrag);
+}
+
+function persistState() {
+    const state = buildPersistedState();
+    vscode.setState(state);
+    vscode.postMessage({ type: 'panel-state-cache', state });
+}
+
+function scheduleRuntimePersist(delay = 500) {
+    if (_runtimePersistTimer) return;
+    _runtimePersistTimer = setTimeout(() => {
+        _runtimePersistTimer = null;
+        persistState();
+    }, delay);
 }
 
 function updateStatus() {
@@ -934,6 +1066,7 @@ window.addEventListener('message', (event) => {
             drawMacroRow(m);
         }
         if (shouldPersist) persistState();
+        else if (updates.length > 0) scheduleRuntimePersist();
     }
     if (msg.type === 'seq-visual-tick') {
         // Extension host drives the clock; we just update visuals
@@ -1012,36 +1145,58 @@ function updateSeqTapButtonUI() {
         : 'Tap to set local tempo';
 }
 
-function registerTapTempo() {
-    const now = performance.now();
-    flashSeqTapButton();
-
-    if (seqSyncSC) {
-        seqTapTimes = [];
-        vscode.postMessage({ type: 'seq-tempo-tap' });
-        return;
-    }
-
+function tappedBpmFromNow(now) {
     if (seqTapTimes.length > 0 && (now - seqTapTimes[seqTapTimes.length - 1]) > 2200) {
         seqTapTimes = [];
     }
     seqTapTimes.push(now);
     if (seqTapTimes.length > 6) seqTapTimes.shift();
-    if (seqTapTimes.length < 2) return;
+    if (seqTapTimes.length < 2) return null;
 
     const intervals = [];
     for (let i = 1; i < seqTapTimes.length; i++) {
         const dt = seqTapTimes[i] - seqTapTimes[i - 1];
         if (dt >= 120 && dt <= 3000) intervals.push(dt);
     }
-    if (intervals.length === 0) return;
+    if (intervals.length === 0) return null;
 
     const avgInterval = intervals.reduce((sum, dt) => sum + dt, 0) / intervals.length;
-    const nextBpm = Math.max(1, Math.min(999, Math.round(60000 / avgInterval)));
-    seqBpm = nextBpm;
+    return Math.max(1, Math.min(999, Math.round(60000 / avgInterval)));
+}
+
+function syncMacroDurationPair(m, sourceMode = (seqSyncSC ? 'beats' : 'seconds')) {
+    const bpm = Math.max(1, seqBpm || 120);
+    if (sourceMode === 'beats') {
+        const beats = Math.max(0.1, positiveNum(m.durationBeats, (positiveNum(m.durationSec, MACRO_DEFAULT_SECONDS) * bpm) / 60));
+        m.durationBeats = beats;
+        m.durationSec = Math.max(0.1, (beats * 60) / bpm);
+        return;
+    }
+    const sec = Math.max(0.1, positiveNum(m.durationSec, (positiveNum(m.durationBeats, MACRO_DEFAULT_BEATS) * 60) / bpm));
+    m.durationSec = sec;
+    m.durationBeats = Math.max(0.1, (sec * bpm) / 60);
+}
+
+function applyLocalBpm(nextBpm) {
+    const clampedBpm = Math.max(1, Math.min(999, Math.round(nextBpm) || 120));
+    seqBpm = clampedBpm;
     seqBpmInput.value = seqBpm;
     vscode.postMessage({ type: 'seq-set-bpm', bpm: seqBpm, subdiv: seqSubdiv });
     persistState();
+}
+
+function registerTapTempo() {
+    const now = performance.now();
+    flashSeqTapButton();
+    const nextBpm = tappedBpmFromNow(now);
+
+    if (seqSyncSC) {
+        vscode.postMessage({ type: 'seq-tempo-tap', bpm: nextBpm });
+        return;
+    }
+
+    if (nextBpm == null) return;
+    applyLocalBpm(nextBpm);
 }
 
 function createMacroPoints(fill = 0.5) {
@@ -1093,6 +1248,7 @@ function addMacro(name, points, playing, durationSec, durationBeats, currentPos,
         durationBeats: positiveNum(durationBeats, MACRO_DEFAULT_BEATS),
         syncTimer: null,
     };
+    syncMacroDurationPair(m, seqSyncSC ? 'beats' : 'seconds');
     m.currentVal = macroSampleAt(m, m.currentPos);
     macros.push(m);
     renderMacroRow(m);
@@ -1196,10 +1352,12 @@ function renderMacroRow(m) {
         const value = positiveNum(raw, macroDurationDisplay(m));
         if (seqSyncSC) {
             m.durationBeats = value;
+            syncMacroDurationPair(m, 'beats');
         } else {
             m.durationSec = value;
+            syncMacroDurationPair(m, 'seconds');
         }
-        durationInput.value = String(value);
+        durationInput.value = String(macroDurationDisplay(m));
         vscode.postMessage({
             type: 'macro-set-duration',
             name: m.name,
@@ -1220,11 +1378,33 @@ function renderMacroRow(m) {
 
     const canvasWrap = document.createElement('div');
     canvasWrap.className = 'macro-canvas-wrap';
-    canvasWrap.title = 'Left drag: draw / edit curve · Right click: seek';
+    canvasWrap.title = 'Draw in the curve area · Use the bottom bar to seek';
     const canvasEl = document.createElement('canvas');
     canvasEl.className = 'macro-canvas';
     canvasEl.id = 'macro-canvas-' + m.id;
     canvasWrap.appendChild(canvasEl);
+
+    const seekBar = document.createElement('div');
+    seekBar.className = 'macro-seekbar';
+    seekBar.id = 'macro-seekbar-' + m.id;
+    seekBar.title = 'Drag or tap to set macro head position';
+
+    const seekFill = document.createElement('div');
+    seekFill.className = 'macro-seekfill';
+    seekFill.id = 'macro-seekfill-' + m.id;
+    seekBar.appendChild(seekFill);
+
+    const seekHead = document.createElement('div');
+    seekHead.className = 'macro-seekhead';
+    seekHead.id = 'macro-seekhead-' + m.id;
+    seekBar.appendChild(seekHead);
+
+    const seekLabel = document.createElement('div');
+    seekLabel.className = 'macro-seeklabel';
+    seekLabel.textContent = 'SEEK';
+    seekBar.appendChild(seekLabel);
+
+    canvasWrap.appendChild(seekBar);
     row.appendChild(canvasWrap);
 
     const rm = document.createElement('button');
@@ -1241,6 +1421,7 @@ function renderMacroRow(m) {
     }
 
     wireMacroCanvas(canvasEl, m);
+    wireMacroSeekBar(seekBar, m);
 }
 
 function drawMacroRow(m) {
@@ -1320,6 +1501,7 @@ function drawMacroRow(m) {
     g.textBaseline = 'top';
     g.textAlign = 'right';
     g.fillText(m.currentVal.toFixed(2), width - 6, 2);
+    updateMacroSeekBar(m);
 }
 
 function drawAllMacros() {
@@ -1347,6 +1529,14 @@ function syncMacroRowControls(m) {
     }
     if (unit) unit.textContent = macroDurationUnit();
     if (label) label.textContent = m.name;
+    updateMacroSeekBar(m);
+}
+
+function updateMacroSeekBar(m) {
+    const seekFill = document.getElementById('macro-seekfill-' + m.id);
+    const seekHead = document.getElementById('macro-seekhead-' + m.id);
+    if (seekFill) seekFill.style.width = `${clamp01f(m.currentPos) * 100}%`;
+    if (seekHead) seekHead.style.left = `${clamp01f(m.currentPos) * 100}%`;
 }
 
 function updateMacroDurationUIs() {
@@ -1488,6 +1678,14 @@ function seekMacroFromEvent(m, canvasEl, clientX, clientY) {
     persistState();
 }
 
+function seekMacroFromClientX(m, el, clientX) {
+    const rect = el.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+    const pos = clamp01f(x / Math.max(1, rect.width));
+    seekMacroToPos(m, pos);
+    persistState();
+}
+
 function resetMacroHead(m) {
     seekMacroToPos(m, 0);
 }
@@ -1595,8 +1793,43 @@ function wireMacroCanvas(canvasEl, m) {
     canvasEl.addEventListener('touchcancel', finishTouchEdit, { passive: false });
 }
 
+function wireMacroSeekBar(seekBar, m) {
+    let dragPointerId = null;
+
+    seekBar.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    seekBar.addEventListener('pointerdown', (e) => {
+        const isPrimaryPress = e.button === 0 || e.pointerType === 'touch' || e.pointerType === 'pen';
+        if (!isPrimaryPress) return;
+        dragPointerId = e.pointerId;
+        seekBar.setPointerCapture(e.pointerId);
+        seekMacroFromClientX(m, seekBar, e.clientX);
+        e.preventDefault();
+    });
+
+    seekBar.addEventListener('pointermove', (e) => {
+        if (dragPointerId == null || e.pointerId !== dragPointerId) return;
+        seekMacroFromClientX(m, seekBar, e.clientX);
+        e.preventDefault();
+    });
+
+    const stopDrag = (e) => {
+        if (dragPointerId == null || e.pointerId !== dragPointerId) return;
+        seekMacroFromClientX(m, seekBar, e.clientX);
+        dragPointerId = null;
+        e.preventDefault();
+    };
+
+    seekBar.addEventListener('pointerup', stopDrag);
+    seekBar.addEventListener('pointercancel', (e) => {
+        if (dragPointerId == null || e.pointerId !== dragPointerId) return;
+        dragPointerId = null;
+        e.preventDefault();
+    });
+}
+
 // ── Restore persisted macro + sequencer state ────────────────────────────
-const savedState = vscode.getState();
+const savedState = getInitialPersistedState();
 if (savedState && savedState.macros) {
     savedState.macros.forEach(m => addMacro(m.name, m.points, m.playing, m.durationSec, m.durationBeats, m.currentPos, m.loop, m.macroNum));
     macroNextId = savedState.macroNextId || macros.length + 1;
@@ -1608,6 +1841,11 @@ if (savedState && savedState.seqs) {
     if (savedState.seqSubdiv) { seqSubdiv = savedState.seqSubdiv; seqSubdivSel.value = seqSubdiv; }
     if (savedState.seqSyncSC != null) { seqSyncSC = savedState.seqSyncSC; }
 }
+seqSectionHeight = savedState && savedState.seqSectionHeight != null
+    ? savedState.seqSectionHeight
+    : defaultSeqSectionHeight();
+applySeqSectionHeight(seqSectionHeight, false);
+wireLayoutSplitter();
 seqSyncCb.checked = seqSyncSC;
 seqBpmInput.disabled = seqSyncSC;
 seqBpmInput.style.opacity = seqSyncSC ? '0.4' : '1';
@@ -1788,10 +2026,7 @@ seqTapBtn.addEventListener('click', registerTapTempo);
 seqBpmInput.addEventListener('input', onBpmChange);
 seqBpmInput.addEventListener('change', onBpmChange);
 function onBpmChange() {
-    seqBpm = Math.max(1, Math.min(999, parseInt(seqBpmInput.value, 10) || 120));
-    seqBpmInput.value = seqBpm;
-    vscode.postMessage({ type: 'seq-set-bpm', bpm: seqBpm, subdiv: seqSubdiv });
-    persistState();
+    applyLocalBpm(parseInt(seqBpmInput.value, 10) || 120);
 }
 
 seqSubdivSel.addEventListener('change', onSubdivChange);
