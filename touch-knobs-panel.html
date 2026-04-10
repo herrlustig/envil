@@ -327,6 +327,7 @@ const KNOB_RADIUS = 22;
 const KNOB_GRAB_RADIUS = 30;        // slightly larger touch target
 const EDGE_PAD = KNOB_RADIUS + 10;  // px inset so knobs reach full 0–1 at edges
 const MIN_SEND_INTERVAL_MS = 25;    // throttle: max ~40 msgs/sec per knob
+const MACRO_Y_PAD = 6;               // px inset so macro curves reach full 0–1 at top/bottom
 const PROXY_PREFIX = 'v';           // ~v_name in proxyspace
 const MIDI_BASE_NOTE = 60;           // first knob = C3 (MIDI 60), ascending chromatically
 
@@ -1455,7 +1456,7 @@ function drawMacroRow(m) {
     g.beginPath();
     points.forEach((value, i) => {
         const x = (i / (points.length - 1)) * width;
-        const y = (1 - clamp01f(value)) * height;
+        const y = macroPixelY(value, height);
         if (i === 0) g.moveTo(x, y);
         else g.lineTo(x, y);
     });
@@ -1469,7 +1470,7 @@ function drawMacroRow(m) {
     g.beginPath();
     points.forEach((value, i) => {
         const x = (i / (points.length - 1)) * width;
-        const y = (1 - clamp01f(value)) * height;
+        const y = macroPixelY(value, height);
         if (i === 0) g.moveTo(x, y);
         else g.lineTo(x, y);
     });
@@ -1478,7 +1479,7 @@ function drawMacroRow(m) {
     g.stroke();
 
     const playX = clamp01f(m.currentPos) * width;
-    const playY = (1 - macroSampleAt(m, m.currentPos)) * height;
+    const playY = macroPixelY(macroSampleAt(m, m.currentPos), height);
     g.beginPath();
     g.moveTo(playX, 0);
     g.lineTo(playX, height);
@@ -1623,7 +1624,7 @@ function scheduleMacroCurveSync(m, immediate = false) {
 function macroCanvasPos(canvasEl, clientX, clientY) {
     const rect = canvasEl.getBoundingClientRect();
     const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
-    const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
+    const y = clientY - rect.top;   // don't clamp — let overshoot reach exact 0/1
     return { rect, x, y };
 }
 
@@ -1633,7 +1634,14 @@ function macroIndexFromX(width, x, pointsLength) {
 }
 
 function macroValueFromY(height, y) {
-    return clamp01f(1 - (y / Math.max(1, height)));
+    // Map with inset so the physical top/bottom edges overshoot past 0–1
+    const usable = Math.max(1, height - 2 * MACRO_Y_PAD);
+    return clamp01f(1 - ((y - MACRO_Y_PAD) / usable));
+}
+
+function macroPixelY(value, height) {
+    const usable = height - 2 * MACRO_Y_PAD;
+    return MACRO_Y_PAD + (1 - clamp01f(value)) * usable;
 }
 
 function applyMacroDrawAt(m, canvasEl, clientX, clientY) {
