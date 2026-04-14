@@ -911,6 +911,23 @@ function startServersAndSockets(workspaceFolder) {
                 hydraOutput.show(true);
             }
         });
+        // ── MediaPipe events from the capture browser page ─────────────
+        socket.on('mediapipe-landmarks', (landmarks) => {
+            // Forward to touch-knobs handler (same pipeline as webview postMessage)
+            const { handleMediaPipeLandmarks } = require('./touch-knobs');
+            handleMediaPipeLandmarks(landmarks);
+        });
+        socket.on('mediapipe-status', (msg) => {
+            const { handleMediaPipeStatus } = require('./touch-knobs');
+            handleMediaPipeStatus(msg);
+        });
+        socket.on('mediapipe-hello', () => {
+            if (hydraOutput) hydraOutput.appendLine('  📷 MediaPipe capture page connected');
+            // Send current config to the capture page
+            const { getMediaPipeConfig } = require('./touch-knobs');
+            const cfg = getMediaPipeConfig();
+            if (cfg) socket.emit('mediapipe-config', cfg);
+        });
     });
 
     oscPort = new osc.UDPPort({ localAddress: 'localhost', localPort: 3002 });
@@ -921,6 +938,14 @@ function startServersAndSockets(workspaceFolder) {
 
     app.use(express.static(path.join(__dirname, 'hydra')));
     app.use('/files', express.static(path.join(__dirname, 'local', 'files')));
+    // MediaPipe: dedicated Express on port 3003 (separate origin → independent
+    // Chrome camera selection from Hydra on :3000)
+    const mpApp = express();
+    mpApp.use('/mediapipe', express.static(path.join(__dirname, 'mediapipe')));
+    mpApp.use('/lib', express.static(path.join(__dirname, 'hydra', 'lib')));
+    mpApp.listen(3003, () => {
+        if (hydraOutput) hydraOutput.appendLine('  📷 MediaPipe capture server on http://localhost:3003');
+    });
 
     isLoadingCompleted = true;
 }

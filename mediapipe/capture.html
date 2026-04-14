@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ENVIL – Body Tracking</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100vh; overflow: hidden; background: #111; color: #ccc; font-family: 'Segoe UI', sans-serif; }
+#container { position: relative; width: 100%; height: 100%; }
+#webcam { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+#status {
+    position: absolute; top: 8px; left: 8px; z-index: 10;
+    background: rgba(0,0,0,0.7); color: #0f0; padding: 6px 14px;
+    border-radius: 4px; font-size: 13px; font-family: monospace;
+}
+#status.error { color: #f44; }
+#status.loading { color: #ff0; }
+</style>
+</head>
+<body>
+<div id="container">
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="status" class="loading">connecting…</div>
+</div>
+
+<!-- socket.io client (same lib as Hydra page) -->
+<script src="/lib/socket.io.min.js"></script>
+<!-- MediaPipe Holistic (local) -->
+<script src="/mediapipe/holistic.js"></script>
+
+<script>
+'use strict';
+
+const statusEl = document.getElementById('status');
+const videoEl  = document.getElementById('webcam');
+const overlayCanvas = document.getElementById('overlay');
+const overlayCtx = overlayCanvas.getContext('2d');
+
+// ── Socket.io connection ──────────────────────────────────────────────
+const socket = io('http://localhost:3001');
+let connected = false;
+
+// ── Config (received from extension host via socket.io) ───────────────
+let mpSendRate = 15;
+let mpModelComplexity = 1;
+let mpDrawLandmarks = true;
+let lastSendTime = 0;
+
+socket.on('connect', () => {
+    connected = true;
+    statusEl.textContent = 'connected — starting camera…';
+    statusEl.className = 'loading';
+    socket.emit('mediapipe-hello');  // tell extension host we're ready
+    startCapture();
+});
+
+socket.on('disconnect', () => {
+    connected = false;
+    statusEl.textContent = 'disconnected';
+    statusEl.className = 'error';
+});
+
+socket.on('mediapipe-config', (cfg) => {
+    if (cfg.sendRate != null) mpSendRate = cfg.sendRate;
+    if (cfg.modelComplexity != null) mpModelComplexity = cfg.modelComplexity;
+    if (cfg.drawLandmarks != null) mpDrawLandmarks = cfg.drawLandmarks;
+});
+
+// ── Resize overlay to match container ─────────────────────────────────
+function resizeOverlay() {
+    const c = document.getElementById('container');
+    const dpr = window.devicePixelRatio || 1;
+    overlayCanvas.width = c.clientWidth * dpr;
+    overlayCanvas.height = c.clientHeight * dpr;
+    overlayCanvas.style.width = c.clientWidth + 'px';
+    overlayCanvas.style.height = c.clientHeight + 'px';
+    overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+new ResizeObserver(resizeOverlay).observe(document.getElementById('container'));
+
+// ── Webcam selection: prefer built-in (non-virtual) ───────────────────
+async function getBuiltInCameraId() {
+    try {
+        // First request permission with a generic constraint
+        // (labels are empty until permission is granted)
+        const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        tempStream.getTracks().forEach(t => t.stop());
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cameras = devices.filter(d => d.kind === 'videoinput');
+        if (cameras.length === 0) return undefined;
+
+        const virtualPatterns = /virtual|obs|snap|manycam|xsplit|fake|droidcam/i;
+        const builtIn = cameras.find(c => c.label && !virtualPatterns.test(c.label));
+        const chosen = builtIn || cameras[0];
+        console.log('[mediapipe] cameras:', cameras.map(c => c.label));
+        console.log('[mediapipe] chosen:', chosen.label, chosen.deviceId);
+        return chosen.deviceId || undefined;
+    } catch (e) {
+        console.warn('[mediapipe] camera enumeration failed:', e);
+        return undefined;
+    }
+}
+
+// ── Drawing helpers ───────────────────────────────────────────────────
+function drawDot(x, y, color, radius) {
+    const w = overlayCanvas.clientWidth, h = overlayCanvas.clientHeight;
+    overlayCtx.beginPath();
+    overlayCtx.arc(x * w, y * h, radius, 0, Math.PI * 2);
+    overlayCtx.fillStyle = color;
+    overlayCtx.fill();
+}
+
+function drawLine(x1, y1, x2, y2, color) {
+    const w = overlayCanvas.clientWidth, h = overlayCanvas.clientHeight;
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(x1 * w, y1 * h);
+    overlayCtx.lineTo(x2 * w, y2 * h);
+    overlayCtx.strokeStyle = color;
+    overlayCtx.lineWidth = 2;
+    overlayCtx.stroke();
+}
+
+function clearOverlay() {
+    overlayCtx.clearRect(0, 0, overlayCanvas.clientWidth, overlayCanvas.clientHeight);
+}
+
+function drawAllLandmarks(results) {
+    clearOverlay();
+    if (!mpDrawLandmarks) return;
+    const a = 0.8;
+
+    if (results.poseLandmarks) {
+        const pl = results.poseLandmarks;
+        const connections = [
+            [11,12],[11,13],[13,15],[12,14],[14,16],
+            [11,23],[12,24],[23,24],[23,25],[24,26],
+        ];
+        for (const [i,j] of connections) {
+            if (pl[i] && pl[j]) drawLine(1-pl[i].x, pl[i].y, 1-pl[j].x, pl[j].y, `rgba(0,255,170,${a*0.4})`);
+        }
+        for (const idx of [0,11,12,13,14,15,16,23,24]) {
+            if (pl[idx]) drawDot(1-pl[idx].x, pl[idx].y, `rgba(0,255,170,${a})`, 4);
+        }
+    }
+
+    if (results.leftHandLandmarks) {
+        for (const lm of results.leftHandLandmarks) drawDot(1-lm.x, lm.y, `rgba(255,100,100,${a*0.6})`, 2);
+        for (const idx of [4,8,12,16,20]) {
+            const lm = results.leftHandLandmarks[idx];
+            if (lm) drawDot(1-lm.x, lm.y, `rgba(255,100,100,${a})`, 4);
+        }
+    }
+
+    if (results.rightHandLandmarks) {
+        for (const lm of results.rightHandLandmarks) drawDot(1-lm.x, lm.y, `rgba(100,100,255,${a*0.6})`, 2);
+        for (const idx of [4,8,12,16,20]) {
+            const lm = results.rightHandLandmarks[idx];
+            if (lm) drawDot(1-lm.x, lm.y, `rgba(100,100,255,${a})`, 4);
+        }
+    }
+
+    if (results.faceLandmarks) {
+        const fl = results.faceLandmarks;
+        for (const idx of [1,152,33,263,13,14]) {
+            if (fl[idx]) drawDot(1-fl[idx].x, fl[idx].y, `rgba(255,220,80,${a*0.7})`, 3);
+        }
+    }
+}
+
+// ── Extract landmarks into compact message ────────────────────────────
+function extractLandmarks(results) {
+    const lm = {};
+    const fmt = (v) => v != null ? parseFloat(v.toFixed(4)) : null;
+    const pt = (landmark) => landmark ? { x: fmt(1-landmark.x), y: fmt(landmark.y) } : null;
+
+    if (results.poseLandmarks) {
+        const pl = results.poseLandmarks;
+        lm.pose = {
+            nose: pt(pl[0]),
+            leftShoulder: pt(pl[11]), rightShoulder: pt(pl[12]),
+            leftElbow: pt(pl[13]),    rightElbow: pt(pl[14]),
+            leftWrist: pt(pl[15]),    rightWrist: pt(pl[16]),
+            leftHip: pt(pl[23]),      rightHip: pt(pl[24]),
+        };
+    }
+
+    if (results.leftHandLandmarks) {
+        const lh = results.leftHandLandmarks;
+        lm.leftHand = {
+            thumb: pt(lh[4]), index: pt(lh[8]), middle: pt(lh[12]),
+            ring: pt(lh[16]), pinky: pt(lh[20]),
+        };
+        if (lh[4] && lh[8]) {
+            const dx = lh[4].x - lh[8].x, dy = lh[4].y - lh[8].y;
+            lm.handOpenness = lm.handOpenness || {};
+            lm.handOpenness.left = fmt(Math.min(1, Math.sqrt(dx*dx + dy*dy) * 4));
+        }
+    }
+    if (results.rightHandLandmarks) {
+        const rh = results.rightHandLandmarks;
+        lm.rightHand = {
+            thumb: pt(rh[4]), index: pt(rh[8]), middle: pt(rh[12]),
+            ring: pt(rh[16]), pinky: pt(rh[20]),
+        };
+        if (rh[4] && rh[8]) {
+            const dx = rh[4].x - rh[8].x, dy = rh[4].y - rh[8].y;
+            lm.handOpenness = lm.handOpenness || {};
+            lm.handOpenness.right = fmt(Math.min(1, Math.sqrt(dx*dx + dy*dy) * 4));
+        }
+    }
+
+    if (results.faceLandmarks) {
+        const fl = results.faceLandmarks;
+        const face = {};
+        if (fl[1]) face.noseTip = pt(fl[1]);
+        if (fl[13] && fl[14]) {
+            face.mouthCenter = { x: fmt(1-(fl[13].x+fl[14].x)/2), y: fmt((fl[13].y+fl[14].y)/2) };
+        }
+        if (Object.keys(face).length > 0) lm.face = face;
+    }
+
+    return lm;
+}
+
+// ── MediaPipe results callback ────────────────────────────────────────
+function onResults(results) {
+    drawAllLandmarks(results);
+
+    const now = Date.now();
+    const minInterval = 1000 / Math.max(1, mpSendRate);
+    if (now - lastSendTime < minInterval) return;
+    lastSendTime = now;
+
+    const landmarks = extractLandmarks(results);
+    if (Object.keys(landmarks).length > 0 && connected) {
+        socket.emit('mediapipe-landmarks', landmarks);
+    }
+}
+
+// ── Video frame loop ──────────────────────────────────────────────────
+// Uses a Web Worker timer so the loop keeps running when the tab is
+// hidden or the browser window is minimised (requestAnimationFrame
+// pauses entirely in those cases).
+let holistic = null;
+let loopRunning = false;
+
+// Tiny inline Worker — just posts 'tick' messages at a fixed interval.
+const timerBlob = new Blob([
+    `let id=null; onmessage=e=>{if(e.data.cmd==='start'){clearInterval(id);id=setInterval(()=>postMessage('tick'),e.data.ms||66)}if(e.data.cmd==='stop'){clearInterval(id);id=null}}`
+], { type: 'application/javascript' });
+const timerWorker = new Worker(URL.createObjectURL(timerBlob));
+
+timerWorker.onmessage = () => {
+    if (!loopRunning || !holistic || videoEl.paused || videoEl.ended) return;
+    if (videoEl.readyState >= 2) {
+        holistic.send({ image: videoEl }).catch(() => {});
+        // onResults callback fires asynchronously when holistic finishes
+    }
+};
+
+function startLoop() {
+    loopRunning = true;
+    // ~15 fps (66ms) — matches the camera frameRate constraint
+    timerWorker.postMessage({ cmd: 'start', ms: 66 });
+}
+function stopLoop() {
+    loopRunning = false;
+    timerWorker.postMessage({ cmd: 'stop' });
+}
+
+// ── Start capture ─────────────────────────────────────────────────────
+async function startCapture() {
+    try {
+        statusEl.textContent = 'requesting camera…';
+        statusEl.className = 'loading';
+
+        const cameraId = await getBuiltInCameraId();
+        const constraints = {
+            video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 30 } },
+            audio: false,
+        };
+        if (cameraId) constraints.video.deviceId = { ideal: cameraId };
+
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        videoEl.srcObject = stream;
+        await videoEl.play();
+        resizeOverlay();
+
+        statusEl.textContent = 'loading model…';
+
+        holistic = new Holistic({
+            locateFile: (file) => '/mediapipe/' + file,
+        });
+        holistic.setOptions({
+            modelComplexity: mpModelComplexity,
+            smoothLandmarks: true,
+            enableSegmentation: false,
+            smoothSegmentation: false,
+            refineFaceLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+        });
+        holistic.onResults(onResults);
+
+        statusEl.textContent = 'tracking ✓';
+        statusEl.className = '';
+
+        startLoop();
+
+        if (connected) socket.emit('mediapipe-status', { status: 'started' });
+
+    } catch (err) {
+        console.error('[mediapipe] start failed:', err);
+        statusEl.textContent = '✖ ' + (err.message || err);
+        statusEl.className = 'error';
+        if (connected) socket.emit('mediapipe-status', { status: 'error', error: String(err.message || err) });
+    }
+}
+
+// ── Notify extension on page close ────────────────────────────────────
+window.addEventListener('beforeunload', () => {
+    if (connected) socket.emit('mediapipe-status', { status: 'stopped' });
+});
+</script>
+</body>
+</html>

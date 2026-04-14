@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:;"/>
 <style>
 /* ── Reset ───────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -25,6 +26,9 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 #toolbar button:hover { opacity: 0.85; }
 #toolbar button.danger {
     background: var(--vscode-errorForeground, #c44);
+}
+#toolbar button.mp-active {
+    background: #0a4; color: #fff;
 }
 #toolbar .spacer { flex: 1; }
 #toolbar .status { font-size: 11px; opacity: 0.6; }
@@ -236,8 +240,14 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 #canvas-wrap {
     flex: 1; overflow: hidden; min-height: 140px; position: relative;
 }
+#mp-overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    z-index: 1; pointer-events: none; display: none;
+}
 #surface {
+    position: relative; z-index: 2;
     display: block; width: 100%; height: 100%;
+    /* transparent background so video shows through */
 }
 
 /* ── Knob tooltip ─────────────────────────────────────────────────────── */
@@ -271,6 +281,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     <button id="btn-add" title="Add a new knob">＋ Add Knob</button>
     <button id="btn-add-macro" title="Add a new macro curve">＋ Add Macro</button>
     <button id="btn-add-seq" title="Add a new sequencer row">＋ Add Seq</button>
+    <button id="btn-mp-toggle" title="Open MediaPipe webcam body tracking in browser">📷 Body</button>
     <span class="spacer"></span>
     <span class="status" id="status-text">0 knobs</span>
 </div>
@@ -307,7 +318,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 </div>
 
 <div id="layout-splitter" title="Drag to resize macro/sequencer area"></div>
-<div id="canvas-wrap"><canvas id="surface"></canvas></div>
+<div id="canvas-wrap"><canvas id="mp-overlay"></canvas><canvas id="surface"></canvas></div>
 <div id="tooltip"></div>
 <div id="rename-dialog"><input id="rename-input" type="text" maxlength="16" placeholder="knob name"/></div>
 
@@ -1073,6 +1084,18 @@ window.addEventListener('message', (event) => {
             if (s) s.currentStep = t.step;
         }
         updateSeqStepVisuals();
+    }
+    if (msg.type === 'mediapipe-config') {
+        // Settings changed from extension host
+        if (typeof mpApplyConfig === 'function') {
+            mpApplyConfig(msg);
+        }
+    }
+    if (msg.type === 'mediapipe-overlay') {
+        // Landmark data forwarded from extension host (originally from capture page)
+        if (typeof mpDrawOverlay === 'function') {
+            mpDrawOverlay(msg.landmarks);
+        }
     }
 });
 
@@ -2088,6 +2111,166 @@ if (seqs.length === 0) {
 } else if (macros.length > 0) {
     persistState();
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── MEDIAPIPE OVERLAY (receives landmark data from extension host) ───────
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The actual camera capture + MediaPipe Holistic processing runs in a
+// separate browser page (served by Express at /mediapipe/capture.html).
+// Landmark data flows: capture page → socket.io → extension host → webview.
+// This module just draws the overlay and manages the toggle button.
+//
+
+(function mediaPipeOverlayModule() {
+    'use strict';
+
+    const mpCfg = globalThis.__ENVIL_MP_CONFIG__ || {};
+    let mpDrawLandmarks = mpCfg.drawLandmarks !== false;
+    let mpActive = false;  // true while capture page is sending landmarks
+
+    // ── DOM refs ──────────────────────────────────────────────────────────
+    const overlayCanvas = document.getElementById('mp-overlay');
+    const overlayCtx = overlayCanvas.getContext('2d');
+    const wrap = document.getElementById('canvas-wrap');
+
+    // ── Overlay resize ────────────────────────────────────────────────────
+    function resizeOverlay() {
+        const dpr = window.devicePixelRatio || 1;
+        const w = wrap.clientWidth || 1;
+        const h = wrap.clientHeight || 1;
+        overlayCanvas.width = w * dpr;
+        overlayCanvas.height = h * dpr;
+        overlayCanvas.style.width = w + 'px';
+        overlayCanvas.style.height = h + 'px';
+        overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    new ResizeObserver(() => { if (mpActive) resizeOverlay(); }).observe(wrap);
+
+    // ── Draw helpers ──────────────────────────────────────────────────────
+    function dot(x, y, color, radius) {
+        const w = wrap.clientWidth || 1;
+        const h = wrap.clientHeight || 1;
+        overlayCtx.beginPath();
+        overlayCtx.arc(x * w, y * h, radius, 0, Math.PI * 2);
+        overlayCtx.fillStyle = color;
+        overlayCtx.fill();
+    }
+    function line(x1, y1, x2, y2, color) {
+        const w = wrap.clientWidth || 1;
+        const h = wrap.clientHeight || 1;
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(x1 * w, y1 * h);
+        overlayCtx.lineTo(x2 * w, y2 * h);
+        overlayCtx.strokeStyle = color;
+        overlayCtx.lineWidth = 1.5;
+        overlayCtx.stroke();
+    }
+    function clearOverlay() {
+        const w = wrap.clientWidth || 1;
+        const h = wrap.clientHeight || 1;
+        overlayCtx.clearRect(0, 0, w, h);
+    }
+
+    // ── Draw landmarks from extracted compact format ──────────────────────
+    // Landmarks arrive already in compact form: { pose: { nose: {x,y}, ... }, leftHand, rightHand, face, handOpenness }
+    // x/y are normalised 0–1 (already mirrored so left=left from performer perspective)
+    function drawLandmarks(lm) {
+        clearOverlay();
+        if (!mpDrawLandmarks || !lm) return;
+
+        const a = 0.8;
+
+        // ── Pose ──────────────────────────────────────────────────────────
+        if (lm.pose) {
+            const p = lm.pose;
+            // Skeleton connections
+            const conns = [
+                ['lshldr', 'rshldr'], ['lshldr', 'lelbow'], ['lelbow', 'lwrist'],
+                ['rshldr', 'relbow'], ['relbow', 'rwrist'],
+                ['lshldr', 'lhip'], ['rshldr', 'rhip'], ['lhip', 'rhip'],
+            ];
+            const nameMap = {
+                nose: p.nose, lwrist: p.leftWrist, rwrist: p.rightWrist,
+                lshldr: p.leftShoulder, rshldr: p.rightShoulder,
+                lelbow: p.leftElbow, relbow: p.rightElbow,
+                lhip: p.leftHip, rhip: p.rightHip,
+            };
+            for (const [a1, b1] of conns) {
+                const pa = nameMap[a1], pb = nameMap[b1];
+                if (pa && pb) line(pa.x, pa.y, pb.x, pb.y, `rgba(0,255,170,0.3)`);
+            }
+            // Key dots
+            for (const k of Object.values(nameMap)) {
+                if (k) dot(k.x, k.y, `rgba(0,255,170,${a})`, 4);
+            }
+        }
+
+        // ── Left hand ─────────────────────────────────────────────────────
+        if (lm.leftHand) {
+            for (const pt of Object.values(lm.leftHand)) {
+                if (pt) dot(pt.x, pt.y, `rgba(255,100,100,${a})`, 4);
+            }
+        }
+
+        // ── Right hand ────────────────────────────────────────────────────
+        if (lm.rightHand) {
+            for (const pt of Object.values(lm.rightHand)) {
+                if (pt) dot(pt.x, pt.y, `rgba(100,100,255,${a})`, 4);
+            }
+        }
+
+        // ── Face key points ───────────────────────────────────────────────
+        if (lm.face) {
+            for (const pt of Object.values(lm.face)) {
+                if (pt) dot(pt.x, pt.y, `rgba(255,220,80,0.7)`, 3);
+            }
+        }
+    }
+
+    // ── Global handler called from message listener ───────────────────────
+    globalThis.mpDrawOverlay = function(landmarks) {
+        if (!mpActive) {
+            mpActive = true;
+            overlayCanvas.style.display = 'block';
+            resizeOverlay();
+            updateMpButton();
+        }
+        drawLandmarks(landmarks);
+    };
+
+    // ── Config updater (settings changed) ─────────────────────────────────
+    globalThis.mpApplyConfig = function(cfg) {
+        if (cfg.drawLandmarks != null) mpDrawLandmarks = cfg.drawLandmarks;
+    };
+
+    // ── Toolbar toggle button ─────────────────────────────────────────────
+    const mpToggleBtn = document.getElementById('btn-mp-toggle');
+    function updateMpButton() {
+        mpToggleBtn.classList.toggle('mp-active', mpActive);
+        mpToggleBtn.textContent = mpActive ? '📷 Body ✓' : '📷 Body';
+    }
+    updateMpButton();
+
+    mpToggleBtn.addEventListener('click', () => {
+        // Open the capture page in the user's browser
+        vscode.postMessage({ type: 'mediapipe-open-capture' });
+    });
+
+    // ── Auto-hide overlay after 3s without data ───────────────────────────
+    let _hideTimeout = null;
+    const origDraw = globalThis.mpDrawOverlay;
+    globalThis.mpDrawOverlay = function(landmarks) {
+        clearTimeout(_hideTimeout);
+        _hideTimeout = setTimeout(() => {
+            mpActive = false;
+            overlayCanvas.style.display = 'none';
+            clearOverlay();
+            updateMpButton();
+        }, 3000);
+        origDraw(landmarks);
+    };
+})();
 </script>
 </body>
 </html>

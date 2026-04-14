@@ -43,6 +43,20 @@ let _seqOscTargetPort = 57120; // sclang NetAddr.langPort default
 let _seqOscTargetHost = '127.0.0.1';
 let _seqOscEnabled = true;   // master on/off from setting
 
+// ── MediaPipe Holistic state ─────────────────────────────────────────────
+let _mpEnabled = false;          // from envil.mediapipe.enabled
+let _mpSendRate = 15;            // max landmark msgs/sec to SC
+let _mpModelComplexity = 1;      // 0=lite, 1=full, 2=heavy
+let _mpVideoOpacity = 0.25;      // webcam background opacity
+let _mpDrawLandmarks = true;     // draw overlay landmarks
+let _mpLastSendTime = 0;         // throttle timestamp
+const MP_LAG_TIME = 0.08;        // SC lag for smooth landmark control
+const MP_PROXY_SRC = `{ |x=0, y=0, lagTime=${MP_LAG_TIME}| [Lag.kr(x, lagTime), Lag.kr(y, lagTime)] }`;
+// 10-channel collector: one hand's 5 fingertips (thumb/index/mid/ring/pinky × x,y)
+const MP_FINGERS5_SRC = `{ |thumb_x=0,thumb_y=0, idx_x=0,idx_y=0, mid_x=0,mid_y=0, ring_x=0,ring_y=0, pinky_x=0,pinky_y=0, lagTime=${MP_LAG_TIME}| [thumb_x,thumb_y,idx_x,idx_y,mid_x,mid_y,ring_x,ring_y,pinky_x,pinky_y].collect{|v| Lag.kr(v, lagTime) } }`;
+// 20-channel collector: both hands' fingertips
+const MP_FINGERS10_SRC = `{ |lt_x=0,lt_y=0,li_x=0,li_y=0,lm_x=0,lm_y=0,lr_x=0,lr_y=0,lp_x=0,lp_y=0, rt_x=0,rt_y=0,ri_x=0,ri_y=0,rm_x=0,rm_y=0,rr_x=0,rr_y=0,rp_x=0,rp_y=0, lagTime=${MP_LAG_TIME}| [lt_x,lt_y,li_x,li_y,lm_x,lm_y,lr_x,lr_y,lp_x,lp_y,rt_x,rt_y,ri_x,ri_y,rm_x,rm_y,rr_x,rr_y,rp_x,rp_y].collect{|v| Lag.kr(v, lagTime) } }`;
+
 // ── Host-side macro curve state ──────────────────────────────────────────
 let _macros = [];            // [{ name, macroNum, points, position, playing, durationSec, durationBeats, loop }]
 let _macroTimer = null;
@@ -72,6 +86,14 @@ function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath,
     _seqOscEnabled = seqCfg.get('oscEnabled', true);
     ensureSeqOscPort();
 
+    // ── MediaPipe config ─────────────────────────────────────────────────
+    const mpCfg = vscode.workspace.getConfiguration('envil.mediapipe');
+    _mpEnabled = mpCfg.get('enabled', false);
+    _mpSendRate = mpCfg.get('sendRate', 15);
+    _mpModelComplexity = mpCfg.get('modelComplexity', 1);
+    _mpVideoOpacity = mpCfg.get('videoOpacity', 0.25);
+    _mpDrawLandmarks = mpCfg.get('drawLandmarks', true);
+
     // Re-read settings on change
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(e => {
@@ -80,6 +102,32 @@ function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath,
                 _seqOscTargetPort = cfg.get('oscTargetPort', 57120);
                 _seqOscTargetHost = cfg.get('oscTargetHost', '127.0.0.1');
                 _seqOscEnabled = cfg.get('oscEnabled', true);
+            }
+            if (e.affectsConfiguration('envil.mediapipe')) {
+                const mc = vscode.workspace.getConfiguration('envil.mediapipe');
+                _mpEnabled = mc.get('enabled', false);
+                _mpSendRate = mc.get('sendRate', 15);
+                _mpModelComplexity = mc.get('modelComplexity', 1);
+                _mpVideoOpacity = mc.get('videoOpacity', 0.25);
+                _mpDrawLandmarks = mc.get('drawLandmarks', true);
+                // Push config to webview overlay
+                if (_panel) {
+                    _panel.webview.postMessage({
+                        type: 'mediapipe-config',
+                        drawLandmarks: _mpDrawLandmarks,
+                    });
+                }
+                // Push config to capture page via socket.io
+                const io = _getIO && _getIO();
+                if (io) {
+                    io.emit('mediapipe-config', {
+                        enabled: _mpEnabled,
+                        sendRate: _mpSendRate,
+                        modelComplexity: _mpModelComplexity,
+                        videoOpacity: _mpVideoOpacity,
+                        drawLandmarks: _mpDrawLandmarks,
+                    });
+                }
             }
         }),
     );
@@ -142,15 +190,18 @@ function openPanel(context) {
         {
             enableScripts: true,
             retainContextWhenHidden: true,   // keep canvas alive when tab not visible
-            localResourceRoots: [],          // no local resources needed
         }
     );
 
     // Load HTML
     const saved = loadLayout();
     const htmlPath = path.join(context.extensionPath, 'touch-knobs-panel.html');
-    const rawHtml = fs.readFileSync(htmlPath, 'utf-8');
-    const initialStateScript = `globalThis.__ENVIL_INITIAL_STATE__ = ${serializeForWebview(saved || {})};`;
+    let rawHtml = fs.readFileSync(htmlPath, 'utf-8');
+
+    const initialStateScript = `globalThis.__ENVIL_INITIAL_STATE__ = ${serializeForWebview(saved || {})};
+    globalThis.__ENVIL_MP_CONFIG__ = ${JSON.stringify({
+        drawLandmarks: _mpDrawLandmarks,
+    })};`;
     _panel.webview.html = rawHtml.replace(
         'const vscode = acquireVsCodeApi();',
         `const vscode = acquireVsCodeApi();\n${initialStateScript}`,
@@ -301,6 +352,140 @@ function handleMessage(msg) {
 
         case 'panel-state-cache': {
             if (msg.state) saveLayout(msg.state);
+            break;
+        }
+
+        // ── MediaPipe landmark messages ──────────────────────────────────
+
+        case 'mediapipe-landmarks': {
+            // Process even if _mpEnabled is false (user may have toggled via UI button)
+            const now = Date.now();
+            const minInterval = 1000 / Math.max(1, _mpSendRate);
+            if (now - _mpLastSendTime < minInterval) break;
+            _mpLastSendTime = now;
+
+            const lm = msg.landmarks;
+            if (!lm) break;
+
+            // Build a single batched SC expression for all landmark proxies.
+            // Each proxy is ~mp_<name> with \x, \y (normalized 0–1).
+            // x is mirrored (1-x) so left=left from the performer's perspective.
+            const parts = [];
+            const hydraData = {};
+
+            const ensureProxy = (name) =>
+                `if(~mp_${name}.source.isNil, { ~mp_${name}.mold(2, \\control); ~mp_${name} = ${MP_PROXY_SRC} }, ` +
+                `{ if(Server.default.serverRunning and: { ~mp_${name}.isPlaying.not }, { ~mp_${name}.send }) })`;
+
+            const setProxy = (name, x, y) => {
+                if (x == null || y == null) return;
+                parts.push(`${ensureProxy(name)}; ~mp_${name}.set(\\x, ${x}, \\y, ${y})`);
+                hydraData[name] = { x, y };
+            };
+
+            // ── Pose landmarks ────────────────────────────────────────────
+            if (lm.pose) {
+                if (lm.pose.nose)           setProxy('nose',    lm.pose.nose.x,           lm.pose.nose.y);
+                if (lm.pose.leftWrist)      setProxy('lwrist',  lm.pose.leftWrist.x,      lm.pose.leftWrist.y);
+                if (lm.pose.rightWrist)     setProxy('rwrist',  lm.pose.rightWrist.x,     lm.pose.rightWrist.y);
+                if (lm.pose.leftShoulder)   setProxy('lshldr',  lm.pose.leftShoulder.x,  lm.pose.leftShoulder.y);
+                if (lm.pose.rightShoulder)  setProxy('rshldr',  lm.pose.rightShoulder.x, lm.pose.rightShoulder.y);
+                if (lm.pose.leftElbow)      setProxy('lelbow',  lm.pose.leftElbow.x,      lm.pose.leftElbow.y);
+                if (lm.pose.rightElbow)     setProxy('relbow',  lm.pose.rightElbow.x,     lm.pose.rightElbow.y);
+                if (lm.pose.leftHip)        setProxy('lhip',    lm.pose.leftHip.x,        lm.pose.leftHip.y);
+                if (lm.pose.rightHip)       setProxy('rhip',    lm.pose.rightHip.x,       lm.pose.rightHip.y);
+            }
+
+            // ── Hand landmarks (fingertips, 2ch each = x,y) ───────────
+            const fingerNames = ['thumb', 'index', 'middle', 'ring', 'pinky'];
+            const fingerProxyNames = { thumb: 'thumb', index: 'idx', middle: 'mid', ring: 'ring', pinky: 'pinky' };
+
+            if (lm.leftHand) {
+                for (const fn of fingerNames) {
+                    const f = lm.leftHand[fn];
+                    if (f) setProxy('l' + fingerProxyNames[fn], f.x, f.y);
+                }
+            }
+            if (lm.rightHand) {
+                for (const fn of fingerNames) {
+                    const f = lm.rightHand[fn];
+                    if (f) setProxy('r' + fingerProxyNames[fn], f.x, f.y);
+                }
+            }
+
+            // ── Fingertip collector proxies ────────────────────────────
+            // ~mp_lfingers (10ch), ~mp_rfingers (10ch), ~mp_fingers (20ch)
+            const argNames5 = ['thumb', 'idx', 'mid', 'ring', 'pinky'];
+
+            const buildFingerCollector = (handData, proxyName, nCh, src, argPfx) => {
+                if (!handData) return;
+                const args = argNames5.map((a, i) => {
+                    const f = handData[fingerNames[i]];
+                    return `\\${argPfx}${a}_x, ${f ? f.x : 0}, \\${argPfx}${a}_y, ${f ? f.y : 0}`;
+                }).join(', ');
+                const ensure = `if(~mp_${proxyName}.source.isNil, { ~mp_${proxyName}.mold(${nCh}, \\control); ~mp_${proxyName} = ${src} }, ` +
+                    `{ if(Server.default.serverRunning and: { ~mp_${proxyName}.isPlaying.not }, { ~mp_${proxyName}.send }) })`;
+                parts.push(`${ensure}; ~mp_${proxyName}.set(${args})`);
+            };
+
+            if (lm.leftHand)
+                buildFingerCollector(lm.leftHand, 'lfingers', 10, MP_FINGERS5_SRC, '');
+            if (lm.rightHand)
+                buildFingerCollector(lm.rightHand, 'rfingers', 10, MP_FINGERS5_SRC, '');
+
+            // Global 20-channel collector
+            if (lm.leftHand || lm.rightHand) {
+                const lh = lm.leftHand || {}, rh = lm.rightHand || {};
+                const lPre = ['lt','li','lm','lr','lp'], rPre = ['rt','ri','rm','rr','rp'];
+                const allPre = [...lPre, ...rPre];
+                const allFingers = [...fingerNames.map(fn => lh[fn]), ...fingerNames.map(fn => rh[fn])];
+                const args20 = allPre.map((p, i) => {
+                    const f = allFingers[i];
+                    return `\\${p}_x, ${f ? f.x : 0}, \\${p}_y, ${f ? f.y : 0}`;
+                }).join(', ');
+                const ensure20 = `if(~mp_fingers.source.isNil, { ~mp_fingers.mold(20, \\control); ~mp_fingers = ${MP_FINGERS10_SRC} }, ` +
+                    `{ if(Server.default.serverRunning and: { ~mp_fingers.isPlaying.not }, { ~mp_fingers.send }) })`;
+                parts.push(`${ensure20}; ~mp_fingers.set(${args20})`);
+            }
+
+            // ── Face key points ───────────────────────────────────────────
+            if (lm.face) {
+                if (lm.face.noseTip)     setProxy('fnose', lm.face.noseTip.x,     lm.face.noseTip.y);
+                if (lm.face.mouthCenter) setProxy('fmouth', lm.face.mouthCenter.x, lm.face.mouthCenter.y);
+            }
+
+            // ── Aggregated metrics ────────────────────────────────────────
+            if (lm.handOpenness) {
+                // ~mp_open: x = left hand openness (0–1), y = right hand openness (0–1)
+                const lo = lm.handOpenness.left != null ? lm.handOpenness.left : 0;
+                const ro = lm.handOpenness.right != null ? lm.handOpenness.right : 0;
+                setProxy('open', lo, ro);
+            }
+
+            if (parts.length > 0) {
+                sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${parts.join('; ')} })`, true);
+            }
+            sendHydra('mediapipe-update', hydraData);
+            break;
+        }
+
+        case 'mediapipe-status': {
+            if (msg.status === 'starting') log('  📷 MediaPipe Holistic starting…');
+            else if (msg.status === 'started') log('  📷 MediaPipe Holistic started');
+            else if (msg.status === 'stopped') log('  📷 MediaPipe Holistic stopped');
+            else if (msg.status === 'error') {
+                log(`  ⚠ MediaPipe error: ${msg.error}`);
+                vscode.window.showWarningMessage(`MediaPipe: ${msg.error}`);
+            }
+            break;
+        }
+
+        case 'mediapipe-open-capture': {
+            // User clicked Body button — open the capture page in the default browser
+            // Port 3003 = separate origin → Chrome allows independent camera selection
+            const url = 'http://localhost:3003/mediapipe/capture.html';
+            vscode.env.openExternal(vscode.Uri.parse(url));
+            log('  📷 Opening MediaPipe capture page in browser…');
             break;
         }
 
@@ -1067,4 +1252,45 @@ async function initWorkspace(context) {
     openPanel(context);
 }
 
-module.exports = { registerTouchKnobs, hasEnvilDir };
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPORTED MEDIAPIPE HANDLERS  (called from extension.js socket.io listeners)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Process incoming MediaPipe landmarks (from socket.io capture page).
+ * Mirrors the 'mediapipe-landmarks' case in handleMessage but is callable
+ * from extension.js without needing the webview postMessage wrapper.
+ */
+function handleMediaPipeLandmarks(landmarks) {
+    // Reuse the existing handleMessage pathway — it expects { type, landmarks }
+    handleMessage({ type: 'mediapipe-landmarks', landmarks });
+    // Also forward to webview so it can draw the overlay
+    if (_panel) {
+        _panel.webview.postMessage({
+            type: 'mediapipe-overlay',
+            landmarks,
+        });
+    }
+}
+
+/**
+ * Process incoming MediaPipe status change (from socket.io capture page).
+ */
+function handleMediaPipeStatus(msg) {
+    handleMessage({ type: 'mediapipe-status', ...msg });
+}
+
+/**
+ * Return the current mediapipe config for sending to the capture page.
+ */
+function getMediaPipeConfig() {
+    return {
+        enabled: _mpEnabled,
+        sendRate: _mpSendRate,
+        modelComplexity: _mpModelComplexity,
+        videoOpacity: _mpVideoOpacity,
+        drawLandmarks: _mpDrawLandmarks,
+    };
+}
+
+module.exports = { registerTouchKnobs, hasEnvilDir, handleMediaPipeLandmarks, handleMediaPipeStatus, getMediaPipeConfig };
