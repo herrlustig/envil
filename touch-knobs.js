@@ -14,6 +14,7 @@ const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const osc = require('osc');
 
 const PROXY_PREFIX = 'v';           // → ~v_name
 const DEFAULT_LAG_TIME = 0.05;      // 50ms lag for smooth SC control
@@ -34,6 +35,13 @@ let _seqBpm = 120;
 let _seqSubdiv = 4;
 let _seqTimer = null;        // setInterval ID
 let _seqSyncSC = true;       // sync to SC TempoClock
+
+// ── Host-side sequencer OSC output ───────────────────────────────────────
+let _seqOscPort = null;      // osc.UDPPort for sending sequencer events
+let _seqOscReady = false;    // true once the UDP socket is bound and ready
+let _seqOscTargetPort = 57120; // sclang NetAddr.langPort default
+let _seqOscTargetHost = '127.0.0.1';
+let _seqOscEnabled = true;   // master on/off from setting
 
 // ── Host-side macro curve state ──────────────────────────────────────────
 let _macros = [];            // [{ name, macroNum, points, position, playing, durationSec, durationBeats, loop }]
@@ -56,6 +64,25 @@ function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath,
     _getIO = getIO;
     _hydraOutput = hydraOutput;
     _workspacePath = workspacePath || null;
+
+    // ── Sequencer OSC output setup ───────────────────────────────────────
+    const seqCfg = vscode.workspace.getConfiguration('envil.sequencer');
+    _seqOscTargetPort = seqCfg.get('oscTargetPort', 57120);
+    _seqOscTargetHost = seqCfg.get('oscTargetHost', '127.0.0.1');
+    _seqOscEnabled = seqCfg.get('oscEnabled', true);
+    ensureSeqOscPort();
+
+    // Re-read settings on change
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration('envil.sequencer')) {
+                const cfg = vscode.workspace.getConfiguration('envil.sequencer');
+                _seqOscTargetPort = cfg.get('oscTargetPort', 57120);
+                _seqOscTargetHost = cfg.get('oscTargetHost', '127.0.0.1');
+                _seqOscEnabled = cfg.get('oscEnabled', true);
+            }
+        }),
+    );
 
     // Compute state file path: prefer workspace-local .envil/state.json,
     // fall back to extension-global touch-knobs-layout.json
@@ -175,7 +202,7 @@ function handleMessage(msg) {
             const noteNum = msg.midiNote || msg.id;
             const proxyName = `~${PROXY_PREFIX}_c${noteNum}`;
             const src = `{ |x=0, y=0, lagTime=${DEFAULT_LAG_TIME}| [Lag.kr(x, lagTime), Lag.kr(y, lagTime)] }`;
-            const code = `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil or: { ${proxyName}.numChannels != 2 }, { ${proxyName}.mold(2, \\control); ${proxyName} = ${src} }); ${proxyName}.set(\\x, ${msg.x}, \\y, ${msg.y}) })`;
+            const code = `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil or: { ${proxyName}.numChannels != 2 }, { ${proxyName}.mold(2, \\control); ${proxyName} = ${src} }, { if(Server.default.serverRunning and: { ${proxyName}.isPlaying.not }, { ${proxyName}.send }) }); ${proxyName}.set(\\x, ${msg.x}, \\y, ${msg.y}) })`;
             sendSC(code, true);
             sendHydra('knob-update', { note: noteNum, x: msg.x, y: msg.y });
             break;
@@ -202,7 +229,7 @@ function handleMessage(msg) {
             const lastNote = `~${PROXY_PREFIX}_n`;
             const lastVal  = `~${PROXY_PREFIX}_n_val`;
             const src = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
-            const ensureSrc = (p) => `if(${p}.source.isNil, { ${p} = ${src} })`;
+            const ensureSrc = (p) => `if(${p}.source.isNil, { ${p} = ${src} }, { if(Server.default.serverRunning and: { ${p}.isPlaying.not }, { ${p}.send }) })`;
             const code = [
                 `if(currentEnvironment.isKindOf(ProxySpace), {`,
                 ` ${ensureSrc(perNote)};`,
@@ -232,7 +259,7 @@ function handleMessage(msg) {
             const lastNote = `~${PROXY_PREFIX}_n`;
             const lastVal  = `~${PROXY_PREFIX}_n_val`;
             const src = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
-            const ensureSrc = (p) => `if(${p}.source.isNil, { ${p} = ${src} })`;
+            const ensureSrc = (p) => `if(${p}.source.isNil, { ${p} = ${src} }, { if(Server.default.serverRunning and: { ${p}.isPlaying.not }, { ${p}.send }) })`;
             const code = [
                 `if(currentEnvironment.isKindOf(ProxySpace), {`,
                 ` ${ensureSrc(perNote)};`,
@@ -277,26 +304,7 @@ function handleMessage(msg) {
             break;
         }
 
-        case 'init-all': {
-            // Recreate all CC proxies ~v_c<midiNote> (useful after SC reboot / ProxySpace.push)
-            const knobList = msg.knobs || [];
-            if (knobList.length === 0) return;
-            const src = `{ |x=0, y=0, lagTime=${DEFAULT_LAG_TIME}| [Lag.kr(x, lagTime), Lag.kr(y, lagTime)] }`;
-            const lines = knobList.map(k => {
-                const mn = k.midiNote || k.id;
-                const pn = `~${PROXY_PREFIX}_c${mn}`;
-                return `${pn}.mold(2, \\control); ${pn} = ${src}; ${pn}.set(\\x, ${k.x || 0}, \\y, ${k.y || 0})`;
-            });
-            // Wrap in ProxySpace check so it's safe if no ProxySpace is pushed
-            sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${lines.join('; ')} })`);
-            // Sync all knob values to Hydra
-            knobList.forEach(k => {
-                const mn = k.midiNote || k.id;
-                sendHydra('knob-update', { note: mn, x: k.x || 0, y: k.y || 0 });
-            });
-            log(`  ⟳ initialised ${knobList.length} CC proxies`);
-            break;
-        }
+        // 'init-all' removed — proxies now self-heal via isPlaying.not checks
 
         // ── Sequencer messages ───────────────────────────────────────────
 
@@ -361,6 +369,10 @@ function handleMessage(msg) {
             if (msg.bpm != null) _seqBpm = Math.max(1, Math.min(999, msg.bpm));
             if (msg.subdiv != null) _seqSubdiv = msg.subdiv;
             seqReschedule();
+            // Sync ~t proxy + TempoClock
+            const newTempo = _seqBpm / 60;
+            sendSC(`TempoClock.default.tempo = ${newTempo}`, true);
+            pushTempoProxy(newTempo);
             log(`  ♩ seq BPM=${_seqBpm}  ÷${_seqSubdiv}`);
             break;
         }
@@ -401,6 +413,7 @@ function handleMessage(msg) {
                 const tappedBpm = Math.max(1, Math.min(999, Number(msg.bpm) || _seqBpm || 120));
                 const tappedTempo = Math.max(0.001, tappedBpm / 60);
                 sendSC(`try { var tap = if(e.notNil) { e[\\timeSyncInput] } { nil }; var tappedTempo = ${tappedTempo}; if(tap.notNil) { tap.value; } { TempoClock.default.tempo = tappedTempo; } } { |err| err }`, true);
+                pushTempoProxy(tappedTempo);
                 setTimeout(() => {
                     if (_seqSyncSC) pollSCTempo();
                 }, 150);
@@ -592,6 +605,17 @@ function seqTick() {
         sendHydra('seq-step', { name: s.name, step: s.currentStep, val, steps: s.steps });
         ticks.push({ name: s.name, step: s.currentStep, val });
     }
+    // OSC: send sequencer events to sclang
+    if (_seqOscEnabled && _seqOscPort) {
+        for (const t of ticks) {
+            // Always send step message: /envil/seq/<name> step val
+            sendSeqOSC('/envil/seq/' + t.name, [t.step, t.val]);
+            // On-event only when step is active (val > 0)
+            if (t.val > 0) {
+                sendSeqOSC('/envil/seq/on', [t.name, t.step, t.val]);
+            }
+        }
+    }
     // SC: send all proxy updates in ONE write (avoid stdin race)
     if (scParts.length > 0) {
         sendSC(scParts.join('; '), true);
@@ -605,7 +629,7 @@ function seqTick() {
 function seqSCCode(s, val) {
     const proxyName = `~seq_${s.name}`;
     const v = val != null ? val : 0;
-    return `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil, { ${proxyName}.mold(1, \\control); ${proxyName} = ${SEQ_SRC} }); ${proxyName}.set(\\val, ${v}) })`;
+    return `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil, { ${proxyName}.mold(1, \\control); ${proxyName} = ${SEQ_SRC} }, { if(Server.default.serverRunning and: { ${proxyName}.isPlaying.not }, { ${proxyName}.send; ">>> envil: auto-resent ${proxyName}".postln }) }); ${proxyName}.set(\\val, ${v}) })`;
 }
 
 function seqSetSCValue(s, val) {
@@ -787,10 +811,76 @@ async function pollSCTempo() {
                         _panel.webview.postMessage({ type: 'seq-tempo-update', bpm });
                     }
                 }
+                // Always sync ~t proxy to current tempo
+                pushTempoProxy(tempo);
             }
         }
     } catch (e) {
         // Silently ignore — sclang might not be ready
+    }
+}
+
+/**
+ * Push current tempo into the ~t control proxy in ProxySpace.
+ * Uses e[\timeSyncInput] if available (footcontroller tap-tempo flow),
+ * otherwise sets ~t directly. Also sets TempoClock.default.tempo.
+ * ~t holds beats-per-second (same unit as TempoClock.default.tempo).
+ */
+const TEMPO_PROXY_SRC = `{ |val=1, lagTime=0.1| Lag.kr(val, lagTime) }`;
+
+function pushTempoProxy(tempo) {
+    const t = Math.max(0.001, tempo);
+    sendSC(
+        `if(currentEnvironment.isKindOf(ProxySpace), {` +
+        ` if(~t.source.isNil, { ~t = ${TEMPO_PROXY_SRC} });` +
+        ` if(Server.default.serverRunning and: { ~t.isPlaying.not }, { ~t.send });` +
+        ` ~t.set(\\val, ${t})` +
+        ` })`,
+        true
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEQUENCER OSC OUTPUT
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ensureSeqOscPort() {
+    if (_seqOscPort) return;
+    try {
+        _seqOscPort = new osc.UDPPort({
+            localAddress: '0.0.0.0',
+            localPort: 0,             // OS picks an ephemeral port
+            broadcast: false,
+        });
+        _seqOscPort.on('ready', () => {
+            _seqOscReady = true;
+            console.log('[touch-knobs] seq OSC port ready, sending to ' + _seqOscTargetHost + ':' + _seqOscTargetPort);
+        });
+        _seqOscPort.on('error', (err) => {
+            console.warn('[touch-knobs] seq OSC port error:', err.message);
+        });
+        _seqOscPort.open();
+    } catch (e) {
+        console.warn('[touch-knobs] failed to open seq OSC port:', e.message);
+        _seqOscPort = null;
+        _seqOscReady = false;
+    }
+}
+
+function sendSeqOSC(address, args) {
+    if (!_seqOscPort || !_seqOscReady) return;
+    try {
+        const oscArgs = args.map(a => {
+            if (typeof a === 'string') return { type: 's', value: a };
+            if (Number.isInteger(a))    return { type: 'i', value: a };
+            return { type: 'f', value: Number(a) };
+        });
+        _seqOscPort.send({
+            address,
+            args: oscArgs,
+        }, _seqOscTargetHost, _seqOscTargetPort);
+    } catch (e) {
+        // Silently ignore — target might not be listening
     }
 }
 
@@ -880,7 +970,7 @@ function sanitizeName(name) {
 }
 
 function macroEnsureSCCode(proxyName) {
-    return `if(${proxyName}.source.isNil, { ${proxyName} = ${MACRO_SRC} }); ${proxyName}.mold(1, \\control)`;
+    return `if(${proxyName}.source.isNil, { ${proxyName} = ${MACRO_SRC} }, { if(Server.default.serverRunning and: { ${proxyName}.isPlaying.not }, { ${proxyName}.send; ">>> envil: auto-resent ${proxyName}".postln }) }); ${proxyName}.mold(1, \\control)`;
 }
 
 function macroProxyName(m) {

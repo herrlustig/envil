@@ -271,7 +271,6 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     <button id="btn-add" title="Add a new knob">＋ Add Knob</button>
     <button id="btn-add-macro" title="Add a new macro curve">＋ Add Macro</button>
     <button id="btn-add-seq" title="Add a new sequencer row">＋ Add Seq</button>
-    <button id="btn-init-all" title="(Re)create all SC proxies">⟳ Init All</button>
     <span class="spacer"></span>
     <span class="status" id="status-text">0 knobs</span>
 </div>
@@ -900,10 +899,7 @@ function removeKnob(knob) {
     persistState();
 }
 
-// ── Init All — re-create all SC proxies ──────────────────────────────────
-document.getElementById('btn-init-all').addEventListener('click', () => {
-    vscode.postMessage({ type: 'init-all', knobs: knobs.map(k => ({ id: k.id, name: k.name, midiNote: knobMidiNote(k), x: scX(k), y: scY(k) })) });
-});
+// Init All removed — proxies now self-heal via isPlaying.not checks
 
 // ── Keyboard shortcuts ───────────────────────────────────────────────────
 window.addEventListener('keydown', (e) => {

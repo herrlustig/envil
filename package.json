@@ -210,6 +210,21 @@
             "type": "boolean",
             "default": true,
             "description": "Automatically open the Touch Knobs panel on startup (centre column)."
+          },
+          "envil.sequencer.oscEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Send OSC messages from touch-knob sequencers on each tick."
+          },
+          "envil.sequencer.oscTargetPort": {
+            "type": "integer",
+            "default": 57120,
+            "description": "UDP port to send sequencer OSC messages to (default: 57120 = sclang)."
+          },
+          "envil.sequencer.oscTargetHost": {
+            "type": "string",
+            "default": "127.0.0.1",
+            "description": "Host address to send sequencer OSC messages to."
           }
         }
       },
