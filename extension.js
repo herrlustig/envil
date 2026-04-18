@@ -44,6 +44,7 @@ let oscPort = null;
 // Status bar items
 let sclangStatusBar = null;
 let scsynthStatusBar = null;
+let queueStatusBar = null;
 let _isSCSynthRunning = false;
 
 // Hydra output channel
@@ -130,16 +131,20 @@ async function activate(context) {
     const workspaceFolder = vscode.workspace.workspaceFolders
         ? vscode.workspace.workspaceFolders[0].uri.fsPath : null;
 
-    // Status bar
-    sclangStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 101);
+    // Status bar — all left-aligned, high priority so they stay visible on narrow windows
+    //   Order (left→right): health bar (10000) → sclang (9999) → scsynth (9998)
+    sclangStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 9999);
     sclangStatusBar.command = 'envil.supercollider.toggleSCLang';
     sclangStatusBar.tooltip = 'Click to start/stop SuperCollider interpreter';
-    scsynthStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    scsynthStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 9998);
     scsynthStatusBar.command = 'envil.supercollider.toggleSCSynth';
     scsynthStatusBar.tooltip = 'Click to boot/quit the SuperCollider server';
+    queueStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10000);
+    queueStatusBar.tooltip = 'SC Server Health — hover for details';
     updateSclangBar(false);
     updateScsynthBar(false);
-    context.subscriptions.push(sclangStatusBar, scsynthStatusBar);
+    updateQueueBar(null);
+    context.subscriptions.push(sclangStatusBar, scsynthStatusBar, queueStatusBar);
 
     // Hydra output channel
     if (!hydraOutput) {
@@ -212,6 +217,7 @@ async function activate(context) {
                 // s.waitForBoot runs on AppClock — push there only affects that thread.
                 const inputCode = buildInputProxySCCode();
                 await sc.executeCode([
+                    'TempoClock.default = TempoClock(queueSize: 8192).permanent_(true);',
                     'if(currentEnvironment.isKindOf(ProxySpace).not, {',
                     '  p = ProxySpace.push(s);',
                     '  ~out.ar(2);',
@@ -488,6 +494,7 @@ iframe{width:100%;height:100%;border:none}</style></head>
 
             sclangStatusBar.hide();
             scsynthStatusBar.hide();
+            queueStatusBar.hide();
         } catch (error) {
             vscode.window.showErrorMessage(`Failed to close the environment: ${error.message}`);
         } finally {
@@ -751,6 +758,98 @@ function updateScsynthBar(running) {
     scsynthStatusBar.text = running ? 'scsynth 🟢' : 'scsynth ⭕';
 }
 
+const QUEUE_MAX = 8192;
+const NODE_MAX = 8192;  // s.options.maxNodes = 1024*8
+
+function updateQueueBar(status, queueSize, proxyCount, tdefCount, pdefCount, memMaxMB) {
+    if (!queueStatusBar) return;
+
+    const hasServer = status && status.alive;
+    const hasQueue = queueSize !== null && queueSize !== undefined;
+
+    if (!hasServer && !hasQueue) {
+        queueStatusBar.hide();
+        return;
+    }
+
+    // Compact bar:  Q:42/8192 | Nds:28/8192 | Prx:12 Defs:3 | Mem:2000M | CPU:12%
+    const parts = [];
+    const tooltipParts = [];
+    let worstLevel = 0;  // 0=ok, 1=warn, 2=critical
+
+    // Queue
+    if (hasQueue) {
+        parts.push(`Q:${queueSize}/${QUEUE_MAX}`);
+        const qRatio = queueSize / QUEUE_MAX;
+        if (qRatio > 0.75) { worstLevel = Math.max(worstLevel, 2); tooltipParts.push('🚨 Queue critically full!'); }
+        else if (qRatio > 0.5) { worstLevel = Math.max(worstLevel, 1); tooltipParts.push('⚠️ Queue getting full'); }
+    }
+
+    // Nodes (synths + groups from scsynth OSC)
+    if (hasServer && status.numSynths !== undefined) {
+        const nodes = status.numSynths + status.numGroups;
+        parts.push(`Nds:${nodes}/${NODE_MAX}`);
+        const nRatio = nodes / NODE_MAX;
+        if (nRatio > 0.75) { worstLevel = Math.max(worstLevel, 2); tooltipParts.push('🚨 Node count critically high!'); }
+        else if (nRatio > 0.5) { worstLevel = Math.max(worstLevel, 1); tooltipParts.push('⚠️ Node count getting high'); }
+    }
+
+    // Proxies + Defs combined (compact)
+    const prxDef = [];
+    if (proxyCount !== null && proxyCount !== undefined) prxDef.push(`Prx:${proxyCount}`);
+    const hasTdef = tdefCount !== null && tdefCount !== undefined;
+    const hasPdef = pdefCount !== null && pdefCount !== undefined;
+    if (hasTdef || hasPdef) {
+        const total = (hasTdef ? tdefCount : 0) + (hasPdef ? pdefCount : 0);
+        prxDef.push(`Defs:${total}`);
+    }
+    if (prxDef.length) parts.push(prxDef.join(' '));
+
+    // Memory — configured RT pool size (s.options.memSize)
+    // scsynth pre-allocates this at boot; no API to query how much is used.
+    if (memMaxMB !== null) {
+        parts.push(`Mem:${memMaxMB}M`);
+    }
+
+    // CPU
+    if (hasServer && status.avgCPU !== undefined) {
+        const cpu = status.avgCPU.toFixed(0);
+        parts.push(`CPU:${cpu}%`);
+        if (status.avgCPU > 80) { worstLevel = Math.max(worstLevel, 2); tooltipParts.push('🚨 CPU critically high!'); }
+        else if (status.avgCPU > 50) { worstLevel = Math.max(worstLevel, 1); tooltipParts.push('⚠️ CPU getting high'); }
+    }
+
+    queueStatusBar.text = parts.join(' | ');
+
+    // Detailed tooltip
+    const tipLines = ['SC Server Health  (hover for details)'];
+    if (hasQueue) tipLines.push(`  Scheduler Queue: ${queueSize} / ${QUEUE_MAX}`);
+    if (hasServer && status.numSynths !== undefined) {
+        tipLines.push(`  Synths: ${status.numSynths}   Groups: ${status.numGroups}   UGens: ${status.numUGens}   SynthDefs: ${status.numSynthDefs}`);
+        tipLines.push(`  Nodes (synths+groups): ${status.numSynths + status.numGroups} / ${NODE_MAX}`);
+    }
+    if (proxyCount !== null) tipLines.push(`  ProxySpace slots: ${proxyCount}`);
+    if (hasTdef) tipLines.push(`  Running Tdefs (tasks): ${tdefCount}`);
+    if (hasPdef) tipLines.push(`  Running Pdefs (patterns): ${pdefCount}`);
+    if (memMaxMB !== null) tipLines.push(`  RT memory pool: ${memMaxMB} MB (s.options.memSize)`);
+    if (hasServer && status.avgCPU !== undefined) {
+        tipLines.push(`  CPU: ${status.avgCPU.toFixed(1)}% avg / ${status.peakCPU.toFixed(1)}% peak`);
+    }
+    if (tooltipParts.length) tipLines.push('', ...tooltipParts);
+    queueStatusBar.tooltip = tipLines.join('\n');
+
+    // Color based on worst alarm level
+    if (worstLevel >= 2) {
+        queueStatusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+    } else if (worstLevel >= 1) {
+        queueStatusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    } else {
+        queueStatusBar.backgroundColor = undefined;
+    }
+
+    queueStatusBar.show();
+}
+
 // ── sclang exit callback + scsynth heartbeat (OSC-based) ──────────────────────
 //
 // sclang detection:  it's our child process → just check sclangProcess liveness.
@@ -784,8 +883,9 @@ const OSC_STATUS_MSG = Buffer.from([
 ]);
 
 /**
- * Send /status to scsynth on UDP 57110 and resolve true if ANY reply
- * comes back within `timeoutMs`.  Pure dgram — no library, no sclang.
+ * Send /status to scsynth on UDP 57110 and parse /status.reply.
+ * Resolves with { alive, numUGens, numSynths, numGroups, numSynthDefs, avgCPU, peakCPU }
+ * or { alive: false } on timeout/error.
  */
 function pingScsynthOSC(timeoutMs = 1500) {
     return new Promise((resolve) => {
@@ -793,7 +893,7 @@ function pingScsynthOSC(timeoutMs = 1500) {
         let sock;
         try {
             sock = dgram.createSocket('udp4');
-        } catch (_) { resolve(false); return; }
+        } catch (_) { resolve({ alive: false }); return; }
 
         const finish = (result) => {
             if (done) return;
@@ -802,14 +902,38 @@ function pingScsynthOSC(timeoutMs = 1500) {
             resolve(result);
         };
 
-        sock.on('message', () => finish(true));
-        sock.on('error', () => finish(false));
+        sock.on('message', (buf) => {
+            // /status.reply OSC: address, type-tag ",iiiiiff", then 7 values:
+            //   [0] unused, [1] numUGens, [2] numSynths, [3] numGroups,
+            //   [4] numSynthDefs, [5] avgCPU(float), [6] peakCPU(float)
+            try {
+                // Find start of args: skip address + type-tag strings
+                let i = 0;
+                while (i < buf.length && buf[i] !== 0) i++; // skip address
+                i = (i + 4) & ~3; // align to 4
+                while (i < buf.length && buf[i] !== 0) i++; // skip type tag
+                i = (i + 4) & ~3; // align to 4
+                if (i + 28 <= buf.length) {
+                    const unused      = buf.readInt32BE(i);
+                    const numUGens    = buf.readInt32BE(i + 4);
+                    const numSynths   = buf.readInt32BE(i + 8);
+                    const numGroups   = buf.readInt32BE(i + 12);
+                    const numSynthDefs = buf.readInt32BE(i + 16);
+                    const avgCPU      = buf.readFloatBE(i + 20);
+                    const peakCPU     = buf.readFloatBE(i + 24);
+                    finish({ alive: true, numUGens, numSynths, numGroups, numSynthDefs, avgCPU, peakCPU });
+                    return;
+                }
+            } catch (_) {}
+            finish({ alive: true });
+        });
+        sock.on('error', () => finish({ alive: false }));
 
         sock.send(OSC_STATUS_MSG, 57110, '127.0.0.1', (err) => {
-            if (err) finish(false);
+            if (err) finish({ alive: false });
         });
 
-        setTimeout(() => finish(false), timeoutMs);
+        setTimeout(() => finish({ alive: false }), timeoutMs);
     });
 }
 
@@ -829,12 +953,44 @@ async function heartbeatTick() {
     const sclangAlive = sc ? sc.isSclangRunning() : false;
     updateSclangBar(sclangAlive);
 
-    // ── scsynth: direct OSC /status ping ──
-    const scsynthAlive = await pingScsynthOSC();
-    if (scsynthAlive !== _isSCSynthRunning) {
-        _isSCSynthRunning = scsynthAlive;
-        updateScsynthBar(scsynthAlive);
+    // ── scsynth: direct OSC /status ping (with full stats) ──
+    const status = await pingScsynthOSC();
+    if (status.alive !== _isSCSynthRunning) {
+        _isSCSynthRunning = status.alive;
+        updateScsynthBar(status.alive);
     }
+
+    // ── scheduler queue + proxy count + running defs + memory (from sclang) ──
+    let queueSize = null;
+    let proxyCount = null;
+    let tdefCount = null;
+    let pdefCount = null;
+    let memSizeKB = null;
+    if (sclangAlive && sc && sc.queryCode) {
+        try {
+            const marker = '<<ENVQ>>';
+            sc.addSuppressMarker(marker);
+            const code = `("${marker}" ++ TempoClock.default.queue.size ++ "," ++ currentEnvironment.envir.size ++ "," ++ Tdef.all.select(_.isPlaying).size ++ "," ++ Pdef.all.select(_.isPlaying).size ++ "," ++ s.options.memSize ++ "${marker}").postln;`;
+            const result = await sc.queryCode(code, marker, 2000);
+            if (result) {
+                const parts = result.trim().split(',');
+                queueSize  = parseInt(parts[0], 10);
+                proxyCount = parseInt(parts[1], 10);
+                tdefCount  = parseInt(parts[2], 10);
+                pdefCount  = parseInt(parts[3], 10);
+                memSizeKB  = parseInt(parts[4], 10);
+                if (isNaN(queueSize))  queueSize = null;
+                if (isNaN(proxyCount)) proxyCount = null;
+                if (isNaN(tdefCount))  tdefCount = null;
+                if (isNaN(pdefCount))  pdefCount = null;
+                if (isNaN(memSizeKB))  memSizeKB = null;
+            }
+        } catch (e) { /* ignore query failures */ }
+    }
+
+    const memMaxMB = memSizeKB ? Math.round(memSizeKB / 1024) : null;
+
+    updateQueueBar(status, queueSize, proxyCount, tdefCount, pdefCount, memMaxMB);
 }
 
 function stopHeartbeat() {
@@ -842,6 +998,7 @@ function stopHeartbeat() {
         clearInterval(_heartbeatTimer);
         _heartbeatTimer = null;
     }
+
 }
 
 function disposeHeartbeat() {
@@ -855,8 +1012,8 @@ function disposeHeartbeat() {
 async function probeAndReconnect() {
     const sc = getSC();
     if (!sc || !sc.isSclangRunning()) return;
-    const scsynthAlive = await pingScsynthOSC();
-    if (!scsynthAlive) return;
+    const status = await pingScsynthOSC();
+    if (!status.alive) return;
     _isSCSynthRunning = true;
     updateScsynthBar(true);
     const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
