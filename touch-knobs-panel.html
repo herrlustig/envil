@@ -95,41 +95,53 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 }
 .macro-row {
     display: flex; align-items: center; gap: 4px; margin-bottom: 6px;
+    position: relative; margin-top: 10px;
 }
 .macro-row .macro-label {
-    width: 60px; font-size: 10px; text-align: right; padding-right: 4px;
+    position: absolute; top: -10px; left: 0; z-index: 2;
+    font-size: 8px; padding: 0px 3px; border-radius: 2px;
+    background: rgba(0,0,0,0.45);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    opacity: 0.75; cursor: pointer;
+    max-width: 90px; cursor: pointer; opacity: 0.7; line-height: 1.4;
 }
 .macro-row .macro-label:hover { opacity: 1; }
+.macro-row .macro-btn-stack {
+    display: flex; flex-direction: column; gap: 2px; flex-shrink: 0;
+}
 .macro-row .macro-play-btn {
-    width: 20px; height: 20px; font-size: 10px; line-height: 18px;
+    width: 22px; height: 16px; font-size: 9px; line-height: 14px;
     text-align: center; cursor: pointer;
     border: 1px solid #555; border-radius: 3px;
     background: #2a2a2a; color: var(--vscode-editor-foreground, #ccc);
-    flex-shrink: 0;
 }
 .macro-row .macro-play-btn:hover { border-color: #aaa; }
 .macro-row .macro-play-btn.playing { background: #0a4; color: #fff; border-color: #0a4; }
 .macro-row .macro-loop-btn {
-    width: 24px; height: 20px; font-size: 10px; line-height: 18px;
+    width: 22px; height: 16px; font-size: 9px; line-height: 14px;
     text-align: center; cursor: pointer;
     border: 1px solid #555; border-radius: 3px;
     background: #2a2a2a; color: var(--vscode-editor-foreground, #ccc);
-    flex-shrink: 0;
 }
 .macro-row .macro-loop-btn:hover { border-color: #aaa; }
 .macro-row .macro-loop-btn.active { background: #0e639c; color: #fff; border-color: #0e639c; }
+.macro-row .macro-dur-wrap {
+    position: relative; flex-shrink: 0; width: 36px; align-self: stretch;
+}
 .macro-row .macro-duration {
-    width: 62px; height: auto; min-height: 68px; align-self: stretch;
-    background: var(--vscode-input-background, #3c3c3c);
+    width: 100%; height: 100%; box-sizing: border-box;
+    background: rgba(40, 40, 40, 0.6);
     color: var(--vscode-input-foreground, #ccc);
     border: 1px solid var(--vscode-input-border, #555);
-    border-radius: 6px; padding: 4px 6px; font-size: 13px; font-weight: 600;
-    text-align: center; flex-shrink: 0; touch-action: none; cursor: ns-resize;
+    border-radius: 6px; padding: 14px 2px 4px 2px; font-size: 13px; font-weight: 600;
+    text-align: center; touch-action: none; cursor: ns-resize;
+    -moz-appearance: textfield;
 }
+.macro-row .macro-duration::-webkit-inner-spin-button,
+.macro-row .macro-duration::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .macro-row .macro-unit {
-    width: 38px; font-size: 11px; opacity: 0.7; text-align: center; flex-shrink: 0;
+    position: absolute; top: 2px; left: 0; right: 0;
+    font-size: 8px; opacity: 0.5; text-align: center;
+    pointer-events: none; line-height: 1;
 }
 .macro-row .macro-canvas-wrap {
     flex: 1; min-width: 120px; min-height: 0; height: 68px; position: relative;
@@ -164,19 +176,24 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     pointer-events: none;
 }
 .macro-row .macro-remove {
-    width: 18px; height: 18px; font-size: 10px; line-height: 16px;
-    text-align: center; cursor: pointer; opacity: 0.35;
-    border: none; background: none; color: var(--vscode-editor-foreground, #ccc);
-    flex-shrink: 0;
+    width: 22px; height: 16px; font-size: 9px; line-height: 14px;
+    text-align: center; cursor: pointer; opacity: 0.3;
+    border: 1px solid transparent; border-radius: 3px;
+    background: none; color: var(--vscode-editor-foreground, #ccc);
+    padding: 0;
 }
 .macro-row .macro-remove:hover { opacity: 1; color: #f44; }
+.macro-row .macro-remove.confirm { opacity: 1; color: #fff; background: #a00; border-color: #f44; }
 .seq-row {
     display: flex; align-items: center; gap: 2px; margin-bottom: 3px;
+    position: relative; margin-top: 10px;
 }
 .seq-row .seq-label {
-    width: 52px; font-size: 10px; text-align: right; padding-right: 4px;
+    position: absolute; top: -10px; left: 0; z-index: 2;
+    font-size: 8px; padding: 0px 3px; border-radius: 2px;
+    background: rgba(0,0,0,0.45);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    opacity: 0.7; cursor: pointer;
+    max-width: 90px; cursor: pointer; opacity: 0.7; line-height: 1.4;
 }
 .seq-row .seq-label:hover { opacity: 1; }
 .seq-step {
@@ -198,8 +215,9 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     margin-left: 4px;
 }
 .seq-row .seq-remove:hover { opacity: 1; color: #f44; }
+.seq-row .seq-remove.confirm { opacity: 1; color: #fff; background: #a00; border-color: #f44; }
 .seq-row .seq-play-btn {
-    width: 20px; height: 20px; font-size: 10px; line-height: 18px;
+    width: 30px; height: 20px; font-size: 10px; line-height: 18px;
     text-align: center; cursor: pointer;
     border: 1px solid #555; border-radius: 3px;
     background: #2a2a2a; color: var(--vscode-editor-foreground, #ccc);
@@ -273,6 +291,13 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     outline: none;
 }
 #rename-dialog input:focus { border-color: var(--vscode-focusBorder, #007fd4); }
+#rename-dialog .knob-delete-btn {
+    display: block; margin-top: 6px; width: 100%; padding: 3px 0;
+    font-size: 11px; text-align: center; cursor: pointer;
+    background: none; border: 1px solid #555; border-radius: 3px;
+    color: #f44; opacity: 0.7;
+}
+#rename-dialog .knob-delete-btn:hover { opacity: 1; background: #a00; color: #fff; border-color: #f44; }
 </style>
 </head>
 <body>
@@ -320,7 +345,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 <div id="layout-splitter" title="Drag to resize macro/sequencer area"></div>
 <div id="canvas-wrap"><canvas id="mp-overlay"></canvas><canvas id="surface"></canvas></div>
 <div id="tooltip"></div>
-<div id="rename-dialog"><input id="rename-input" type="text" maxlength="16" placeholder="knob name"/></div>
+<div id="rename-dialog"><input id="rename-input" type="text" maxlength="16" placeholder="knob name"/><button id="knob-delete-btn" class="knob-delete-btn">Delete knob</button></div>
 
 <script>
 // ── VS Code webview API ──────────────────────────────────────────────────
@@ -875,6 +900,16 @@ renameInput.addEventListener('keydown', (e) => {
 });
 renameInput.addEventListener('blur', () => { closeRenameDialog(); });
 
+document.getElementById('knob-delete-btn').addEventListener('mousedown', (e) => {
+    e.preventDefault(); // prevent blur from firing first
+    if (contextKnob) {
+        const k = contextKnob;
+        renameDialog.style.display = 'none';
+        contextKnob = null;
+        removeKnob(k);
+    }
+});
+
 // ── Add knob ─────────────────────────────────────────────────────────────
 document.getElementById('btn-add').addEventListener('click', () => {
     addKnob();
@@ -1311,6 +1346,9 @@ function renderMacroRow(m) {
     row.className = 'macro-row';
     row.id = 'macro-row-' + m.id;
 
+    const btnStack = document.createElement('div');
+    btnStack.className = 'macro-btn-stack';
+
     const playBtn = document.createElement('div');
     playBtn.className = 'macro-play-btn';
     playBtn.id = 'macro-play-' + m.id;
@@ -1323,7 +1361,7 @@ function renderMacroRow(m) {
         vscode.postMessage({ type: 'macro-play-toggle', name: m.name, playing: m.playing, loop: m.loop, currentPos: m.currentPos });
         persistState();
     });
-    row.appendChild(playBtn);
+    btnStack.appendChild(playBtn);
 
     const loopBtn = document.createElement('div');
     loopBtn.className = 'macro-loop-btn';
@@ -1336,7 +1374,31 @@ function renderMacroRow(m) {
         vscode.postMessage({ type: 'macro-set-loop', name: m.name, loop: m.loop });
         persistState();
     });
-    row.appendChild(loopBtn);
+    btnStack.appendChild(loopBtn);
+
+    const rm = document.createElement('button');
+    rm.className = 'macro-remove';
+    rm.textContent = '✕';
+    rm.title = 'Remove macro (click twice to confirm)';
+    let rmPending = false;
+    let rmTimer = null;
+    rm.addEventListener('click', () => {
+        if (rmPending) {
+            clearTimeout(rmTimer);
+            removeMacro(m);
+        } else {
+            rmPending = true;
+            rm.classList.add('confirm');
+            rm.textContent = '✕?';
+            rmTimer = setTimeout(() => {
+                rmPending = false;
+                rm.classList.remove('confirm');
+                rm.textContent = '✕';
+            }, 2000);
+        }
+    });
+    btnStack.appendChild(rm);
+    row.appendChild(btnStack);
 
     const label = document.createElement('span');
     label.className = 'macro-label';
@@ -1354,7 +1416,7 @@ function renderMacroRow(m) {
             persistState();
         }
     });
-    row.appendChild(label);
+    // label is appended to canvasWrap later (overlaid on canvas)
 
     const durationInput = document.createElement('input');
     durationInput.className = 'macro-duration';
@@ -1362,7 +1424,8 @@ function renderMacroRow(m) {
     durationInput.type = 'number';
     durationInput.min = '0.1';
     durationInput.step = '0.1';
-    durationInput.title = 'Type a value or hold and drag up/down';
+    durationInput.readOnly = true;
+    durationInput.title = 'Double-click to type a value (Enter to apply, Esc to cancel) · Hold and drag up/down';
     const applyDurationValue = (commit = false) => {
         const raw = parseFloat(durationInput.value);
         if (!Number.isFinite(raw) || raw <= 0) {
@@ -1386,15 +1449,47 @@ function renderMacroRow(m) {
         });
         persistState();
     };
-    durationInput.addEventListener('input', () => applyDurationValue(false));
-    durationInput.addEventListener('change', () => applyDurationValue(true));
+    // Double-click → enter edit mode (readonly off, select text)
+    let _durEditPrev = '';
+    durationInput.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        _durEditPrev = durationInput.value;
+        durationInput.readOnly = false;
+        durationInput.select();
+    });
+    // Enter → commit, Escape → cancel
+    durationInput.addEventListener('keydown', (e) => {
+        if (durationInput.readOnly) return;
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            durationInput.readOnly = true;
+            applyDurationValue(true);
+            durationInput.blur();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            durationInput.value = _durEditPrev;
+            durationInput.readOnly = true;
+            durationInput.blur();
+        }
+    });
+    // Blur → cancel if still in edit mode
+    durationInput.addEventListener('blur', () => {
+        if (!durationInput.readOnly) {
+            durationInput.value = _durEditPrev;
+            durationInput.readOnly = true;
+        }
+    });
     wireMacroDurationDrag(durationInput, m, applyDurationValue);
-    row.appendChild(durationInput);
+
+    const durWrap = document.createElement('div');
+    durWrap.className = 'macro-dur-wrap';
+    durWrap.appendChild(durationInput);
 
     const unit = document.createElement('span');
     unit.className = 'macro-unit';
     unit.id = 'macro-unit-' + m.id;
-    row.appendChild(unit);
+    durWrap.appendChild(unit);
+    row.appendChild(durWrap);
 
     const canvasWrap = document.createElement('div');
     canvasWrap.className = 'macro-canvas-wrap';
@@ -1403,6 +1498,7 @@ function renderMacroRow(m) {
     canvasEl.className = 'macro-canvas';
     canvasEl.id = 'macro-canvas-' + m.id;
     canvasWrap.appendChild(canvasEl);
+    row.appendChild(label);
 
     const seekBar = document.createElement('div');
     seekBar.className = 'macro-seekbar';
@@ -1426,13 +1522,6 @@ function renderMacroRow(m) {
 
     canvasWrap.appendChild(seekBar);
     row.appendChild(canvasWrap);
-
-    const rm = document.createElement('button');
-    rm.className = 'macro-remove';
-    rm.textContent = '✕';
-    rm.title = 'Remove macro curve';
-    rm.addEventListener('click', () => removeMacro(m));
-    row.appendChild(rm);
 
     if (nextSibling) {
         macroGrid.insertBefore(row, nextSibling);
@@ -1544,7 +1633,7 @@ function syncMacroRowControls(m) {
         loopBtn.title = m.loop ? 'Looping on' : 'Looping off';
     }
     if (durationInput) {
-        durationInput.value = String(macroDurationDisplay(m));
+        if (durationInput.readOnly) durationInput.value = String(macroDurationDisplay(m));
         durationInput.title = seqSyncSC ? 'Macro duration in beats' : 'Macro duration in seconds';
     }
     if (unit) unit.textContent = macroDurationUnit();
@@ -1574,6 +1663,7 @@ function wireMacroDurationDrag(inputEl, m, applyDurationValue) {
     let drag = null;
 
     inputEl.addEventListener('pointerdown', (e) => {
+        if (!inputEl.readOnly) return;  // in edit mode — let normal text input work
         const isPrimaryPress = e.button === 0 || e.pointerType === 'touch' || e.pointerType === 'pen';
         if (!isPrimaryPress) return;
         drag = {
@@ -1819,6 +1909,7 @@ function wireMacroCanvas(canvasEl, m) {
 
 function wireMacroSeekBar(seekBar, m) {
     let dragPointerId = null;
+    let wasPlayingBeforeSeek = false;
 
     seekBar.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -1827,6 +1918,13 @@ function wireMacroSeekBar(seekBar, m) {
         if (!isPrimaryPress) return;
         dragPointerId = e.pointerId;
         seekBar.setPointerCapture(e.pointerId);
+        // Pause playback while seeking
+        wasPlayingBeforeSeek = !!m.playing;
+        if (m.playing) {
+            m.playing = false;
+            vscode.postMessage({ type: 'macro-play-toggle', name: m.name, playing: false, loop: m.loop, currentPos: m.currentPos });
+            syncMacroRowControls(m);
+        }
         seekMacroFromClientX(m, seekBar, e.clientX);
         e.preventDefault();
     });
@@ -1841,6 +1939,13 @@ function wireMacroSeekBar(seekBar, m) {
         if (dragPointerId == null || e.pointerId !== dragPointerId) return;
         seekMacroFromClientX(m, seekBar, e.clientX);
         dragPointerId = null;
+        // Resume playback if it was playing before seek
+        if (wasPlayingBeforeSeek) {
+            m.playing = true;
+            vscode.postMessage({ type: 'macro-play-toggle', name: m.name, playing: true, loop: m.loop, currentPos: m.currentPos });
+            syncMacroRowControls(m);
+        }
+        wasPlayingBeforeSeek = false;
         e.preventDefault();
     };
 
@@ -1848,6 +1953,13 @@ function wireMacroSeekBar(seekBar, m) {
     seekBar.addEventListener('pointercancel', (e) => {
         if (dragPointerId == null || e.pointerId !== dragPointerId) return;
         dragPointerId = null;
+        // Resume on cancel too
+        if (wasPlayingBeforeSeek) {
+            m.playing = true;
+            vscode.postMessage({ type: 'macro-play-toggle', name: m.name, playing: true, loop: m.loop, currentPos: m.currentPos });
+            syncMacroRowControls(m);
+        }
+        wasPlayingBeforeSeek = false;
         e.preventDefault();
     });
 }
@@ -1864,6 +1976,35 @@ if (savedState && savedState.seqs) {
     if (savedState.seqBpm) { seqBpm = savedState.seqBpm; seqBpmInput.value = seqBpm; }
     if (savedState.seqSubdiv) { seqSubdiv = savedState.seqSubdiv; seqSubdivSel.value = seqSubdiv; }
     if (savedState.seqSyncSC != null) { seqSyncSC = savedState.seqSyncSC; }
+}
+// Ensure default kick/snare/hihat always exist
+const defaultSeqs = [
+    { name: 'kick',  steps: [1, 0, 0, 0, 1, 0, 0, 0] },
+    { name: 'snare', steps: [0, 0, 1, 0, 0, 0, 1, 0] },
+    { name: 'hihat', steps: [1, 0, 1, 0, 1, 0, 1, 0] },
+];
+for (const d of defaultSeqs) {
+    if (!seqs.find(s => s.name === d.name)) addSeq(d.name, d.steps);
+}
+// Reorder so kick/snare/hihat are first, in that order
+const defOrder = defaultSeqs.map(d => d.name);
+seqs.sort((a, b) => {
+    const ai = defOrder.indexOf(a.name);
+    const bi = defOrder.indexOf(b.name);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return 0;
+});
+// Re-render sequencer rows in sorted order
+{
+    const sg = document.getElementById('seq-grid');
+    if (sg) {
+        for (const s of seqs) {
+            const row = document.getElementById('seq-row-' + s.id);
+            if (row) sg.appendChild(row);
+        }
+    }
 }
 seqSectionHeight = savedState && savedState.seqSectionHeight != null
     ? savedState.seqSectionHeight
@@ -2000,8 +2141,24 @@ function renderSeqRow(s) {
     const rm = document.createElement('span');
     rm.className = 'seq-remove';
     rm.textContent = '✕';
-    rm.title = 'Remove sequencer';
-    rm.addEventListener('click', () => removeSeq(s));
+    rm.title = 'Remove sequencer (click twice to confirm)';
+    let rmPending = false;
+    let rmTimer = null;
+    rm.addEventListener('click', () => {
+        if (rmPending) {
+            clearTimeout(rmTimer);
+            removeSeq(s);
+        } else {
+            rmPending = true;
+            rm.classList.add('confirm');
+            rm.textContent = '✕?';
+            rmTimer = setTimeout(() => {
+                rmPending = false;
+                rm.classList.remove('confirm');
+                rm.textContent = '✕';
+            }, 2000);
+        }
+    });
     row.appendChild(rm);
 
     if (nextSibling) seqGrid.insertBefore(row, nextSibling);
@@ -2089,11 +2246,29 @@ document.getElementById('btn-add-seq').addEventListener('click', () => {
 resize();
 updateStatus();
 
-// Starter knobs (only if no persisted state)
-if (knobs.length === 0) {
-    addKnob('k1', 0.35, 0.5);
-    addKnob('k2', 0.65, 0.5);
+// Starter knobs — k1 and k2 always get fixed MIDI notes 60/61
+const _defaultKnobs = [
+    { name: 'k1', id: 1, note: 1, midiNote: MIDI_BASE_NOTE, nx: 0.35, ny: 0.5 },
+    { name: 'k2', id: 2, note: 2, midiNote: MIDI_BASE_NOTE + 1, nx: 0.65, ny: 0.5 },
+];
+for (const dk of _defaultKnobs) {
+    if (!knobs.find(k => k.midiNote === dk.midiNote)) {
+        const knob = {
+            id: dk.id,
+            note: dk.note,
+            midiNote: dk.midiNote,
+            name: dk.name,
+            nx: dk.nx,
+            ny: dk.ny,
+            color: COLORS[(dk.id - 1) % COLORS.length],
+            lastSendTime: 0,
+        };
+        knobs.unshift(knob);
+        vscode.postMessage({ type: 'knob-add', id: knob.id, name: knob.name, midiNote: knob.midiNote, x: scX(knob), y: scY(knob) });
+    }
 }
+// Ensure nextId is always above the default IDs
+if (nextId <= 2) nextId = 3;
 
 // Starter macros (only if no persisted state)
 if (macros.length === 0) {
