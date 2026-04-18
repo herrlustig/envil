@@ -543,10 +543,20 @@ function handleMessage(msg) {
             for (const s of _seqs) {
                 seqSetSCValue(s, 0);
                 s.playing = false;
-                s.currentStep = -1;
             }
             seqStopTimer();
             macroStopAll();
+            break;
+        }
+
+        case 'seq-sync-all': {
+            for (const s of _seqs) {
+                s.currentStep = -1;
+            }
+            for (const m of _macros) {
+                m.position = 0;
+                macroEmitImmediate(m, { includePoints: false });
+            }
             break;
         }
 
@@ -851,18 +861,12 @@ function macroStopTimer() {
 }
 
 function macroStopAll() {
-    const scParts = [];
     const updates = [];
     for (const m of _macros) {
         m.playing = false;
-        m.position = 0;
-        const val = macroSampleValue(m, m.position);
-        scParts.push(macroSCCode(m, val));
-        sendHydra('macro-update', macroHydraPayload(m, val, false));
-        updates.push({ name: m.name, position: m.position, val, playing: false, loop: !!m.loop });
+        updates.push({ name: m.name, position: m.position, val: macroSampleValue(m, m.position), playing: false, loop: !!m.loop });
     }
     macroStopTimer();
-    if (scParts.length > 0) sendSC(scParts.join('; '), true);
     if (_panel && updates.length > 0) {
         _panel.webview.postMessage({ type: 'macro-visual-update', macros: updates });
     }

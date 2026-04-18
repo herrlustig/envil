@@ -50,6 +50,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     display: flex; align-items: center; gap: 6px; padding: 2px 8px 4px;
     background: var(--vscode-titleBar-activeBackground, #333);
     font-size: 11px;
+    position: sticky; top: 0; z-index: 10;
 }
 #seq-transport .seq-transport-spacer { flex: 1; }
 #seq-transport button {
@@ -78,7 +79,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     filter: brightness(1.18);
 }
 #seq-transport input[type=number] {
-    width: 54px; background: var(--vscode-input-background, #3c3c3c);
+    width: 40px; background: var(--vscode-input-background, #3c3c3c);
     color: var(--vscode-input-foreground, #ccc);
     border: 1px solid var(--vscode-input-border, #555);
     border-radius: 3px; padding: 2px 4px; font-size: 11px;
@@ -276,23 +277,15 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     display: none; white-space: pre;
 }
 
-/* ── Rename dialog ────────────────────────────────────────────────────── */
+/* ── Knob context menu ─────────────────────────────────────────────── */
 #rename-dialog {
     position: fixed; z-index: 300; display: none;
     background: var(--vscode-input-background, #333);
     border: 1px solid var(--vscode-input-border, #555);
-    border-radius: 4px; padding: 8px;
+    border-radius: 4px; padding: 4px;
 }
-#rename-dialog input {
-    background: var(--vscode-input-background, #3c3c3c);
-    color: var(--vscode-input-foreground, #ccc);
-    border: 1px solid var(--vscode-input-border, #555);
-    border-radius: 3px; padding: 4px 8px; font-size: 13px; width: 140px;
-    outline: none;
-}
-#rename-dialog input:focus { border-color: var(--vscode-focusBorder, #007fd4); }
 #rename-dialog .knob-delete-btn {
-    display: block; margin-top: 6px; width: 100%; padding: 3px 0;
+    display: block; width: 100%; padding: 4px 12px;
     font-size: 11px; text-align: center; cursor: pointer;
     background: none; border: 1px solid #555; border-radius: 3px;
     color: #f44; opacity: 0.7;
@@ -303,12 +296,11 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 <body>
 
 <div id="toolbar">
-    <button id="btn-add" title="Add a new knob">＋ Add Knob</button>
-    <button id="btn-add-macro" title="Add a new macro curve">＋ Add Macro</button>
-    <button id="btn-add-seq" title="Add a new sequencer row">＋ Add Seq</button>
+    <span style="font-size:12px; opacity:0.5; margin-right:2px;">＋</span>
+    <button id="btn-add" title="Add a new knob">knb</button>
+    <button id="btn-add-macro" title="Add a new macro curve">mcr</button>
+    <button id="btn-add-seq" title="Add a new sequencer row">sq</button>
     <button id="btn-mp-toggle" title="Open MediaPipe webcam body tracking in browser">📷 Body</button>
-    <span class="spacer"></span>
-    <span class="status" id="status-text">0 knobs</span>
 </div>
 
 <!-- ── Sequencer section ──────────────────────────────────────────────── -->
@@ -316,20 +308,21 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     <div id="seq-header">
         <span class="arrow" id="seq-arrow">▾</span>
         <span>Sequencers</span>
-        <span class="spacer" style="flex:1"></span>
-        <span id="seq-count" style="opacity:0.5; font-size:10px;">0 seqs</span>
     </div>
     <div id="seq-body">
         <div id="seq-transport">
-            <button id="seq-stop-all" title="Stop all macros + sequencers (reset)">■ All</button>
-            <label style="font-size:10px; opacity:0.6;">BPM</label>
-            <input type="number" id="seq-bpm" value="120" min="1" max="999" step="1" title="Beats per minute"/>
+            <button id="seq-stop-all" title="Stop/Start all macros + sequencers">■ All</button>
+            <button id="seq-sync-all" title="Reset all macros + sequencers to beginning" style="font-size:8px;">⏮</button>
+            <span style="position:relative; display:inline-block;">
+                <span style="position:absolute; top:-8px; left:0; font-size:7px; opacity:0.4; pointer-events:none;">BPM</span>
+                <input type="number" id="seq-bpm" value="120" min="1" max="999" step="1" title="Beats per minute"/>
+            </span>
             <label style="font-size:10px; opacity:0.6;">÷</label>
             <select id="seq-subdiv" title="Subdivision" style="background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,#555);border-radius:3px;font-size:11px;padding:2px;">
-                <option value="1">1 (quarter)</option>
-                <option value="2">2 (8th)</option>
-                <option value="4" selected>4 (16th)</option>
-                <option value="8">8 (32nd)</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="4" selected>4</option>
+                <option value="8">8</option>
             </select>
             <label style="font-size:10px; opacity:0.6; margin-left:6px; cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Sync BPM to SuperCollider TempoClock.default">
                 <input type="checkbox" id="seq-sync-sc" checked style="margin:0; cursor:pointer;"/>SC
@@ -345,7 +338,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 <div id="layout-splitter" title="Drag to resize macro/sequencer area"></div>
 <div id="canvas-wrap"><canvas id="mp-overlay"></canvas><canvas id="surface"></canvas></div>
 <div id="tooltip"></div>
-<div id="rename-dialog"><input id="rename-input" type="text" maxlength="16" placeholder="knob name"/><button id="knob-delete-btn" class="knob-delete-btn">Delete knob</button></div>
+<div id="rename-dialog"><button id="knob-delete-btn" class="knob-delete-btn">Delete knob</button></div>
 
 <script>
 // ── VS Code webview API ──────────────────────────────────────────────────
@@ -406,7 +399,6 @@ const ctx = canvas.getContext('2d');
 const tooltip = document.getElementById('tooltip');
 const statusText = document.getElementById('status-text');
 const renameDialog = document.getElementById('rename-dialog');
-const renameInput = document.getElementById('rename-input');
 const toolbarEl = document.getElementById('toolbar');
 const seqSection = document.getElementById('seq-section');
 const layoutSplitter = document.getElementById('layout-splitter');
@@ -538,15 +530,14 @@ function draw() {
         // Label + value — flip above knob when near bottom edge
         const labelBelow = ky + KNOB_RADIUS + 22 < h;
         const ccLabel = '~' + PROXY_PREFIX + '_c' + knobMidiNote(k);
-        const nameLabel = k.name;
         const PAD_X = 4, PAD_Y = 2;
         const LABEL_BG = 'rgba(0,0,0,0.65)';  // dark bg so text pops
 
         if (labelBelow) {
-            // Row 1: proxy name + user name
+            // Row 1: proxy name
             ctx.font = '11px "JetBrains Mono", "Fira Code", monospace';
             ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-            const txt1 = ccLabel + '  ' + nameLabel;
+            const txt1 = ccLabel;
             const m1 = ctx.measureText(txt1);
             const y1 = ky + KNOB_RADIUS + 4;
             ctx.fillStyle = LABEL_BG;
@@ -564,10 +555,10 @@ function draw() {
             ctx.fillStyle = '#ffffffcc';
             ctx.fillText(txt2, kx, y2);
         } else {
-            // Row 1: proxy name + user name
+            // Row 1: proxy name
             ctx.font = '11px "JetBrains Mono", "Fira Code", monospace';
             ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-            const txt1 = ccLabel + '  ' + nameLabel;
+            const txt1 = ccLabel;
             const m1 = ctx.measureText(txt1);
             const y1 = ky - KNOB_RADIUS - 17;
             ctx.fillStyle = LABEL_BG;
@@ -672,7 +663,7 @@ function releaseHold() {
 }
 
 function onPointerDown(e) {
-    closeRenameDialog();
+    renameDialog.style.display = 'none'; contextKnob = null;
     const { nx, ny } = getPointerNorm(e);
     const hit = hitTest(nx, ny);
     if (hit) {
@@ -830,18 +821,18 @@ window.addEventListener('touchmove', onPointerMove, { passive: false });
 window.addEventListener('touchend', onPointerUp);
 window.addEventListener('touchcancel', onPointerUp);
 
-// ── Right-click context menu (rename / delete) ──────────────────────────
+// ── Right-click context menu (delete) ────────────────────────────────────
 canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     const { nx, ny } = getPointerNorm(e);
     const hit = hitTest(nx, ny);
     if (hit) {
         contextKnob = hit;
-        openRenameDialog(e.clientX, e.clientY, hit);
+        renameDialog.style.display = 'block';
+        renameDialog.style.left = e.clientX + 'px';
+        renameDialog.style.top = e.clientY + 'px';
     }
 });
-
-// NOTE: rename via right-click / long-press context menu (see contextmenu handler above)
 
 // ── Tooltip ──────────────────────────────────────────────────────────────
 function updateTooltip(knob) {
@@ -868,45 +859,21 @@ function updateTooltip(knob) {
     tooltip.style.top  = ty + 'px';
 }
 
-// ── Rename dialog ────────────────────────────────────────────────────────
-function openRenameDialog(clientX, clientY, knob) {
-    renameDialog.style.display = 'block';
-    renameDialog.style.left = clientX + 'px';
-    renameDialog.style.top = clientY + 'px';
-    renameInput.value = knob.name;
-    renameInput.focus();
-    renameInput.select();
-}
-
-function closeRenameDialog() {
-    if (renameDialog.style.display === 'none') return;
-    renameDialog.style.display = 'none';
-    if (contextKnob && renameInput.value.trim()) {
-        const oldName = contextKnob.name;
-        const newName = renameInput.value.trim().replace(/[^a-zA-Z0-9_]/g, '');
-        if (newName && newName !== oldName) {
-            contextKnob.name = newName;
-            vscode.postMessage({ type: 'knob-rename', id: contextKnob.id, oldName, newName });
-            draw();
-            persistState();
-        }
-    }
-    contextKnob = null;
-}
-
-renameInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') closeRenameDialog();
-    if (e.key === 'Escape') { renameDialog.style.display = 'none'; contextKnob = null; }
-});
-renameInput.addEventListener('blur', () => { closeRenameDialog(); });
-
-document.getElementById('knob-delete-btn').addEventListener('mousedown', (e) => {
-    e.preventDefault(); // prevent blur from firing first
+// ── Knob delete dialog ───────────────────────────────────────────────────
+document.getElementById('knob-delete-btn').addEventListener('click', () => {
     if (contextKnob) {
         const k = contextKnob;
         renameDialog.style.display = 'none';
         contextKnob = null;
         removeKnob(k);
+    }
+});
+
+// Close knob menu on click elsewhere
+window.addEventListener('pointerdown', (e) => {
+    if (renameDialog.style.display !== 'none' && !renameDialog.contains(e.target)) {
+        renameDialog.style.display = 'none';
+        contextKnob = null;
     }
 });
 
@@ -953,7 +920,7 @@ window.addEventListener('keydown', (e) => {
         removeKnob(contextKnob);
         contextKnob = null;
     }
-    if (e.key === 'a' && document.activeElement !== renameInput) {
+    if (e.key === 'a' && document.activeElement === document.body) {
         addKnob();
     }
 });
@@ -1052,15 +1019,14 @@ function scheduleRuntimePersist(delay = 500) {
 }
 
 function updateStatus() {
-    const macroText = macros.length > 0 ? '  ·  ' + macros.length + ' macro' + (macros.length !== 1 ? 's' : '') : '';
-    const seqText = seqs.length > 0 ? '  ·  ' + seqs.length + ' seq' + (seqs.length !== 1 ? 's' : '') : '';
-    statusText.textContent = knobs.length + ' knob' + (knobs.length !== 1 ? 's' : '') + macroText + seqText;
+    if (statusText) {
+        const macroText = macros.length > 0 ? '  ·  ' + macros.length + ' macro' + (macros.length !== 1 ? 's' : '') : '';
+        const seqText = seqs.length > 0 ? '  ·  ' + seqs.length + ' seq' + (seqs.length !== 1 ? 's' : '') : '';
+        statusText.textContent = knobs.length + ' knob' + (knobs.length !== 1 ? 's' : '') + macroText + seqText;
+    }
     if (typeof macroGrid !== 'undefined' && macroGrid) {
         macroGrid.style.display = macros.length > 0 ? '' : 'none';
     }
-    document.getElementById('seq-count').textContent =
-        (macros.length > 0 ? macros.length + ' macro' + (macros.length !== 1 ? 's' : '') + ' · ' : '') +
-        seqs.length + ' seq' + (seqs.length !== 1 ? 's' : '');
 }
 
 // ── Messages from extension ──────────────────────────────────────────────
@@ -2178,31 +2144,85 @@ function updateSeqStepVisuals() {
     }
 }
 
-function seqStopAll() {
-    macros.forEach(m => {
-        m.playing = false;
-        m.currentPos = 0;
-        m.currentVal = macroSampleAt(m, 0);
-        syncMacroRowControls(m);
-        drawMacroRow(m);
-    });
-    seqs.forEach(s => {
-        s.playing = false;
-        s.currentStep = -1;
-    });
-    for (const s of seqs) {
-        const row = document.getElementById('seq-row-' + s.id);
-        if (!row) continue;
-        const pb = row.querySelector('.seq-play-btn');
-        if (pb) { pb.classList.remove('playing'); pb.textContent = '▶'; pb.title = 'Play'; }
+let allPlayState = false; // own toggle state: false = next press plays all, true = next press stops all
+
+function updateAllBtn() {
+    if (allPlayState) {
+        seqStopAllBtn.textContent = '■ All';
+        seqStopAllBtn.title = 'Stop all macros + sequencers';
+    } else {
+        seqStopAllBtn.textContent = '▶ All';
+        seqStopAllBtn.title = 'Start all macros + sequencers';
     }
-    updateSeqStepVisuals();
-    vscode.postMessage({ type: 'seq-stop-all' });
+}
+
+function seqToggleAll() {
+    if (allPlayState) {
+        // Stop all
+        macros.forEach(m => {
+            m.playing = false;
+            vscode.postMessage({ type: 'macro-play-toggle', name: m.name, playing: false, loop: m.loop, currentPos: m.currentPos });
+            syncMacroRowControls(m);
+            drawMacroRow(m);
+        });
+        seqs.forEach(s => {
+            s.playing = false;
+            vscode.postMessage({ type: 'seq-play-toggle', name: s.name, playing: false });
+        });
+        for (const s of seqs) {
+            const row = document.getElementById('seq-row-' + s.id);
+            if (!row) continue;
+            const pb = row.querySelector('.seq-play-btn');
+            if (pb) { pb.classList.remove('playing'); pb.textContent = '▶'; pb.title = 'Play'; }
+        }
+        updateSeqStepVisuals();
+        vscode.postMessage({ type: 'seq-stop-all' });
+        allPlayState = false;
+    } else {
+        // Start all
+        macros.forEach(m => {
+            m.playing = true;
+            vscode.postMessage({ type: 'macro-play-toggle', name: m.name, playing: true, loop: m.loop, currentPos: m.currentPos });
+            syncMacroRowControls(m);
+            drawMacroRow(m);
+        });
+        seqs.forEach(s => {
+            s.playing = true;
+            vscode.postMessage({ type: 'seq-play-toggle', name: s.name, playing: true });
+        });
+        for (const s of seqs) {
+            const row = document.getElementById('seq-row-' + s.id);
+            if (!row) continue;
+            const pb = row.querySelector('.seq-play-btn');
+            if (pb) { pb.classList.add('playing'); pb.textContent = '⏸'; pb.title = 'Pause'; }
+        }
+        updateSeqStepVisuals();
+        allPlayState = true;
+    }
+    updateAllBtn();
     persistState();
 }
 
-seqStopAllBtn.addEventListener('click', seqStopAll);
+function seqSyncAll() {
+    macros.forEach(m => {
+        m.currentPos = 0;
+        m.currentVal = macroSampleAt(m, 0);
+        vscode.postMessage({ type: 'macro-seek', name: m.name, position: 0 });
+        syncMacroRowControls(m);
+        drawMacroRow(m);
+    });
+    seqs.forEach(s => { s.currentStep = -1; });
+    updateSeqStepVisuals();
+    vscode.postMessage({ type: 'seq-sync-all' });
+    persistState();
+}
+
+seqStopAllBtn.addEventListener('click', seqToggleAll);
+document.getElementById('seq-sync-all').addEventListener('click', seqSyncAll);
 seqTapBtn.addEventListener('click', registerTapTempo);
+// Init all-button state based on whether anything is playing
+allPlayState = macros.some(m => m.playing) || seqs.some(s => s.playing);
+updateAllBtn();
 
 seqBpmInput.addEventListener('input', onBpmChange);
 seqBpmInput.addEventListener('change', onBpmChange);
