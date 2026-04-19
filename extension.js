@@ -220,6 +220,12 @@ async function activate(context) {
                 // s.waitForBoot runs on AppClock — push there only affects that thread.
                 const inputCode = buildInputProxySCCode();
                 await sc.executeCode([
+                    '// Auto-reset allocators on every server boot/reboot',
+                    'ServerTree.add({',
+                    '  s.newBusAllocators;',
+                    '  s.newBufferAllocators;',
+                    '  "[envil] Bus/Buffer allocators reset.".postln;',
+                    '}, s);',
                     'TempoClock.default = TempoClock(queueSize: 8192).permanent_(true);',
                     'if(currentEnvironment.isKindOf(ProxySpace).not, {',
                     '  p = ProxySpace.push(s);',
@@ -260,12 +266,21 @@ async function activate(context) {
             if (autoInit) {
                 const inputCode = buildInputProxySCCode();
                 await sc.executeCode([
-                    's.reboot;',
-                    'if(currentEnvironment.isKindOf(ProxySpace).not, {',
-                    '  p = ProxySpace.push(s);',
-                    '  ~out.ar(2);',
-                    '  "[envil] ProxySpace pushed.".postln;',
+                    '// Auto-reset allocators on every server boot/reboot',
+                    'ServerTree.add({',
+                    '  s.newBusAllocators;',
+                    '  s.newBufferAllocators;',
+                    '  "[envil] Bus/Buffer allocators reset.".postln;',
+                    '}, s);',
+                    '// Clear stale ProxySpace so proxies get fresh buses after reboot',
+                    'if(currentEnvironment.isKindOf(ProxySpace), {',
+                    '  currentEnvironment.clear;',
+                    '  currentEnvironment.pop;',
                     '});',
+                    's.reboot;',
+                    'p = ProxySpace.push(s);',
+                    '~out.ar(2);',
+                    '"[envil] ProxySpace re-pushed.".postln;',
                     's.waitForBoot {',
                     '  ~out.play;',
                     inputCode,
@@ -615,8 +630,8 @@ iframe{width:100%;height:100%;border:none}</style></head>
     // Environment/Dictionary key completions — e[\key] suggestions from live sclang
     registerEnvCompletions(context, { getSC });
 
-    // Pbind/Event key completions + hover — \degree, \dur, etc.
-    registerPbindCompletions(context);
+    // Pbind/Event key completions + hover — \degree, \dur, SynthDef args, Pdef names
+    registerPbindCompletions(context, { getSC });
 
     // SC class/method completions — dynamic from sclang, static fallback
     registerSCCompletions(context, { getSC });

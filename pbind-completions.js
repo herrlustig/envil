@@ -3,12 +3,14 @@
 // Pbind / Event key autocompletion and hover tooltips for SuperCollider
 //
 // Provides:
-//   1) Completions: when typing `\` inside a Pbind/Pmono/PmonoArtic/Pbindef
-//      context, shows common Event keys with descriptions
-//   2) Hover: when hovering over `\keyName` inside a pattern context,
-//      shows a tooltip describing the Event key
+//   1) Completions: when typing `\` inside a Pbind/Pmono/PmonoArtic/Pbindef,
+//      shows common Event keys + SynthDef args from loaded SynthDescs
+//   2) SynthDef name dropdown when typing \instrument, \
+//   3) Pdef/Tdef/Ndef name dropdown when typing Pdef(\ etc.
+//   4) Hover: when hovering over `\keyName`, shows Event key tooltip
 //
-// All data is static (from SC Event documentation) — no sclang calls needed.
+// SynthDef data comes from live sclang queries (SynthDescLib.global).
+// Event key data is static (from SC Event documentation).
 // ─────────────────────────────────────────────────────────────────────────────
 const vscode = require('vscode');
 
@@ -156,41 +158,251 @@ for (const entry of EVENT_KEYS) {
     _keyMap.set(entry.key, entry);
 }
 
-// Pattern class names that use Event keys
-const PATTERN_CLASSES = [
-    'Pbind', 'Pmono', 'PmonoArtic', 'Pbindef', 'Pbindf',
-    'Pdef', 'Pchain', 'Pset', 'Pfset', 'Ppar', 'Ptpar',
-];
-const PATTERN_RE = new RegExp(`\\b(?:${PATTERN_CLASSES.join('|')})\\s*\\(`);
+// ── sclang access ────────────────────────────────────────────────────────────
+
+const MARKER_SDARGS = '___ENVIL_SDARGS___';
+const MARKER_SDLIST = '___ENVIL_SDLIST___';
+const MARKER_DEFS   = '___ENVIL_DEFS___';
+
+let _getSC = null;
+function _sc() {
+    const sc = _getSC ? _getSC() : null;
+    if (!sc || !sc.isSclangRunning || !sc.isSclangRunning() || !sc.queryCode) return null;
+    return sc;
+}
+
+// ── Pattern call detection ───────────────────────────────────────────────────
+
+// Pattern classes with alternating \key, value structure:
+//   Pbind(\key, val, \key, val, ...)            — all args are key/val
+//   Pbindf(source, \key, val, \key, val, ...)   — 1st arg is source pattern, rest key/val
+//   Pmono(\synthName, \key, val, ...)            — 1st arg is instrument name, rest key/val
+//   PmonoArtic(\synthName, \key, val, ...)       — same as Pmono
+//   Pbindef(\defName, \key, val, ...)            — 1st arg is def name, rest key/val
+const PATTERN_CLASSES = ['Pbind', 'Pmono', 'PmonoArtic', 'Pbindef', 'Pbindf'];
+const FIRST_ARG_SPECIAL = new Set(['Pmono', 'PmonoArtic', 'Pbindef', 'Pbindf']);
+const PATTERN_RE = new RegExp(`\\b(${PATTERN_CLASSES.join('|')})\\s*\\(`);
+
+// Def-style classes: Pdef(\name, ...), Tdef(\name, ...), Ndef(\name, ...), etc.
+const DEF_CLASSES = ['Pdef', 'Tdef', 'Ndef', 'Fdef', 'MIDIdef', 'OSCdef'];
+const DEF_RE = new RegExp(`\\b(${DEF_CLASSES.join('|')})\\s*\\(`);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Walk backwards from `offset` to check if we're inside a Pbind-like call.
- * Simple heuristic: find unmatched `(` and check if preceded by a pattern class name.
+ * Walk backwards from `offset` to find the unmatched `(` of the enclosing call.
+ * Matches against the given regex. Returns { className, parenOffset } or null.
  */
-function isInsidePatternCall(text, offset) {
+function findEnclosingCall(text, offset, classRE) {
     let depth = 0;
     for (let i = offset - 1; i >= 0; i--) {
         const ch = text[i];
         if (ch === ')' || ch === ']' || ch === '}') depth++;
         else if (ch === '(' || ch === '[' || ch === '{') {
             if (depth === 0) {
-                if (ch !== '(') return false;
-                // Check what's before this paren
-                const before = text.substring(Math.max(0, i - 30), i).trimEnd();
-                return PATTERN_RE.test(before + '(');
+                if (ch !== '(') return null;
+                const before = text.substring(Math.max(0, i - 40), i + 1);
+                const m = before.match(classRE);
+                if (m) {
+                    return { className: m[1], parenOffset: i };
+                }
+                return null;
             }
             depth--;
+        }
+    }
+    return null;
+}
+
+/**
+ * Count comma-separated arg position at `offset` inside parens at `parenOffset`.
+ * Returns 0-based index.
+ */
+function getArgPosition(text, parenOffset, offset) {
+    let depth = 0;
+    let argIdx = 0;
+    for (let i = parenOffset + 1; i < offset; i++) {
+        const ch = text[i];
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') depth--;
+        else if (ch === ',' && depth === 0) argIdx++;
+    }
+    return argIdx;
+}
+
+/**
+ * Is cursor at a "key" position in a Pbind-style pattern?
+ */
+function isAtKeyPosition(className, argIdx) {
+    if (FIRST_ARG_SPECIAL.has(className)) {
+        // Position 0 is special. Keys at 1, 3, 5, ...
+        return argIdx > 0 && (argIdx % 2) === 1;
+    }
+    // Pbind: keys at 0, 2, 4, ...
+    return (argIdx % 2) === 0;
+}
+
+/**
+ * Is cursor at the value position right after \instrument?
+ * Also handles Pmono/PmonoArtic where position 0 IS the instrument.
+ */
+function isAtInstrumentValuePosition(className, argIdx, text, parenOffset) {
+    if ((className === 'Pmono' || className === 'PmonoArtic') && argIdx === 0) {
+        return true;
+    }
+    // Check if the preceding key is \instrument
+    let keyArgIdx;
+    if (FIRST_ARG_SPECIAL.has(className)) {
+        // value positions: 2, 4, 6, ...
+        if (argIdx > 0 && (argIdx % 2) === 0) keyArgIdx = argIdx - 1;
+        else return false;
+    } else {
+        // Pbind: value positions: 1, 3, 5, ...
+        if (argIdx > 0 && (argIdx % 2) === 1) keyArgIdx = argIdx - 1;
+        else return false;
+    }
+    // Walk to the arg at keyArgIdx and check if it's \instrument
+    let depth = 0, currentArg = 0, argStart = parenOffset + 1;
+    for (let i = parenOffset + 1; i < text.length; i++) {
+        const ch = text[i];
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') { if (depth === 0) break; depth--; }
+        else if (ch === ',' && depth === 0) {
+            if (currentArg === keyArgIdx) {
+                return text.substring(argStart, i).trim() === '\\instrument';
+            }
+            currentArg++;
+            argStart = i + 1;
         }
     }
     return false;
 }
 
+/**
+ * Extract the \instrument value from a Pbind-like call.
+ */
+function findInstrumentName(text, className, parenOffset) {
+    if (className === 'Pmono' || className === 'PmonoArtic') {
+        const after = text.substring(parenOffset + 1, parenOffset + 200);
+        const m = after.match(/^\s*(?:\\(\w+)|'(\w+)'|"(\w+)")/);
+        if (m) return m[1] || m[2] || m[3];
+        return null;
+    }
+    const endSearch = Math.min(text.length, parenOffset + 2000);
+    const inside = text.substring(parenOffset + 1, endSearch);
+    const m = inside.match(/\\instrument\s*,\s*(?:\\(\w+)|'(\w+)'|"(\w+)")/);
+    if (m) return m[1] || m[2] || m[3];
+    return null;
+}
+
+// ── sclang queries ───────────────────────────────────────────────────────────
+
+/**
+ * Query sclang for the controls of a loaded SynthDef.
+ * Always fresh — no caching (live coding: things change fast).
+ * Returns [{ name, default }] or null.
+ */
+async function querySynthDefArgs(synthName) {
+    const sc = _sc();
+    if (!sc) return null;
+    if (!/^\w+$/.test(synthName)) return null;
+
+    const code = [
+        `({`,
+        `var sd = SynthDescLib.global[\\${synthName}];`,
+        `if(sd.notNil, {`,
+        `  var out = sd.controls.select{|c|`,
+        `    [\\out, \\i_out, \\gate, \\doneAction].includes(c.name).not`,
+        `  }.collect{|c| c.name.asString ++ "=" ++ c.defaultValue.asString }.join(",");`,
+        `  ("${MARKER_SDARGS}" ++ out ++ "${MARKER_SDARGS}").postln;`,
+        `}, {`,
+        `  ("${MARKER_SDARGS}${MARKER_SDARGS}").postln;`,
+        `});`,
+        `}).value;`,
+    ].join(' ');
+
+    const raw = await sc.queryCode(code, MARKER_SDARGS, 2000);
+    if (!raw || raw.trim().length === 0) return null;
+
+    const args = [];
+    for (const part of raw.trim().split(',')) {
+        const t = part.trim();
+        if (!t) continue;
+        const eq = t.indexOf('=');
+        if (eq >= 0) args.push({ name: t.substring(0, eq), default: t.substring(eq + 1) });
+        else args.push({ name: t, default: null });
+    }
+    return args.length > 0 ? args : null;
+}
+
+/**
+ * Query sclang for all loaded SynthDef names + arg summaries.
+ * Returns [{ name, args }] or null.
+ */
+async function queryLoadedSynthDefs() {
+    const sc = _sc();
+    if (!sc) return null;
+
+    const code = [
+        `({`,
+        `var out = "";`,
+        `SynthDescLib.global.synthDescs.keysValuesDo{|name, desc|`,
+        `  if(name.asString.beginsWith("system_").not, {`,
+        `    var args = desc.controls.select{|c|`,
+        `      [\\out, \\i_out, \\gate, \\doneAction].includes(c.name).not`,
+        `    }.collect{|c| c.name.asString }.join(", ");`,
+        `    out = out ++ name.asString ++ "(" ++ args ++ ");";`,
+        `  });`,
+        `};`,
+        `("${MARKER_SDLIST}" ++ out ++ "${MARKER_SDLIST}").postln;`,
+        `}).value;`,
+    ].join(' ');
+
+    const raw = await sc.queryCode(code, MARKER_SDLIST, 3000);
+    if (!raw || raw.trim().length === 0) return null;
+
+    const result = [];
+    for (const entry of raw.trim().split(';')) {
+        const t = entry.trim();
+        if (!t) continue;
+        const pIdx = t.indexOf('(');
+        if (pIdx < 0) continue;
+        result.push({ name: t.substring(0, pIdx), args: t.substring(pIdx + 1, t.length - 1) });
+    }
+    return result.length > 0 ? result : null;
+}
+
+/**
+ * Query sclang for existing Pdef/Tdef/Ndef/etc names.
+ * Returns string[] or null.
+ */
+async function queryDefNames(defClass) {
+    const sc = _sc();
+    if (!sc) return null;
+    if (!/^[A-Z]\w*$/.test(defClass)) return null;
+
+    const code = [
+        `({`,
+        `if(${defClass}.respondsTo(\\all), {`,
+        `  var names = ${defClass}.all.keys.asArray.sort.collect(_.asString).join(",");`,
+        `  ("${MARKER_DEFS}" ++ names ++ "${MARKER_DEFS}").postln;`,
+        `}, {`,
+        `  ("${MARKER_DEFS}${MARKER_DEFS}").postln;`,
+        `});`,
+        `}).value;`,
+    ].join(' ');
+
+    const raw = await sc.queryCode(code, MARKER_DEFS, 2000);
+    if (!raw || raw.trim().length === 0) return null;
+
+    const names = raw.trim().split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+    return names.length > 0 ? names : null;
+}
+
 // ── Completion Provider ──────────────────────────────────────────────────────
 
 class PbindKeyCompletionProvider {
-    provideCompletionItems(document, position) {
+    async provideCompletionItems(document, position) {
         const lineText = document.lineAt(position).text;
         const lineUpToCursor = lineText.substring(0, position.character);
 
@@ -199,40 +411,126 @@ class PbindKeyCompletionProvider {
         if (!symbolMatch) return null;
 
         const partial = symbolMatch[1].toLowerCase();
-
-        // Check if we're inside a Pbind-like call by scanning the full text
         const fullText = document.getText();
         const offset = document.offsetAt(position);
-        if (!isInsidePatternCall(fullText, offset)) return null;
-
         const backslashPos = position.character - symbolMatch[0].length;
 
-        const items = EVENT_KEYS.map(entry => {
-            const lowerKey = entry.key.toLowerCase();
-            if (partial && !lowerKey.startsWith(partial)) return null;
+        // ── Check: Pdef(\, Tdef(\, Ndef(\ etc — show existing def names ──
+        const defCall = findEnclosingCall(fullText, offset, DEF_RE);
+        if (defCall) {
+            const argIdx = getArgPosition(fullText, defCall.parenOffset, offset);
+            if (argIdx === 0) {
+                return await this._defNameCompletions(defCall.className, partial, position, backslashPos);
+            }
+        }
+
+        // ── Check: inside a Pbind-like call ──
+        const patternCall = findEnclosingCall(fullText, offset, PATTERN_RE);
+        if (!patternCall) return null;
+
+        const argIdx = getArgPosition(fullText, patternCall.parenOffset, offset);
+
+        // ── At instrument VALUE position → show loaded SynthDef names ──
+        if (isAtInstrumentValuePosition(patternCall.className, argIdx, fullText, patternCall.parenOffset)) {
+            return await this._synthDefNameCompletions(partial, position, backslashPos);
+        }
+
+        // ── Only show key completions at KEY positions ──
+        if (!isAtKeyPosition(patternCall.className, argIdx)) return null;
+
+        // ── Build Event key completions ──
+        const items = EVENT_KEYS.map(function(entry) {
+            if (partial && !entry.key.toLowerCase().startsWith(partial)) return null;
 
             const item = new vscode.CompletionItem(
-                '\\' + entry.key,
-                vscode.CompletionItemKind.Property
-            );
-
-            // Replace from the backslash onwards
-            item.range = new vscode.Range(
-                position.line, backslashPos,
-                position.line, position.character
-            );
+                '\\' + entry.key, vscode.CompletionItemKind.Property);
+            item.range = new vscode.Range(position.line, backslashPos, position.line, position.character);
             item.insertText = '\\' + entry.key;
-
-            item.detail = `[${entry.cat}] ${entry.detail}`;
+            item.detail = '[' + entry.cat + '] ' + entry.detail;
             item.documentation = new vscode.MarkdownString(
-                `**\\${entry.key}** — ${entry.cat}\n\n${entry.doc}`
-            );
+                '**\\' + entry.key + '** — ' + entry.cat + '\n\n' + entry.doc);
             item.sortText = entry.cat.padEnd(20) + entry.key;
-
             return item;
         }).filter(Boolean);
 
+        // ── Add SynthDef arg completions (from loaded SynthDesc) ──
+        const synthName = findInstrumentName(fullText, patternCall.className, patternCall.parenOffset);
+        if (synthName) {
+            const synthArgs = await querySynthDefArgs(synthName);
+            if (synthArgs) {
+                for (var i = 0; i < synthArgs.length; i++) {
+                    var arg = synthArgs[i];
+                    if (partial && !arg.name.toLowerCase().startsWith(partial)) continue;
+                    if (_keyMap.has(arg.name)) continue;  // skip standard Event keys
+
+                    var item = new vscode.CompletionItem(
+                        '\\' + arg.name, vscode.CompletionItemKind.Variable);
+                    item.range = new vscode.Range(position.line, backslashPos, position.line, position.character);
+                    item.insertText = '\\' + arg.name;
+
+                    var defStr = arg.default != null ? ' (default: ' + arg.default + ')' : '';
+                    item.detail = '🎛  SynthDef \\' + synthName + ' arg' + defStr;
+                    item.documentation = new vscode.MarkdownString(
+                        '**\\' + arg.name + '** — SynthDef \\\\' + synthName + ' argument' + defStr +
+                        '\n\nLoaded in `SynthDescLib.global`.');
+                    item.sortText = 'A_syntharg_' + arg.name;
+                    items.push(item);
+                }
+            }
+        }
+
         return new vscode.CompletionList(items, false);
+    }
+
+    /**
+     * Show all loaded SynthDef names for \instrument value position.
+     */
+    async _synthDefNameCompletions(partial, position, backslashPos) {
+        var synthDefs = await queryLoadedSynthDefs();
+        if (!synthDefs) return null;
+
+        var items = [];
+        for (var i = 0; i < synthDefs.length; i++) {
+            var sd = synthDefs[i];
+            if (partial && !sd.name.toLowerCase().startsWith(partial)) continue;
+
+            var item = new vscode.CompletionItem(
+                '\\' + sd.name, vscode.CompletionItemKind.Enum);
+            item.range = new vscode.Range(position.line, backslashPos, position.line, position.character);
+            item.insertText = '\\' + sd.name;
+            item.detail = sd.args ? '🎹  (' + sd.args + ')' : '🎹  SynthDef';
+            item.documentation = new vscode.MarkdownString(
+                '**\\' + sd.name + '** — loaded SynthDef\n\n' +
+                (sd.args ? 'Arguments: `' + sd.args + '`' : 'No custom arguments.'));
+            item.sortText = '000_' + sd.name;
+            items.push(item);
+        }
+        return new vscode.CompletionList(items, false);
+    }
+
+    /**
+     * Show existing Pdef/Tdef/Ndef names.
+     */
+    async _defNameCompletions(defClass, partial, position, backslashPos) {
+        var names = await queryDefNames(defClass);
+        if (!names) return null;
+
+        var items = [];
+        for (var i = 0; i < names.length; i++) {
+            var name = names[i];
+            if (partial && !name.toLowerCase().startsWith(partial)) continue;
+
+            var item = new vscode.CompletionItem(
+                '\\' + name, vscode.CompletionItemKind.Reference);
+            item.range = new vscode.Range(position.line, backslashPos, position.line, position.character);
+            item.insertText = '\\' + name;
+            item.detail = '📎  existing ' + defClass;
+            item.documentation = new vscode.MarkdownString(
+                '**\\' + name + '** — registered in `' + defClass + '.all`');
+            item.sortText = '000_' + name;
+            items.push(item);
+        }
+        return items.length > 0 ? new vscode.CompletionList(items, false) : null;
     }
 }
 
@@ -243,30 +541,24 @@ class PbindKeyHoverProvider {
         const lineText = document.lineAt(position).text;
         const charIdx = position.character;
 
-        // Find the symbol at cursor: look for \word pattern containing the cursor
-        // Walk left to find `\`
         let start = charIdx;
         while (start > 0 && /\w/.test(lineText[start - 1])) start--;
         if (start > 0 && lineText[start - 1] === '\\') start--;
-        else return null; // no backslash → not a symbol
+        else return null;
 
-        // Walk right for the key name
-        let end = start + 1; // skip the backslash
+        let end = start + 1;
         while (end < lineText.length && /\w/.test(lineText[end])) end++;
 
-        const keyName = lineText.substring(start + 1, end); // without backslash
+        const keyName = lineText.substring(start + 1, end);
         if (!keyName) return null;
 
         const entry = _keyMap.get(keyName);
         if (!entry) return null;
 
-        // Optional: check if inside a pattern context for stricter matching.
-        // For hover we're more lenient — Event keys are useful info anywhere.
         const md = new vscode.MarkdownString();
-        md.appendMarkdown(`### \\${entry.key}  \`[${entry.cat}]\`\n\n`);
-        md.appendMarkdown(`${entry.doc}\n\n`);
+        md.appendMarkdown('### \\' + entry.key + '  `[' + entry.cat + ']`\n\n');
+        md.appendMarkdown(entry.doc + '\n\n');
 
-        // Add a mini usage example for the most common keys
         const examples = {
             freq:       'Pbind(\\freq, Pseq([440, 550, 660], inf))',
             degree:     'Pbind(\\degree, Pseq([0, 2, 4, 7], inf))',
@@ -286,34 +578,33 @@ class PbindKeyHoverProvider {
             md.appendCodeblock(examples[entry.key], 'supercollider');
         }
 
-        const range = new vscode.Range(
-            position.line, start,
-            position.line, end
-        );
-
-        return new vscode.Hover(md, range);
+        return new vscode.Hover(md, new vscode.Range(position.line, start, position.line, end));
     }
 }
 
 // ── Registration ─────────────────────────────────────────────────────────────
 
-function registerPbindCompletions(context) {
+function registerPbindCompletions(context, opts) {
+    if (opts && opts.getSC) _getSC = opts.getSC;
+
     const selector = { language: LANGUAGE_ID, scheme: '*' };
 
-    // Completion provider — trigger on backslash
-    const completionProvider = vscode.languages.registerCompletionItemProvider(
-        selector,
-        new PbindKeyCompletionProvider(),
-        '\\'   // trigger character
+    context.subscriptions.push(
+        vscode.languages.registerCompletionItemProvider(
+            selector, new PbindKeyCompletionProvider(), '\\')
     );
-    context.subscriptions.push(completionProvider);
+    context.subscriptions.push(
+        vscode.languages.registerHoverProvider(
+            selector, new PbindKeyHoverProvider())
+    );
 
-    // Hover provider — shows tooltip for \keyName
-    const hoverProvider = vscode.languages.registerHoverProvider(
-        selector,
-        new PbindKeyHoverProvider()
-    );
-    context.subscriptions.push(hoverProvider);
+    // Suppress markers from Post Window
+    var sc = _getSC ? _getSC() : null;
+    if (sc && sc.addSuppressMarker) {
+        sc.addSuppressMarker(MARKER_SDARGS);
+        sc.addSuppressMarker(MARKER_SDLIST);
+        sc.addSuppressMarker(MARKER_DEFS);
+    }
 
     console.log('[envil] Pbind/Event key completions + hover registered');
 }
