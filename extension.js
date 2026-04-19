@@ -12,6 +12,8 @@ const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require
 const { extractExpressions } = require('./peek-expressions');
 const { registerTouchKnobs, hasEnvilDir } = require('./touch-knobs');
 const { registerProxyCompletions } = require('./proxy-completions');
+const { registerEnvCompletions, clearEnvKeyCache } = require('./env-completions');
+const { registerPbindCompletions } = require('./pbind-completions');
 const { registerSCCompletions, clearSCCompletionCaches } = require('./sc-completions');
 const scBridge = require('./sc-bridge');
 const osc = require('osc');
@@ -177,6 +179,7 @@ async function activate(context) {
         vscode.commands.registerCommand('envil.supercollider.startSCLang', async () => {
             const sc = getSC(); if (!sc) return;
             clearSCCompletionCaches();   // class library may recompile
+            clearEnvKeyCache();          // env state is gone after restart
             const ok = await sc.startSclang();
             if (ok) {
                 // Bar will update on next heartbeat tick, but set immediately for snappy UX
@@ -608,6 +611,12 @@ iframe{width:100%;height:100%;border:none}</style></head>
 
     // ProxySpace autocompletion — ~proxy suggestions from live sclang
     registerProxyCompletions(context, { getSC });
+
+    // Environment/Dictionary key completions — e[\key] suggestions from live sclang
+    registerEnvCompletions(context, { getSC });
+
+    // Pbind/Event key completions + hover — \degree, \dur, etc.
+    registerPbindCompletions(context);
 
     // SC class/method completions — dynamic from sclang, static fallback
     registerSCCompletions(context, { getSC });

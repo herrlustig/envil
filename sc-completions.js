@@ -457,8 +457,85 @@ class SCCompletionProvider {
             return this._classCompletions(partial);
         }
 
+        // ── Case 7: Inside function call → suggest argument names
+        //    e.g.  Pitch.kr(in, m  →  suggest minFreq:, maxFreq:, ...
+        //    Only when the partial starts lowercase (uppercase is handled by Case 6).
+        const argItems = await this._argNameCompletions(before, position);
+        if (argItems) return argItems;
+
         // Other cases (lowercase words, keywords) → handled by LSP
         return null;
+    }
+
+    /**
+     * Inside a function call → suggest argument names with ':' suffix.
+     * e.g. Pitch.kr(in, m  →  minFreq:, maxFreq:, median:, ...
+     */
+    async _argNameCompletions(before, position) {
+        // Find the partial word being typed (lowercase start only)
+        const partialMatch = before.match(/[,.(]\s*([a-z]\w*)$/);
+        if (!partialMatch) return null;
+        const partial = partialMatch[1].toLowerCase();
+
+        // Walk backwards to find unmatched '(' 
+        let depth = 0;
+        let callStart = -1;
+        for (let i = before.length - 1; i >= 0; i--) {
+            const ch = before[i];
+            if (ch === ')' || ch === ']' || ch === '}') depth++;
+            else if (ch === '[' || ch === '{') { if (depth === 0) break; depth--; }
+            else if (ch === '(') {
+                if (depth === 0) { callStart = i; break; }
+                depth--;
+            }
+        }
+        if (callStart < 0) return null;
+
+        const beforeParen = before.substring(0, callStart);
+
+        // Resolve the method signature
+        let sig = null;
+        const dotMatch = beforeParen.match(/(\w+)\.(\w+)\s*$/);
+        if (dotMatch) {
+            const resolved = await resolveReceiverClass(dotMatch[1]);
+            if (resolved) {
+                sig = await queryMethodSignature(resolved.cls, dotMatch[2], resolved.isMeta);
+            }
+            if (!sig) sig = await queryMethodSignatureAny(dotMatch[2]);
+        } else {
+            const ctorMatch = beforeParen.match(/\b([A-Z]\w*)\s*$/);
+            if (ctorMatch) {
+                sig = await queryMethodSignature(ctorMatch[1], 'new');
+            } else {
+                const bareMatch = beforeParen.match(/\b(\w+)\s*$/);
+                if (bareMatch && /^[a-z]/.test(bareMatch[1])) {
+                    sig = await queryMethodSignatureAny(bareMatch[1]);
+                }
+            }
+        }
+
+        if (!sig || !sig.params || sig.params.length === 0) return null;
+
+        // Build completions for matching param names
+        const items = [];
+        for (let i = 0; i < sig.params.length; i++) {
+            const paramStr = sig.params[i];
+            const paramName = paramStr.split(/[:\s=]/)[0].trim();
+            if (!paramName.toLowerCase().startsWith(partial)) continue;
+
+            const item = new vscode.CompletionItem(
+                paramName + ':',
+                vscode.CompletionItemKind.Field
+            );
+            item.detail = '⬡  arg ' + paramStr;
+            item.sortText = '000_' + paramName;  // sort above other suggestions
+            item.insertText = paramName + ': ';
+            item.filterText = paramName;  // filter on name without colon
+            items.push(item);
+        }
+
+        if (items.length === 0) return null;
+        return new vscode.CompletionList(items, true);  // isIncomplete=true → allow other providers too
     }
 
     /**
@@ -787,6 +864,9 @@ class SCSignatureHelpProvider {
 
         const before = text.substring(0, callStart);
 
+        // Text inside the call (for named-arg detection)
+        const insideCall = text.substring(callStart + 1, offset);
+
         // Pattern: receiver.method(
         const dotMethodMatch = before.match(/(.*)\.\s*(\w+)\s*$/);
         if (dotMethodMatch) {
@@ -809,7 +889,7 @@ class SCSignatureHelpProvider {
             }
 
             if (sig) {
-                return this._buildResult(sig, activeParam);
+                return this._buildResult(sig, activeParam, insideCall);
             }
         }
 
@@ -818,7 +898,7 @@ class SCSignatureHelpProvider {
         if (ctorMatch) {
             const sig = await queryMethodSignature(ctorMatch[1], 'new');
             if (sig) {
-                return this._buildResult(sig, activeParam);
+                return this._buildResult(sig, activeParam, insideCall);
             }
         }
 
@@ -828,14 +908,27 @@ class SCSignatureHelpProvider {
         if (bareMatch && /^[a-z]/.test(bareMatch[1])) {
             const sig = await queryMethodSignatureAny(bareMatch[1]);
             if (sig) {
-                return this._buildResult(sig, activeParam);
+                return this._buildResult(sig, activeParam, insideCall);
             }
         }
 
         return null;
     }
 
-    _buildResult(sig, activeParam) {
+    _buildResult(sig, activeParam, insideCall) {
+        // Check for SC named argument (keyword: value) near cursor
+        if (insideCall) {
+            const namedMatch = insideCall.match(/\b(\w+)\s*:\s*[^,:)]*$/);
+            if (namedMatch) {
+                const argName = namedMatch[1];
+                const idx = sig.params.findIndex(p => {
+                    const pName = p.split(/[:\s=]/)[0].trim();
+                    return pName === argName;
+                });
+                if (idx >= 0) activeParam = idx;
+            }
+        }
+
         const signatureInfo = new vscode.SignatureInformation(sig.label);
         signatureInfo.parameters = sig.params.map(p =>
             new vscode.ParameterInformation(p)
