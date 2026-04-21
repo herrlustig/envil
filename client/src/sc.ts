@@ -513,6 +513,8 @@ export async function probeRunningServer(autoInitProxy = true, inputProxyCode = 
         '    if(currentEnvironment.isKindOf(ProxySpace).not, {',
         '      p = ProxySpace.push(s);',
         '      ~out.ar(2);',
+        '      p.fadeTime = 4;',
+        '      p.quant = 1;',
         '    });',
         inputProxyCode ? `    ${inputProxyCode.split('\n').join('\n    ')}` : '',
     ].filter(Boolean).join('\n') : '';

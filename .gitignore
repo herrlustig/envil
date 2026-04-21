@@ -3,3 +3,4 @@ node_modules
 *.vsix
 TODO.txt
 dist_extension.js
+*.pdf
