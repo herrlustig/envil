@@ -16,6 +16,7 @@ const { registerEnvCompletions, clearEnvKeyCache } = require('./env-completions'
 const { registerPbindCompletions } = require('./pbind-completions');
 const { registerSCCompletions, clearSCCompletionCaches } = require('./sc-completions');
 const scBridge = require('./sc-bridge');
+const suggestions = require('./suggestions');
 const osc = require('osc');
 
 // SC + LSP modules are loaded lazily so a compile error never blocks activation
@@ -335,6 +336,13 @@ iframe{width:100%;height:100%;border:none}</style></head>
 
     // ── Hydra language providers (hover, completion, signature help) ──────────
     registerHydraProviders(context);
+
+    // ── Offline suggestions (corpus + templates + inline + optional Ollama) ──
+    try {
+        suggestions.activate(context);
+    } catch (err) {
+        console.error('[envil] suggestions activation failed:', err);
+    }
 
     // ── SCIDE-style bracket selection ────────────────────────────────────────
     //

@@ -76,9 +76,9 @@ Present results as an `InlineCompletionItemProvider`, cyclable with Alt-].
 ### C. Local embeddings + semantic retrieval
 Embed each block with a small model (e.g. `all-MiniLM-L6-v2` via
 `@xenova/transformers`, ~25 MB, CPU). Cosine top-k at query time.
-- Rebuild command: `envil.suggest.reindex`.
+- Rebuild command: `envil.corpusSuggestor.reindex`.
 - Incremental on save.
-- Configurable sources (`envil.suggest.sources`).
+- Configurable sources (`envil.corpusSuggestor.sources`).
 
 **Pros:** handles paraphrases / intent; works with `//? …` comments.
 **Cons:** ~200 ms first query, ~25 MB model download.
@@ -122,8 +122,8 @@ Relevant VS Code APIs:
   into blocks (reuse `codelens-blocks.js`), extract metadata
   (SynthDefs, UGens, Pbind keys, `~proxy` names, date from filename).
 - Persist to `data/suggestions-index.json`.
-- Commands: `envil.suggest.reindex`, `envil.suggest.addSource`.
-- Settings: `envil.suggest.sources`, `envil.suggest.includeHelp`.
+- Commands: `envil.corpusSuggestor.reindex`, `envil.corpusSuggestor.addSource`.
+- Settings: `envil.corpusSuggestor.sources`, `envil.corpusSuggestor.includeHelp`.
 
 ### Phase 1 — Snippet / template provider (1 day)
 - `CompletionItemProvider` serving corpus blocks as `SnippetString`s with
@@ -239,13 +239,13 @@ limits. Must live outside the extension.
 Mirrors what **Continue**, **Tabby**, **Cody** do:
 
 1. **Ship no weights in the VSIX.**
-2. On first activation (or on `envil.suggest.reindex`):
+2. On first activation (or on `envil.corpusSuggestor.reindex`):
    - Download the embedding model via `@xenova/transformers` — it fetches
      from HuggingFace into `~/.cache/huggingface/` automatically, with a
      local cache. Offline after the first run.
    - Show a progress notification; opt-out via
-     `envil.suggest.embeddings.enabled`.
-3. **Offer a pre-downloaded path setting** (`envil.suggest.modelPath`) for
+     `envil.corpusSuggestor.embeddings.enabled`.
+3. **Offer a pre-downloaded path setting** (`envil.corpusSuggestor.modelPath`) for
    fully air-gapped users — they drop the ONNX file there manually.
 4. For LLMs: **don’t bundle**, just detect **Ollama**
    (`http://localhost:11434`) or **llama.cpp server**. User installs the
@@ -298,7 +298,7 @@ Key points:
 2. **Generation (Phase 4):** don’t ship weights. Detect Ollama and
    default-recommend **qwen2.5-coder:1.5b** (Apache-2.0, ~1 GB). Document
    `ollama pull qwen2.5-coder:1.5b` in the README.
-3. **Air-gapped mode:** provide `envil.suggest.modelPath` + a short doc
+3. **Air-gapped mode:** provide `envil.corpusSuggestor.modelPath` + a short doc
    explaining how to place the ONNX file manually; no network needed after
    that.
 4. Keep the VSIX itself **under ~5 MB** — models live in user cache /
@@ -306,3 +306,118 @@ Key points:
 
 Net effect: full offline capability, minimal repo bloat, no licensing
 landmines.
+
+---
+
+## 10. Piggy-backing on existing VS Code extensions
+
+Instead of re-implementing an offline-AI stack from scratch, Envil can
+depend on / coexist with a general-purpose AI plugin and only contribute
+the **SuperCollider context** (jams, SC help, running ProxySpace). Three
+integration shapes exist:
+
+**(a) Hard dependency** — `extensionDependencies` in `package.json`. User
+must have the other extension installed. Useful only if the host exposes a
+stable extension API.
+
+**(b) Soft integration** — detect the extension, call it via commands or
+its JS API if present, otherwise fall back to Envil-internal snippets.
+Best trade-off in practice.
+
+**(c) External server co-processor** — we don’t depend on a VS Code
+extension at all; we speak OpenAI-compatible HTTP to a local server
+(Ollama, llama.cpp server, Tabby server). The user can also point any
+other extension at the same server.
+
+### 10.1 Candidate extensions
+
+| Extension | License | Offline? | FIM autocomplete | RAG / custom context | Extensibility surface | Project status (2026-04) |
+|---|---|---|---|---|---|---|
+| **Continue** (`continue.continue`) | Apache-2.0 | yes (Ollama / llama.cpp / any OpenAI-compatible endpoint) | yes | yes — **Context Providers** and **`@custom` docs** + config-driven codebase indexer | documented plugin config (`~/.continue/config.yaml`), custom Context Providers in TS, slash commands | **caveat** actively pivoting toward CLI + CI “checks”; VS Code extension still maintained (v1.2.22-vscode, ~last month). Flagship for local RAG+LLM. |
+| **Tabby** (`TabbyML.vscode-tabby`) | Apache-2.0 (server + client) | yes (self-hosted Tabby server, llama.cpp under the hood) | yes (strong FIM, StarCoder/Qwen/DeepSeek variants) | yes — server-side codebase / doc indexing | HTTP OpenAPI, server config files; client extension thin | **yes** very actively developed, 33k★, enterprise-leaning |
+| **Twinny** (`rjmacarthy.twinny`) | MIT | yes (Ollama / OpenAI-compat) | yes | workspace embeddings + “Symmetry” P2P | prompt templates editable; no formal plugin API | **no** repo archived Nov 2025, last release v3.23 (Apr 2025). Still installable but unmaintained. |
+| **llama-vscode** (`ggml-org.llama-vscode`) | MIT | yes (llama.cpp server) | yes (FIM, very low-latency) | ring-buffer of recently-edited files; no formal RAG | server params; minimal | **yes** maintained by the llama.cpp team |
+| **Cody** (`sourcegraph.cody-ai`) | Apache-2.0 (client) | partial — local models via Ollama; some cloud features | yes | yes — context fetchers, but heavily cloud-oriented | limited public extension API | **yes** maintained; heavy pivot to enterprise/cloud |
+| **CodeGPT** (`DanielSanMedium.dscodegpt`) | proprietary (free tier) | yes (Ollama) | yes | basic @-context, workspace files | configurable providers | **yes** maintained, closed source |
+| **llm-vscode** (`HuggingFace.huggingface-vscode`) | Apache-2.0 | yes (local HF inference endpoint / TGI) | yes | no RAG | thin wrapper over HF endpoints | **yes** low-maintenance but functional |
+| **Aider** (CLI, not an extension) | Apache-2.0 | yes | — (edit mode, not inline) | git-aware repo context | — | **caveat** excellent for “explain/refactor” flows but not inline ghost text |
+
+### 10.2 How they handle custom context (the important bit for us)
+
+- **Continue** — the cleanest surface for what we need:
+  - `@codebase` context provider indexes the workspace with local
+    embeddings automatically.
+  - `@docs` lets you register arbitrary doc sites/folders that get
+    embedded and become queryable by name (e.g. `@sc-help`, `@jams`).
+  - **Custom Context Providers** are small JS/TS classes returning
+    snippets for a given query — Envil can implement one that: reads
+    live ProxySpace names via sc-bridge, greps `00_jams/`, and serves
+    typed `.schelp` example blocks. This is literally the integration
+    point you want.
+- **Tabby** — the server supports **“Context Providers”** (Git, local
+  dirs, URLs) configured server-side; the VS Code client is mostly
+  inline-completion UI. Great if you want one shared server for a
+  band/crew; less VS-Code-native.
+- **Twinny** — has workspace embeddings but no clean external provider
+  API, and it’s now archived. Not a good dependency target.
+- **llama-vscode** — no structured RAG; would need Envil to prepend its
+  own retrieved snippets into the prompt via the extension’s prefix hook.
+- **Cody / CodeGPT** — closed or semi-closed APIs, awkward to extend for
+  SC-specific context.
+
+### 10.3 Three concrete integration paths for Envil
+
+**Path A — Soft-integrate with Continue (recommended)**
+- Recommend the user install `continue.continue`.
+- Ship an Envil-provided Continue **custom context provider** (shipped
+  in this repo under `continue-provider/`) that exposes:
+  - `@envil-jams` — top-k blocks from `00_jams/` (BM25 + optional
+    embeddings, reusing our Phase 0–2 corpus).
+  - `@envil-sc-help` — `.schelp` example blocks.
+  - `@envil-live` — current ProxySpace names, loaded SynthDefs, bound
+    MIDI controllers (via sc-bridge), *and* the last N blocks the user
+    actually evaluated this session (session memory).
+- Provide a `envil.init` command that writes a starter
+  `~/.continue/config.yaml` wiring our provider + a recommended
+  Ollama model (`qwen2.5-coder:3b-base`).
+- FIM autocomplete, multi-variant cycling, `//?` / comment-driven
+  generation — all already solved by Continue. We only contribute the
+  SuperCollider brain.
+
+**Path B — Talk directly to Ollama / llama.cpp server ourselves**
+- No VS Code dependency, just an HTTP client.
+- Envil implements its own `InlineCompletionItemProvider` that does
+  retrieval (Phases 0–3) → prompt → Ollama → ghost text.
+- More code to own, but zero coupling to another extension’s roadmap
+  (Continue is pivoting toward CI checks; Twinny archived; future
+  uncertainty).
+- Works identically whether or not other AI extensions are installed.
+
+**Path C — Tabby server as shared brain**
+- Good for multi-user / band scenarios: one machine runs Tabby with the
+  Envil corpus mounted as a repo; all laptops use `vscode-tabby`.
+- Overkill for a solo live-coder; but it’s the path with the best
+  production story and the cleanest license (Apache-2.0 end-to-end).
+
+### 10.4 Recommendation
+
+Do **A + B together**:
+
+1. **Path B as the Envil-owned baseline.** Phases 0–4 of this doc are
+   implemented with a thin direct-to-Ollama client. The extension works
+   standalone, with no foreign dependency, and always knows about
+   ProxySpace / session memory / the jams corpus.
+2. **Path A as an optional enhancement.** If Continue is installed,
+   Envil additionally registers a custom Context Provider so that
+   Continue’s chat, slash commands and FIM completions automatically
+   see `@envil-jams`, `@envil-sc-help`, `@envil-live`. Users who
+   already live in Continue get Envil-aware answers; users who don’t,
+   get the same intelligence natively.
+3. **Do not** take a hard dependency on Twinny (archived) or Cody
+   (cloud-drifting). Mention **Tabby** in docs as the recommended
+   multi-user setup.
+
+This way Envil contributes its uniquely valuable piece — *knowing about
+SuperCollider, the user’s past jams, and the running live session* — and
+reuses the best of the existing offline-AI ecosystem for everything else.
+

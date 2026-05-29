@@ -14,3 +14,5 @@ server/src/**
 server/tsconfig.json
 server/package.json
 **/.vscode-test.*
+data/suggestions-index.json
+docs/analysis/**

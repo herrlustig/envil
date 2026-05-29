@@ -194,6 +194,26 @@
       {
         "command": "envil.scBridge.refresh",
         "title": "Envil: Refresh SC Proxy Bus Indices"
+      },
+      {
+        "command": "envil.corpusSuggestor.reindex",
+        "title": "Envil: Corpus – Rebuild Offline Index"
+      },
+      {
+        "command": "envil.corpusSuggestor.showStats",
+        "title": "Envil: Corpus – Show Index Stats"
+      },
+      {
+        "command": "envil.corpusSuggestor.composeAtCursor",
+        "title": "Envil: Corpus – Compose at Cursor (LLM)"
+      },
+      {
+        "command": "envil.corpusSuggestor.triggerInline",
+        "title": "Envil: Corpus – Trigger Inline Suggestion"
+      },
+      {
+        "command": "envil.corpusSuggestor.revealCache",
+        "title": "Envil: Corpus – Reveal Cache in File Manager"
       }
     ],
     "configuration": [
@@ -299,6 +319,103 @@
             "description": "Path to the sclang_conf.yaml file."
           }
         }
+      },
+      {
+        "type": "object",
+        "title": "Envil – Offline Suggestions",
+        "properties": {
+          "envil.corpusSuggestor.enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Experimental — master switch for the offline suggestion system (corpus indexing + dropdown + inline + LLM compose). Off by default while the feature is WIP. See README § Experimental features."
+          },
+          "envil.corpusSuggestor.indexOnStartup": {
+            "type": "boolean",
+            "default": true,
+            "description": "Build the corpus index automatically when the extension activates if none is cached."
+          },
+          "envil.corpusSuggestor.sources": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "Extra directories (absolute paths, ~ expanded) to scan for .sc/.scd files. Workspace folders are always included."
+          },
+          "envil.corpusSuggestor.includeSCHelp": {
+            "type": "boolean",
+            "default": true,
+            "description": "Also index example blocks from the local SuperCollider help / class library."
+          },
+          "envil.corpusSuggestor.scHelpPath": {
+            "type": "string",
+            "default": "",
+            "description": "Override path for the SuperCollider HelpSource / SCClassLibrary directory. Empty = auto-detect."
+          },
+          "envil.corpusSuggestor.includeHiddenJamsDirs": {
+            "type": "boolean",
+            "default": true,
+            "description": "Include directories starting with 'zz_' (used for daily / inspiration folders)."
+          },
+          "envil.corpusSuggestor.dropdown.maxItems": {
+            "type": "integer",
+            "default": 6,
+            "minimum": 1,
+            "maximum": 30,
+            "description": "Max items shown in the '_TPL_' / '//?' dropdown."
+          },
+          "envil.corpusSuggestor.inline.enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Experimental. Enable ghost-text inline suggestions from the local corpus (cycle with Alt+] / Alt+[). Note: GitHub Copilot, if installed, wins the primary ghost-text slot — disable Copilot for SuperCollider files to give Envil priority."
+          },
+          "envil.corpusSuggestor.inline.maxItems": {
+            "type": "integer",
+            "default": 3,
+            "minimum": 1,
+            "maximum": 10,
+            "description": "Max inline suggestion variants."
+          },
+          "envil.corpusSuggestor.llm.enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Experimental. Enable local LLM (Ollama) for 'Compose at Cursor' with fill-in-the-middle. Requires a running Ollama server — see README § Experimental features."
+          },
+          "envil.corpusSuggestor.llm.endpoint": {
+            "type": "string",
+            "default": "http://localhost:11434",
+            "description": "Ollama endpoint URL."
+          },
+          "envil.corpusSuggestor.llm.model": {
+            "type": "string",
+            "default": "qwen2.5-coder:3b-base",
+            "description": "Ollama model name. Recommended FIM models: qwen2.5-coder:1.5b-base, qwen2.5-coder:3b-base, qwen2.5-coder:7b-base, deepseek-coder:1.3b-base."
+          },
+          "envil.corpusSuggestor.llm.useRAG": {
+            "type": "boolean",
+            "default": true,
+            "description": "Retrieve top-k blocks from the local corpus and inject them as reference context before calling the LLM."
+          },
+          "envil.corpusSuggestor.llm.temperature": {
+            "type": "number",
+            "default": 0.2,
+            "minimum": 0,
+            "maximum": 2,
+            "description": "Sampling temperature for the LLM."
+          },
+          "envil.corpusSuggestor.llm.numPredict": {
+            "type": "integer",
+            "default": 256,
+            "minimum": 16,
+            "maximum": 2048,
+            "description": "Max tokens to generate per compose call."
+          },
+          "envil.corpusSuggestor.llm.contextChars": {
+            "type": "integer",
+            "default": 4000,
+            "minimum": 200,
+            "maximum": 20000,
+            "description": "Max chars of prefix / suffix fed to the LLM."
+          }
+        }
       }
     ],
     "configurationDefaults": {
@@ -383,6 +500,17 @@
         "key": "ctrl+shift+k",
         "mac": "cmd+shift+k",
         "when": "config.envil.environment.active"
+      },
+      {
+        "command": "envil.corpusSuggestor.composeAtCursor",
+        "key": "ctrl+alt+space",
+        "mac": "cmd+alt+space",
+        "when": "editorTextFocus && editorLangId == 'supercollider'"
+      },
+      {
+        "command": "envil.corpusSuggestor.triggerInline",
+        "key": "alt+/",
+        "when": "editorTextFocus && editorLangId == 'supercollider'"
       }
     ]
   },
