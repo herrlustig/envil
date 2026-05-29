@@ -1,2 +1,15 @@
 {
+    "github.copilot.chat.codeGeneration.instructions": [
+        { "file": ".ai-docs/ai-instructions.md" }
+    ],
+    "github.copilot.chat.commitMessageGeneration.instructions": [
+        { "file": ".ai-docs/ai-instructions.md" }
+    ],
+    "github.copilot.chat.reviewSelection.instructions": [
+        { "file": ".ai-docs/ai-instructions.md" }
+    ],
+    "search.exclude": {
+        "tmp/": true,
+        ".envil/": true
+    }
 }

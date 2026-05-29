@@ -1,0 +1,36 @@
+{
+    // Per-user VS Code workspace settings. Copy this file to
+    // `.vscode/settings.json` and add your local overrides. The TEMPLATE
+    // is checked into the repo; settings.json itself is git-ignored.
+
+    // ── AI / Copilot ─────────────────────────────────────────────────────
+    // Load repo-wide AI instructions so any assistant follows them
+    // automatically. See .ai-docs/ai-instructions.md for the rules.
+    "github.copilot.chat.codeGeneration.instructions": [
+        { "file": ".ai-docs/ai-instructions.md" }
+    ],
+    "github.copilot.chat.commitMessageGeneration.instructions": [
+        { "file": ".ai-docs/ai-instructions.md" }
+    ],
+    "github.copilot.chat.reviewSelection.instructions": [
+        { "file": ".ai-docs/ai-instructions.md" }
+    ],
+
+    // ── Editor ───────────────────────────────────────────────────────────
+    // "editor.formatOnSave": true,
+    // "editor.tabSize": 4,
+
+    // ── Files ────────────────────────────────────────────────────────────
+    "files.exclude": {
+        "**/.DS_Store": true,
+        "tmp/": false
+    },
+
+    // ── Search ───────────────────────────────────────────────────────────
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/.vscode-test": true,
+        "tmp/": true,
+        ".envil/": true
+    }
+}

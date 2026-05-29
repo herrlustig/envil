@@ -5,3 +5,13 @@ TODO.txt
 dist_extension.js
 *.pdf
 data/suggestions-index.json
+
+# Local AI scratch / debug files (see .ai-docs/ai-instructions.md)
+tmp/
+!tmp/.gitkeep
+
+# Per-user VS Code workspace settings (template is .vscode/settings.json.TEMPLATE)
+.vscode/settings.json
+
+# Webview / runtime logs
+.envil/
