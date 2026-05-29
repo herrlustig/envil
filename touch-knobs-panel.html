@@ -185,6 +185,95 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 }
 .macro-row .macro-remove:hover { opacity: 1; color: #f44; }
 .macro-row .macro-remove.confirm { opacity: 1; color: #fff; background: #a00; border-color: #f44; }
+
+/* ── Dynamic buffer (dynbuf) rows ───────────────────────────────────── */
+.dynbuf-grid {
+    padding: 6px 8px 2px;
+    border-bottom: 1px solid var(--vscode-panel-border, #444);
+}
+.dynbuf-row {
+    display: flex; align-items: stretch; gap: 4px; margin-bottom: 6px;
+    position: relative; margin-top: 10px; height: 80px;
+}
+.dynbuf-row .dynbuf-label {
+    position: absolute; top: -10px; left: 0; z-index: 2;
+    font-size: 8px; padding: 0px 3px; border-radius: 2px;
+    background: rgba(0,0,0,0.45);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 120px; opacity: 0.7; line-height: 1.4;
+    color: #ffd479;
+}
+.dynbuf-row .dynbuf-btn-stack {
+    display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; width: 32px;
+}
+.dynbuf-row .dynbuf-btn {
+    height: 18px; font-size: 9px; line-height: 16px;
+    text-align: center; cursor: pointer;
+    border: 1px solid #555; border-radius: 3px;
+    background: #2a2a2a; color: var(--vscode-editor-foreground, #ccc);
+    padding: 0;
+}
+.dynbuf-row .dynbuf-btn:hover { border-color: #aaa; }
+.dynbuf-row .dynbuf-btn.snap { background: #6a3; color: #fff; border-color: #6a3; font-weight: 600; flex: 1; }
+.dynbuf-row .dynbuf-btn.snap:hover { background: #8c5; border-color: #8c5; }
+.dynbuf-row .dynbuf-btn.snap.flash { background: #fff; color: #000; }
+.dynbuf-row .dynbuf-btn.play.playing { background: #0a4; color: #fff; border-color: #0a4; }
+.dynbuf-row .dynbuf-btn.remove { color: #ccc; opacity: 0.4; }
+.dynbuf-row .dynbuf-btn.remove:hover { opacity: 1; color: #f44; }
+.dynbuf-row .dynbuf-btn.remove.confirm { opacity: 1; color: #fff; background: #a00; border-color: #f44; }
+.dynbuf-row .dynbuf-range {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 10px;
+    background: rgba(20,20,20,0.7); border-top: 1px solid #444;
+    touch-action: none; cursor: ew-resize; overflow: hidden;
+}
+.dynbuf-row .dynbuf-range-fill {
+    position: absolute; top: 0; bottom: 0;
+    background: linear-gradient(to right, rgba(255,212,121,0.45), rgba(255,212,121,0.18));
+    pointer-events: none;
+}
+.dynbuf-row .dynbuf-range-handle {
+    position: absolute; top: -2px; bottom: -2px; width: 4px;
+    background: #ffd479; border-radius: 2px;
+    pointer-events: none;
+    box-shadow: 0 0 4px rgba(255,212,121,0.5);
+}
+.dynbuf-row .dynbuf-range-label {
+    position: absolute; left: 0; right: 0; font-size: 7px;
+    color: #fff; text-align: center; pointer-events: none;
+    opacity: 0.6; line-height: 1;
+}
+.dynbuf-row .dynbuf-ctrls {
+    display: grid; grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(2, 1fr);
+    gap: 2px; flex-shrink: 0; width: 80px;
+}
+.dynbuf-row .dynbuf-num {
+    position: relative; background: rgba(40,40,40,0.6);
+    border: 1px solid var(--vscode-input-border, #555);
+    border-radius: 4px; cursor: ns-resize; touch-action: none;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; color: var(--vscode-input-foreground, #ccc);
+    overflow: hidden;
+}
+.dynbuf-row .dynbuf-num:hover { border-color: #aaa; }
+.dynbuf-row .dynbuf-num-label {
+    position: absolute; top: 1px; left: 2px; right: 2px;
+    font-size: 7px; opacity: 0.45; line-height: 1; text-align: left;
+    pointer-events: none; font-weight: 400;
+}
+.dynbuf-row .dynbuf-canvas-wrap {
+    flex: 1; min-width: 80px; position: relative;
+    border: 1px solid #444; border-radius: 4px; overflow: hidden;
+    background: linear-gradient(to bottom, rgba(255,255,255,0.03), rgba(0,0,0,0.15));
+    padding-bottom: 10px; /* leaves room for horizontal range strip */
+}
+.dynbuf-row .dynbuf-canvas {
+    display: block; width: 100%; height: 100%;
+}
+.dynbuf-row .dynbuf-empty {
+    position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%);
+    font-size: 9px; opacity: 0.4; text-align: center; pointer-events: none;
+    font-style: italic;
+}
 .seq-row {
     display: flex; align-items: center; gap: 2px; margin-bottom: 3px;
     position: relative; margin-top: 10px;
@@ -300,6 +389,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     <button id="btn-add" title="Add a new knob">knb</button>
     <button id="btn-add-macro" title="Add a new macro curve">mcr</button>
     <button id="btn-add-seq" title="Add a new sequencer row">sq</button>
+    <button id="btn-add-dynbuf" title="Add a new dynamic-buffer slot (live looper)">dyb</button>
     <button id="btn-mp-toggle" title="Open MediaPipe webcam body tracking in browser">📷 Body</button>
 </div>
 
@@ -331,6 +421,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
             <button id="seq-tap" class="seq-tap-btn" title="Tap tempo">TAP</button>
         </div>
         <div id="macro-grid" class="macro-grid"></div>
+        <div id="dynbuf-grid" class="dynbuf-grid"></div>
         <div id="seq-grid"></div>
     </div>
 </div>
@@ -343,6 +434,42 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 <script>
 // ── VS Code webview API ──────────────────────────────────────────────────
 const vscode = acquireVsCodeApi();
+
+// ── Debug log bridge → host writes to .envil/webview.log ─────────────────
+// Hooks console.* + window errors + unhandled promise rejections.
+// Host writes them to a file the AI assistant can read for debugging.
+(function installLogBridge() {
+    function safeStringify(v) {
+        try {
+            if (v instanceof Error) return v.stack || (v.name + ': ' + v.message);
+            if (typeof v === 'string') return v;
+            if (typeof v === 'function') return '[function ' + (v.name || 'anonymous') + ']';
+            return JSON.stringify(v, (k, val) => {
+                if (val instanceof Element) return '[Element ' + val.tagName + (val.id ? '#'+val.id : '') + ']';
+                if (typeof val === 'function') return '[function]';
+                return val;
+            });
+        } catch (e) { try { return String(v); } catch (_) { return '[unstringifiable]'; } }
+    }
+    function send(level, args, extra) {
+        try {
+            const message = Array.prototype.map.call(args, safeStringify).join(' ');
+            vscode.postMessage({ type: 'webview-log', level: level, time: Date.now(), message: message, stack: (extra && extra.stack) || null, source: (extra && extra.source) || null, line: (extra && extra.line) || null });
+        } catch (_) { /* never throw from logger */ }
+    }
+    ['log', 'info', 'warn', 'error', 'debug'].forEach(function (lvl) {
+        const orig = console[lvl] ? console[lvl].bind(console) : function () {};
+        console[lvl] = function () { try { send(lvl, arguments); } catch (_) {} try { orig.apply(console, arguments); } catch (_) {} };
+    });
+    window.addEventListener('error', function (ev) {
+        send('error', [ev.message || '(window error)'], { stack: ev.error && ev.error.stack, source: ev.filename, line: ev.lineno });
+    });
+    window.addEventListener('unhandledrejection', function (ev) {
+        const r = ev.reason;
+        send('error', ['[unhandledrejection]', (r && (r.message || r)) || 'unknown'], { stack: r && r.stack });
+    });
+    send('info', ['[log-bridge] installed at ' + new Date().toISOString()]);
+})();
 
 function getInitialPersistedState() {
     const hostState = globalThis.__ENVIL_INITIAL_STATE__;
@@ -949,6 +1076,17 @@ function buildPersistedState() {
         seqSubdiv,
         seqSyncSC,
         seqSectionHeight,
+        dynbufs: (typeof dynbufs !== 'undefined' ? dynbufs : []).map(d => ({
+            slot: d.slot,
+            playing: d.playing,
+            start: d.start,
+            end: d.end,
+            tempoMul: d.tempoMul,
+            rateMul: d.rateMul,
+            chan: d.chan,
+            pulseDivide: d.pulseDivide,
+            hasSnapshot: !!d.hasSnapshot,
+        })),
     };
 }
 
@@ -1026,6 +1164,9 @@ function updateStatus() {
     }
     if (typeof macroGrid !== 'undefined' && macroGrid) {
         macroGrid.style.display = macros.length > 0 ? '' : 'none';
+    }
+    if (typeof dynbufGrid !== 'undefined' && dynbufGrid) {
+        dynbufGrid.style.display = (typeof dynbufs !== 'undefined' && dynbufs.length > 0) ? '' : 'none';
     }
 }
 
@@ -1120,6 +1261,12 @@ let seqs = [];           // [{ name, steps, currentStep, color, playing }]
 let seqNextId = 1;
 let seqBpm = 120;
 let seqSubdiv = 4;       // steps per beat: 4 = 16th notes
+
+// dynbuf state — declared early so updateStatus()/buildPersistedState()
+// can safely reference these during restore (avoid TDZ on let/const).
+let dynbufs = [];                 // [{ slot, source, playing, start, end, tempoMul, rateMul, chan, pulseDivide, hasSnapshot }]
+const DYNBUF_DEFAULT_ROWS = 2;
+let dynbufGrid = null;            // assigned after DOM is parsed (see below)
 
 const macroGrid     = document.getElementById('macro-grid');
 const seqGrid       = document.getElementById('seq-grid');
@@ -2262,6 +2409,11 @@ document.getElementById('btn-add-seq').addEventListener('click', () => {
     persistState();
 });
 
+document.getElementById('btn-add-dynbuf').addEventListener('click', () => {
+    addDynbuf();
+    persistState();
+});
+
 // ── Init ─────────────────────────────────────────────────────────────────
 resize();
 updateStatus();
@@ -2306,6 +2458,440 @@ if (seqs.length === 0) {
 } else if (macros.length > 0) {
     persistState();
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── DYNAMIC BUFFER SYSTEM (live looper) ──────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Port of e[\setupBufferSys] from my_footcontroller.sc.
+// Each row = one snapshot slot mapped to a SC NodeProxy ~bufPlay_<slot>.
+// SNAP captures the last N seconds from the always-running ring buffer.
+// Controls (start, end, tempoMul, rateMul, chan, pulseDivide) are exposed
+// as separate 1-ch NodeProxies (~bufPlay_<slot>_<arg>) which the panel
+// drives — these can also be MIDI-mapped externally.
+
+// (dynbufs / DYNBUF_DEFAULT_ROWS hoisted to top of script to prevent TDZ)
+dynbufGrid = document.getElementById('dynbuf-grid');
+
+function dynbufProxyName(d)        { return '~bufPlay_' + d.slot; }
+function dynbufRowId(d)            { return 'dynbuf-row-' + d.slot; }
+function dynbufClamp01(v)          { return Math.max(0, Math.min(1, Number(v) || 0)); }
+
+function addDynbuf(slot, opts) {
+    // Auto-pick next free slot if not given
+    if (slot == null) {
+        let next = 0;
+        while (dynbufs.find(d => d.slot === next)) next++;
+        slot = next;
+    }
+    if (dynbufs.find(d => d.slot === slot)) return;  // already exists
+
+    const o = opts || {};
+    const d = {
+        slot,
+        playing: o.playing !== false,
+        start:       o.start       != null ? dynbufClamp01(o.start)       : 0,
+        end:         o.end         != null ? dynbufClamp01(o.end)         : 1,
+        tempoMul:    o.tempoMul    != null ? dynbufClamp01(o.tempoMul)    : 0.5,
+        rateMul:     o.rateMul     != null ? dynbufClamp01(o.rateMul)     : 0.5,
+        chan:        o.chan        != null ? dynbufClamp01(o.chan)        : (slot / Math.max(1, DYNBUF_DEFAULT_ROWS - 1)),  // default: slot 0 → chan 0, slot 1 → chan 1
+        pulseDivide: o.pulseDivide != null ? dynbufClamp01(o.pulseDivide) : 0.5,
+        hasSnapshot: !!o.hasSnapshot,
+    };
+    // Default chan for slot 0 = 0, slot 1 = ~0.14 (=ch 1 of 8 channels). Override:
+    if (o.chan == null) {
+        // Map slot index directly to channel index assuming 8 channels.
+        d.chan = Math.min(1, slot / 7);
+    }
+    dynbufs.push(d);
+    renderDynbufRow(d);
+    updateStatus();
+    // Send full state so the host can recreate the control proxies + register slot
+    vscode.postMessage({
+        type: 'dynbuf-register',
+        slot: d.slot,
+        playing: d.playing,
+        start: d.start, end: d.end,
+        tempoMul: d.tempoMul, rateMul: d.rateMul,
+        chan: d.chan, pulseDivide: d.pulseDivide,
+    });
+    return d;
+}
+
+function removeDynbuf(d) {
+    dynbufs = dynbufs.filter(x => x !== d);
+    const row = document.getElementById(dynbufRowId(d));
+    if (row) row.remove();
+    vscode.postMessage({ type: 'dynbuf-remove', slot: d.slot });
+    updateStatus();
+    persistState();
+}
+
+function dynbufSendCtrl(d, key, value) {
+    vscode.postMessage({ type: 'dynbuf-control', slot: d.slot, key, value });
+}
+
+function dynbufSnapshot(d, btn) {
+    vscode.postMessage({ type: 'dynbuf-snapshot', slot: d.slot });
+    d.hasSnapshot = true;
+    if (btn) {
+        btn.classList.add('flash');
+        setTimeout(() => btn.classList.remove('flash'), 200);
+    }
+    drawDynbufWave(d);
+    persistState();
+}
+
+function dynbufSetPlaying(d, playing) {
+    d.playing = !!playing;
+    vscode.postMessage({ type: 'dynbuf-play-toggle', slot: d.slot, playing: d.playing });
+}
+
+// ── Render one row ──────────────────────────────────────────────────────────────────
+function renderDynbufRow(d) {
+    const existing = document.getElementById(dynbufRowId(d));
+    const nextSibling = existing ? existing.nextSibling : null;
+    if (existing) existing.remove();
+
+    const row = document.createElement('div');
+    row.className = 'dynbuf-row';
+    row.id = dynbufRowId(d);
+
+    // ── Button stack ──────────────────────────────────────────────────
+    const stack = document.createElement('div');
+    stack.className = 'dynbuf-btn-stack';
+
+    const snapBtn = document.createElement('div');
+    snapBtn.className = 'dynbuf-btn snap';
+    snapBtn.textContent = 'SNAP';
+    snapBtn.title = 'Capture the last N seconds from the ring buffer';
+    snapBtn.addEventListener('click', () => dynbufSnapshot(d, snapBtn));
+    stack.appendChild(snapBtn);
+
+    const rmBtn = document.createElement('div');
+    rmBtn.className = 'dynbuf-btn remove';
+    rmBtn.textContent = '✕';
+    rmBtn.title = 'Remove slot (click twice to confirm)';
+    let rmPending = false; let rmTimer = null;
+    rmBtn.addEventListener('click', () => {
+        if (rmPending) {
+            clearTimeout(rmTimer);
+            removeDynbuf(d);
+        } else {
+            rmPending = true;
+            rmBtn.classList.add('confirm');
+            rmBtn.textContent = '✕?';
+            rmTimer = setTimeout(() => {
+                rmPending = false;
+                rmBtn.classList.remove('confirm');
+                rmBtn.textContent = '✕';
+            }, 2000);
+        }
+    });
+    stack.appendChild(rmBtn);
+    row.appendChild(stack);
+
+    // ── 2×2 grid of drag-numeric controls ─────────────────────────────
+    const ctrls = document.createElement('div');
+    ctrls.className = 'dynbuf-ctrls';
+
+    const makeNum = (key, label, formatter) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'dynbuf-num';
+        wrap.title = label + ' (drag up/down to change)';
+        const lab = document.createElement('div');
+        lab.className = 'dynbuf-num-label';
+        lab.textContent = label;
+        wrap.appendChild(lab);
+        const val = document.createElement('span');
+        val.textContent = formatter(d[key]);
+        wrap.appendChild(val);
+        wireDynbufNumDrag(wrap, d, key, val, formatter);
+        return wrap;
+    };
+
+    // tempoMul: 0..1 → multiplier 2^(round(x*8-4)) → 1/16 .. 16
+    const fmtTempoMul = v => {
+        const exp = Math.round(v * 8 - 4);
+        return '×' + (Math.pow(2, exp)).toFixed(exp < 0 ? 3 : 0).replace(/\.?0+$/, '');
+    };
+    // rateMul: same formula but actualRate = 2^(round(rateMul*8-4))
+    const fmtRateMul = v => {
+        const exp = Math.round(v * 8 - 4);
+        const r = Math.pow(2, exp);
+        return r >= 1 ? r.toFixed(0) + '×' : (1/r).toFixed(0) + '/';
+    };
+    // chan: 0..1 → channel index 0..7 (8 channels)
+    const fmtChan = v => 'c' + Math.round(v * 7);
+    // pulseDivide: 0..1 → 2^(round(x*7)) divider on the 128-pulses-per-beat clock
+    const fmtDivide = v => {
+        const exp = Math.round(v * 7);
+        return '÷' + Math.pow(2, exp);
+    };
+
+    ctrls.appendChild(makeNum('tempoMul',    'tempo', fmtTempoMul));
+    ctrls.appendChild(makeNum('rateMul',     'rate',  fmtRateMul));
+    ctrls.appendChild(makeNum('chan',        'chan',  fmtChan));
+    ctrls.appendChild(makeNum('pulseDivide', 'div',   fmtDivide));
+    row.appendChild(ctrls);
+
+    // ── Canvas (waveform) with horizontal start/end range strip below ──
+    const canvasWrap = document.createElement('div');
+    canvasWrap.className = 'dynbuf-canvas-wrap';
+    const canvas = document.createElement('canvas');
+    canvas.className = 'dynbuf-canvas';
+    canvas.id = 'dynbuf-canvas-' + d.slot;
+    canvasWrap.appendChild(canvas);
+    const empty = document.createElement('div');
+    empty.className = 'dynbuf-empty';
+    empty.textContent = d.hasSnapshot ? '' : '⟪ click SNAP to capture ⟫';
+    empty.id = 'dynbuf-empty-' + d.slot;
+    canvasWrap.appendChild(empty);
+
+    // Canvas pointer interaction: down = new start, up = new end.
+    // During drag, end follows the pointer for live visual feedback.
+    wireDynbufCanvasStartEnd(canvas, d);
+
+    // Horizontal start/end range strip below the waveform.
+    const range = document.createElement('div');
+    range.className = 'dynbuf-range';
+    range.title = 'Drag handles: start (left) / end (right). Range played back from the snapshot.';
+
+    const rangeFill = document.createElement('div');
+    rangeFill.className = 'dynbuf-range-fill';
+    range.appendChild(rangeFill);
+
+    const startHandle = document.createElement('div');
+    startHandle.className = 'dynbuf-range-handle start';
+    range.appendChild(startHandle);
+
+    const endHandle = document.createElement('div');
+    endHandle.className = 'dynbuf-range-handle end';
+    range.appendChild(endHandle);
+
+    const updateRangeUI = () => {
+        const startLeft = d.start * 100;
+        const endLeft   = d.end   * 100;
+        startHandle.style.left = `calc(${startLeft}% - 2px)`;
+        endHandle.style.left   = `calc(${endLeft}% - 2px)`;
+        rangeFill.style.left   = `${startLeft}%`;
+        rangeFill.style.width  = `${Math.max(0, endLeft - startLeft)}%`;
+    };
+    updateRangeUI();
+    d._updateRange = updateRangeUI;
+
+    wireDynbufRange(range, d, updateRangeUI);
+    canvasWrap.appendChild(range);
+
+    row.appendChild(canvasWrap);
+
+    // Label overlay
+    const label = document.createElement('span');
+    label.className = 'dynbuf-label';
+    label.textContent = dynbufProxyName(d);
+    canvasWrap.appendChild(label);
+
+    if (nextSibling) dynbufGrid.insertBefore(row, nextSibling);
+    else dynbufGrid.appendChild(row);
+
+    drawDynbufWave(d);
+}
+
+function drawDynbufWave(d) {
+    const canvas = document.getElementById('dynbuf-canvas-' + d.slot);
+    const empty = document.getElementById('dynbuf-empty-' + d.slot);
+    if (!canvas) return;
+    if (empty) empty.style.display = d.hasSnapshot ? 'none' : '';
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width));
+    const h = Math.max(1, Math.round(rect.height));
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    const g = canvas.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+
+    if (!d.hasSnapshot) return;
+
+    // No real waveform data (would need server-side analysis).
+    // Show a stylised filled region = playback window.
+    const x1 = Math.max(0, Math.min(w, d.start * w));
+    const x2 = Math.max(0, Math.min(w, d.end * w));
+    g.fillStyle = 'rgba(255,212,121,0.12)';
+    g.fillRect(x1, 0, Math.max(1, x2 - x1), h);
+    // Stylised waveform (sine envelope just for visual feedback)
+    g.strokeStyle = 'rgba(255,212,121,0.7)';
+    g.lineWidth = 1;
+    g.beginPath();
+    const seed = d.slot * 9301 + 49297;
+    let r = seed;
+    const rand = () => { r = (r * 9301 + 49297) % 233280; return r / 233280; };
+    for (let x = 0; x < w; x++) {
+        const env = 0.3 + 0.55 * Math.abs(Math.sin((x / w) * Math.PI * 6 + d.slot));
+        const y = h / 2 + (rand() - 0.5) * h * env * 0.6;
+        if (x === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.stroke();
+    // Start/end markers
+    g.strokeStyle = '#ffd479';
+    g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(x1, 0); g.lineTo(x1, h); g.stroke();
+    g.beginPath(); g.moveTo(x2, 0); g.lineTo(x2, h); g.stroke();
+}
+
+function wireDynbufRange(rangeEl, d, updateUI) {
+    let active = null;  // 'start' | 'end' | null
+    let pointerId = null;
+
+    rangeEl.addEventListener('pointerdown', (e) => {
+        const isPrimaryPress = e.button === 0 || e.pointerType === 'touch' || e.pointerType === 'pen';
+        if (!isPrimaryPress) return;
+        rangeEl.setPointerCapture(e.pointerId);
+        pointerId = e.pointerId;
+        const rect = rangeEl.getBoundingClientRect();
+        const x = (e.clientX - rect.left) / Math.max(1, rect.width);
+        const pos = dynbufClamp01(x);
+        // Pick the closer of the two handles
+        const dStart = Math.abs(pos - d.start);
+        const dEnd   = Math.abs(pos - d.end);
+        active = (dStart < dEnd) ? 'start' : 'end';
+        applyPos(pos);
+        e.preventDefault();
+    });
+    rangeEl.addEventListener('pointermove', (e) => {
+        if (pointerId !== e.pointerId || !active) return;
+        const rect = rangeEl.getBoundingClientRect();
+        const x = (e.clientX - rect.left) / Math.max(1, rect.width);
+        applyPos(dynbufClamp01(x));
+        e.preventDefault();
+    });
+    const stop = (e) => {
+        if (pointerId !== e.pointerId) return;
+        if (active) {
+            dynbufSendCtrl(d, active, d[active]);
+            persistState();
+        }
+        active = null; pointerId = null;
+    };
+    rangeEl.addEventListener('pointerup', stop);
+    rangeEl.addEventListener('pointercancel', stop);
+
+    function applyPos(pos) {
+        if (active === 'start') {
+            d.start = Math.min(pos, d.end - 0.001);
+        } else if (active === 'end') {
+            d.end = Math.max(pos, d.start + 0.001);
+        }
+        updateUI();
+        dynbufSendCtrl(d, active, d[active]);
+        drawDynbufWave(d);
+    }
+}
+
+// Canvas interaction: pointerdown -> new start, pointerup -> new end.
+// During drag, end tracks the pointer for live visual feedback.
+function wireDynbufCanvasStartEnd(canvasEl, d) {
+    let pointerId = null;
+    const posFromEvent = (e) => {
+        const rect = canvasEl.getBoundingClientRect();
+        return dynbufClamp01((e.clientX - rect.left) / Math.max(1, rect.width));
+    };
+    canvasEl.style.touchAction = 'none';
+    canvasEl.style.cursor = 'crosshair';
+    canvasEl.addEventListener('pointerdown', (e) => {
+        const isPrimaryPress = e.button === 0 || e.pointerType === 'touch' || e.pointerType === 'pen';
+        if (!isPrimaryPress) return;
+        canvasEl.setPointerCapture(e.pointerId);
+        pointerId = e.pointerId;
+        const pos = posFromEvent(e);
+        d.start = Math.min(pos, 0.999);
+        d.end = Math.max(d.start + 0.001, d.end);  // keep end >= start+ε
+        if (d._updateRange) d._updateRange();
+        drawDynbufWave(d);
+        dynbufSendCtrl(d, 'start', d.start);
+        e.preventDefault();
+    });
+    canvasEl.addEventListener('pointermove', (e) => {
+        if (pointerId !== e.pointerId) return;
+        const pos = posFromEvent(e);
+        d.end = Math.max(pos, d.start + 0.001);
+        if (d._updateRange) d._updateRange();
+        drawDynbufWave(d);
+        dynbufSendCtrl(d, 'end', d.end);
+        e.preventDefault();
+    });
+    const stop = (e) => {
+        if (pointerId !== e.pointerId) return;
+        const pos = posFromEvent(e);
+        d.end = Math.max(pos, d.start + 0.001);
+        if (d._updateRange) d._updateRange();
+        drawDynbufWave(d);
+        dynbufSendCtrl(d, 'end', d.end);
+        pointerId = null;
+        persistState();
+    };
+    canvasEl.addEventListener('pointerup', stop);
+    canvasEl.addEventListener('pointercancel', stop);
+}
+
+function wireDynbufNumDrag(el, d, key, valSpan, formatter) {
+    let drag = null;
+    el.addEventListener('pointerdown', (e) => {
+        const isPrimaryPress = e.button === 0 || e.pointerType === 'touch' || e.pointerType === 'pen';
+        if (!isPrimaryPress) return;
+        drag = { id: e.pointerId, lastY: e.clientY, dragging: false, accum: d[key] };
+        el.setPointerCapture(e.pointerId);
+        e.preventDefault();
+    });
+    el.addEventListener('pointermove', (e) => {
+        if (!drag || drag.id !== e.pointerId) return;
+        const dy = drag.lastY - e.clientY;
+        if (!drag.dragging && Math.abs(dy) < 3) return;
+        drag.dragging = true;
+        drag.lastY = e.clientY;
+        const sensitivity = e.shiftKey ? 0.001 : 0.005;
+        drag.accum = dynbufClamp01(drag.accum + dy * sensitivity);
+        d[key] = drag.accum;
+        valSpan.textContent = formatter(d[key]);
+        dynbufSendCtrl(d, key, d[key]);
+        e.preventDefault();
+    });
+    const stop = (e) => {
+        if (!drag || drag.id !== e.pointerId) return;
+        const wasDragging = drag.dragging;
+        drag = null;
+        if (wasDragging) persistState();
+    };
+    el.addEventListener('pointerup', stop);
+    el.addEventListener('pointercancel', stop);
+    // Double-click to reset to default (0.5 for most, 0/1 for start/end)
+    el.addEventListener('dblclick', () => {
+        const defaults = { tempoMul: 0.5, rateMul: 0.5, chan: 0, pulseDivide: 0.5 };
+        d[key] = defaults[key] != null ? defaults[key] : 0.5;
+        valSpan.textContent = formatter(d[key]);
+        dynbufSendCtrl(d, key, d[key]);
+        persistState();
+    });
+}
+
+// ── Restore persisted dynbuf state ───────────────────────────────────────
+if (savedState && Array.isArray(savedState.dynbufs)) {
+    for (const s of savedState.dynbufs) addDynbuf(s.slot, s);
+}
+// Default 2 rows (slot 0 = chan 0, slot 1 = chan 1 — with default nch=2,
+// slider value 1.0 maps to channel index nch-1 = 1, i.e. right channel).
+if (dynbufs.length === 0) {
+    addDynbuf(0, { chan: 0 });
+    addDynbuf(1, { chan: 1 });
+    persistState();
+}
+updateStatus();
+
+// Redraw dynbuf canvases on window resize
+window.addEventListener('resize', () => {
+    for (const d of dynbufs) drawDynbufWave(d);
+});
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ── MEDIAPIPE OVERLAY (receives landmark data from extension host) ───────

@@ -62,6 +62,14 @@ let _macros = [];            // [{ name, macroNum, points, position, playing, du
 let _macroTimer = null;
 let _macroLastTickMs = 0;
 
+// ── Host-side dynamic-buffer (live looper) state ─────────────────────────
+let _dynbufs = new Map();    // slot (int) → { slot, source, playing, start, end, tempoMul, rateMul, chan, pulseDivide, hasSnapshot }
+let _dynbufSysSent = false;  // SC setup code emitted? (re-emit on demand; sclang side is idempotent)
+let _dynbufNumChannels = 2;
+let _dynbufRingSeconds = 32;
+let _dynbufSnapshotSeconds = 8;
+let _dynbufWriteToDisk = false;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -94,6 +102,13 @@ function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath,
     _mpVideoOpacity = mpCfg.get('videoOpacity', 0.25);
     _mpDrawLandmarks = mpCfg.get('drawLandmarks', true);
 
+    // ── Dynbuf config ────────────────────────────────────────────────────
+    const dbCfg = vscode.workspace.getConfiguration('envil.dynbuf');
+    _dynbufNumChannels     = Math.max(1, Math.min(16, dbCfg.get('numChannels', 2)));
+    _dynbufRingSeconds     = Math.max(1, Number(dbCfg.get('ringSeconds', 32)));
+    _dynbufSnapshotSeconds = Math.max(0.1, Number(dbCfg.get('snapshotSeconds', 8)));
+    _dynbufWriteToDisk     = !!dbCfg.get('writeToDisk', false);
+
     // Re-read settings on change
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(e => {
@@ -102,6 +117,20 @@ function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath,
                 _seqOscTargetPort = cfg.get('oscTargetPort', 57120);
                 _seqOscTargetHost = cfg.get('oscTargetHost', '127.0.0.1');
                 _seqOscEnabled = cfg.get('oscEnabled', true);
+            }
+            if (e.affectsConfiguration('envil.dynbuf')) {
+                const dc = vscode.workspace.getConfiguration('envil.dynbuf');
+                const oldNCh = _dynbufNumChannels;
+                const oldRing = _dynbufRingSeconds;
+                _dynbufNumChannels     = Math.max(1, Math.min(16, dc.get('numChannels', 2)));
+                _dynbufRingSeconds     = Math.max(1, Number(dc.get('ringSeconds', 32)));
+                _dynbufSnapshotSeconds = Math.max(0.1, Number(dc.get('snapshotSeconds', 8)));
+                _dynbufWriteToDisk     = !!dc.get('writeToDisk', false);
+                // If channel count or ring length changed, the SC ring buffer needs re-alloc
+                if (oldNCh !== _dynbufNumChannels || oldRing !== _dynbufRingSeconds) {
+                    _dynbufSysSent = false;
+                    log(`  ⟳ dynbuf cfg changed → ring system will rebuild on next snapshot`);
+                }
             }
             if (e.affectsConfiguration('envil.mediapipe')) {
                 const mc = vscode.workspace.getConfiguration('envil.mediapipe');
@@ -207,6 +236,14 @@ function openPanel(context) {
         `const vscode = acquireVsCodeApi();\n${initialStateScript}`,
     );
 
+    // Fresh debug log per panel session (rotates previous to .1)
+    try {
+        const lp = getWebviewLogPath();
+        try { if (fs.existsSync(lp)) fs.renameSync(lp, lp + '.1'); } catch (_) {}
+        fs.writeFileSync(lp, `[${new Date().toISOString()}] INFO  [panel] session start\n`);
+        if (_hydraOutput) _hydraOutput.appendLine(`[touch-knobs] webview log: ${lp}`);
+    } catch (_) {}
+
     // Handle messages from webview
     _panel.webview.onDidReceiveMessage(handleMessage, null, context.subscriptions);
 
@@ -232,8 +269,48 @@ function closePanel() {
 // MESSAGE HANDLER
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Webview debug log file ───────────────────────────────────────────────
+let _webviewLogPath = null;
+const WEBVIEW_LOG_MAX_BYTES = 512 * 1024; // rotate at 512 KB
+
+function getWebviewLogPath() {
+    if (_webviewLogPath) return _webviewLogPath;
+    const base = _workspacePath
+        ? path.join(_workspacePath, ENVIL_DIR)
+        : (os.tmpdir ? os.tmpdir() : '.');
+    try { fs.mkdirSync(base, { recursive: true }); } catch (_) {}
+    _webviewLogPath = path.join(base, 'webview.log');
+    return _webviewLogPath;
+}
+
+function appendWebviewLog(entry) {
+    try {
+        const p = getWebviewLogPath();
+        // simple rotation: if file > MAX, rename to .1 and start fresh
+        try {
+            const st = fs.statSync(p);
+            if (st.size > WEBVIEW_LOG_MAX_BYTES) {
+                try { fs.renameSync(p, p + '.1'); } catch (_) {}
+            }
+        } catch (_) { /* file may not exist yet */ }
+        const ts = new Date(entry.time || Date.now()).toISOString();
+        const lvl = (entry.level || 'log').toUpperCase().padEnd(5);
+        let line = `[${ts}] ${lvl} ${entry.message || ''}`;
+        if (entry.source) line += `  (${entry.source}:${entry.line || '?'})`;
+        if (entry.stack)  line += `\n    ${String(entry.stack).split('\n').join('\n    ')}`;
+        fs.appendFileSync(p, line + '\n');
+    } catch (e) {
+        if (_hydraOutput) _hydraOutput.appendLine(`[webview-log] write failed: ${e.message}`);
+    }
+}
+
 function handleMessage(msg) {
     switch (msg.type) {
+
+        case 'webview-log': {
+            appendWebviewLog(msg);
+            return;
+        }
 
         case 'knob-add': {
             // Create CC proxy — ~v_c<midiNote> (mirrors footcontroller ~l_c<ccNum>)
@@ -738,6 +815,79 @@ function handleMessage(msg) {
             break;
         }
 
+        // ── Dynamic buffer (live looper) messages ──────────────────────
+
+        case 'dynbuf-register': {
+            // Panel created (or restored) a dynbuf slot. Cache state + ensure
+            // the SC control proxies exist with the panel's current values.
+            const slot = positiveInteger(msg.slot, 0) - 1 < 0 ? Math.max(0, Number(msg.slot) | 0) : Number(msg.slot) | 0;
+            const slotIdx = Math.max(0, Number(msg.slot) | 0);
+            const d = {
+                slot: slotIdx,
+                source: msg.source === 'outs' ? 'outs' : 'ins',
+                playing: msg.playing !== false,
+                start:       clamp01(msg.start       != null ? msg.start       : 0),
+                end:         clamp01(msg.end         != null ? msg.end         : 1),
+                tempoMul:    clamp01(msg.tempoMul    != null ? msg.tempoMul    : 0.5),
+                rateMul:     clamp01(msg.rateMul     != null ? msg.rateMul     : 0.5),
+                chan:        clamp01(msg.chan        != null ? msg.chan        : 0),
+                pulseDivide: clamp01(msg.pulseDivide != null ? msg.pulseDivide : 0.5),
+                hasSnapshot: false,
+            };
+            _dynbufs.set(slotIdx, d);
+            // Push the recorder system + control proxies (idempotent on SC side)
+            sendSC(dynbufBuildSetupAndCtrls(d), true);
+            log(`  ＋ dynbuf slot=${slotIdx}  (~bufPlay_${slotIdx})`);
+            break;
+        }
+
+        case 'dynbuf-remove': {
+            const slotIdx = Math.max(0, Number(msg.slot) | 0);
+            const d = _dynbufs.get(slotIdx);
+            if (!d) break;
+            sendSC(dynbufBuildRemove(slotIdx), true);
+            _dynbufs.delete(slotIdx);
+            log(`  ✖ removed dynbuf slot=${slotIdx} (~bufPlay_${slotIdx})`);
+            break;
+        }
+
+        case 'dynbuf-control': {
+            const slotIdx = Math.max(0, Number(msg.slot) | 0);
+            const d = _dynbufs.get(slotIdx);
+            if (!d) break;
+            const key = String(msg.key || '');
+            if (!['start', 'end', 'tempoMul', 'rateMul', 'chan', 'pulseDivide'].includes(key)) break;
+            const val = clamp01(msg.value);
+            d[key] = val;
+            sendSC(dynbufBuildSetCtrl(slotIdx, key, val), true);
+            break;
+        }
+
+        case 'dynbuf-play-toggle': {
+            const slotIdx = Math.max(0, Number(msg.slot) | 0);
+            const d = _dynbufs.get(slotIdx);
+            if (!d) break;
+            d.playing = !!msg.playing;
+            const code = dynbufBuildMute(slotIdx, !d.playing);
+            if (code) sendSC(code, true);
+            break;
+        }
+
+        case 'dynbuf-snapshot': {
+            const slotIdx = Math.max(0, Number(msg.slot) | 0);
+            let d = _dynbufs.get(slotIdx);
+            if (!d) {
+                // Slot wasn't registered yet — create a minimal stub
+                d = { slot: slotIdx, playing: true, start: 0, end: 1,
+                      tempoMul: 0.5, rateMul: 0.5, chan: 0, pulseDivide: 0.5, hasSnapshot: false };
+                _dynbufs.set(slotIdx, d);
+            }
+            d.hasSnapshot = true;
+            sendSC(dynbufBuildSnapshot(d), true);
+            log(`  ⏺ dynbuf snapshot slot=${slotIdx}`);
+            break;
+        }
+
         default:
             break;
     }
@@ -1164,6 +1314,268 @@ function macroEnsureSCCode(proxyName) {
 
 function macroProxyName(m) {
     return `~mcr_${positiveInteger(m && m.macroNum, 1)}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DYNAMIC BUFFER (live looper) — SC code emitters
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Port of e[\setupBufferSys] from my_footcontroller.sc.
+// On the SC side we keep:
+//   currentEnvironment[\envilBufRecReady]   — guard (true once setup done)
+//   currentEnvironment[\envilBufRecIns]     — Buffer (ring, audio inputs)
+//   currentEnvironment[\envilBufRecOuts]    — Buffer (ring, output busses)
+//   currentEnvironment[\envilBufRecPhase]   — Float, current write head (frames)
+//   currentEnvironment[\envilBufRecChans]   — Int, channel count
+//   currentEnvironment[\envilDynBufs]       — List of snapshot Buffers (kept alive)
+//   ~envilBufRec                            — the always-running recorder proxy
+//   OSCdef \envilBufRecPhase                — listens on /envilBufRecPhase
+//
+// Per slot N:
+//   ~bufPlay_N            — the player NodeProxy (audio, mono)
+//   ~bufPlay_N_idx        — control proxy holding the snapshot bufnum (\val)
+//   ~bufPlay_N_<arg>      — control proxy per arg (start, end, tempoMul,
+//                            rateMul, chan, pulseDivide) which the player
+//                            reads from via NodeProxy bus-mapping.
+//   ~bufPlay_N            (play/stop via mute / set \amp 0)
+//
+// Setup is emitted lazily, every time a slot operation happens; the guard
+// makes it a no-op on subsequent calls. If config changes (channel count
+// or ring length) we reset _dynbufSysSent → next operation re-emits the
+// setup which clears + re-allocates.
+
+function dynbufBuildSetup() {
+    const nch = _dynbufNumChannels;
+    const ringSec = _dynbufRingSeconds;
+    // Channel count is baked into the recorder synth (compile-time literal).
+    // NOTE: We use Library (global class Dictionary) for non-audio state,
+    // because ProxySpace.put wraps ANY value in a NodeProxy, which would
+    // make `Library.at(\envil, \bufRecPhase)` return a NodeProxy instead
+    // of a Float.
+    return [
+        `if(currentEnvironment.isKindOf(ProxySpace), {`,
+        ` if(Library.at(\\envil, \\bufRecReady).isNil or: { Library.at(\\envil, \\bufRecChans) != ${nch} }, {`,
+        `  Routine({`,
+        `   [\\bufRecIns, \\bufRecOuts].do{|k| var b = Library.at(\\envil, k); if(b.notNil and: { b.isKindOf(Buffer) }, { b.free }) };`,
+        `   Library.put(\\envil, \\bufRecChans, ${nch});`,
+        `   Library.put(\\envil, \\bufRecPhase, 0.0);`,
+        `   Library.put(\\envil, \\dynBufs, List.new);`,
+        `   Library.put(\\envil, \\bufRecIns,  Buffer.alloc(Server.default, Server.default.sampleRate * ${ringSec}, ${nch}));`,
+        `   Library.put(\\envil, \\bufRecOuts, Buffer.alloc(Server.default, Server.default.sampleRate * ${ringSec}, ${nch}));`,
+        `   Server.default.sync;`,
+        `   ~envilBufRec.clear; ~envilBufRec.ar(1);`,
+        `   ~envilBufRec = { |bufIn= -1, bufOut= -1|`,
+        `     var phase = Phasor.ar(0, BufRateScale.kr(bufIn), 0, BufFrames.kr(bufIn));`,
+        `     var ins  = ${nch}.collect{|i| SoundIn.ar(i) };`,
+        `     var outs = ${nch}.collect{|i| InFeedback.ar(i, 1) };`,
+        `     BufWr.ar(ins,  bufIn,  phase);`,
+        `     BufWr.ar(outs, bufOut, phase);`,
+        `     SendReply.kr(Impulse.kr(50), '/envilBufRecPhase', [A2K.kr(phase)]);`,
+        `     DC.ar(0);`,
+        `   };`,
+        `   ~envilBufRec.set(\\bufIn, Library.at(\\envil, \\bufRecIns).bufnum, \\bufOut, Library.at(\\envil, \\bufRecOuts).bufnum);`,
+        `   ~envilBufRec.play;`,
+        `   OSCdef(\\envilBufRecPhase, { |msg| Library.put(\\envil, \\bufRecPhase, msg[3]) }, '/envilBufRecPhase');`,
+        `   Library.put(\\envil, \\bufRecReady, true);`,
+        `   ">>> envil: dynbuf system ready (chans=${nch}, ring=${ringSec}s)".postln;`,
+        `  }).play;`,
+        ` });`,
+        `})`,
+    ].join(' ');
+}
+
+// Ensures the per-slot control proxies (~bufPlay_N_start etc.) exist and
+// hold the current panel values. Idempotent.
+function dynbufBuildCtrlsForSlot(d) {
+    const slot = d.slot;
+    const keys = [
+        ['start',       d.start],
+        ['end',         d.end],
+        ['tempoMul',    d.tempoMul],
+        ['rateMul',     d.rateMul],
+        ['chan',        d.chan],
+        ['pulseDivide', d.pulseDivide],
+    ];
+    const ctrlSrc = `{ |val=0, lagTime=0.02| Lag.kr(val, lagTime) }`;
+    // Re-install the control source whenever the proxy lacks a \val arg
+    // (e.g. user did `~bufPlay_N_rateMul = 0.5` in their code, which replaced
+    // the source with a constant). This lets the UI knob "win back" control.
+    const needsCtrl = (p) => `(${p}.source.isNil or: { ${p}.controlNames.isNil or: { ${p}.controlNames.any({|cn| cn.name == \\val }).not } })`;
+    const parts = keys.map(([k, v]) => {
+        const p = `~bufPlay_${slot}_${k}`;
+        return `if(${needsCtrl(p)}, { ${p}.kr(1); ${p} = ${ctrlSrc} }, { if(Server.default.serverRunning and: { ${p}.isPlaying.not }, { ${p}.send }) }); ${p}.set(\\val, ${Number(v).toFixed(6)})`;
+    });
+    // Bufnum index proxy (~bufPlay_N_idx) holding the snapshot bufnum
+    const idx = `~bufPlay_${slot}_idx`;
+    parts.unshift(`if(${needsCtrl(idx)}, { ${idx}.kr(1); ${idx} = { |val=0, lagTime=0| Lag.kr(val, lagTime) } })`);
+    return `if(currentEnvironment.isKindOf(ProxySpace), { ${parts.join('; ')} })`;
+}
+
+function dynbufBuildSetupAndCtrls(d) {
+    let pieces = [];
+    if (!_dynbufSysSent) {
+        pieces.push(dynbufBuildSetup());
+        _dynbufSysSent = true;
+    }
+    pieces.push(dynbufBuildCtrlsForSlot(d));
+    return pieces.join('; ');
+}
+
+function dynbufBuildSetCtrl(slot, key, val) {
+    if (!_dynbufSysSent) {
+        // No SC setup yet; just cache, will be emitted on first snapshot/register.
+        // Still try to push the value in case proxies happen to already exist.
+    }
+    const p = `~bufPlay_${slot}_${key}`;
+    const ctrlSrc = `{ |val=0, lagTime=0.02| Lag.kr(val, lagTime) }`;
+    // If user overrode the proxy source (e.g. `~bufPlay_N_rateMul = 0.5`),
+    // it no longer has a \val arg — reinstall our control synth so the UI
+    // knob regains control.
+    const needsCtrl = `(${p}.source.isNil or: { ${p}.controlNames.isNil or: { ${p}.controlNames.any({|cn| cn.name == \\val }).not } })`;
+    return `if(currentEnvironment.isKindOf(ProxySpace), { if(${needsCtrl}, { ${p}.kr(1); ${p} = ${ctrlSrc} }); ${p}.set(\\val, ${Number(val).toFixed(6)}) })`;
+}
+
+function dynbufBuildMute(slot, muted) {
+    // No-op: ~bufPlay_N is a NodeProxy living in the user's ProxySpace.
+    // The user routes it via their own chain (e.g. ~out <<> ~bufPlay_N),
+    // so we don't .play/.stop it here. The play/mute toggle in the UI
+    // is currently a no-op on the SC side. A future enhancement could
+    // freeze the trigger via a \gate ctrl proxy.
+    return '';
+}
+
+function dynbufBuildRemove(slot) {
+    const proxies = [
+        `~bufPlay_${slot}`,
+        `~bufPlay_${slot}_idx`,
+        `~bufPlay_${slot}_start`,
+        `~bufPlay_${slot}_end`,
+        `~bufPlay_${slot}_tempoMul`,
+        `~bufPlay_${slot}_rateMul`,
+        `~bufPlay_${slot}_chan`,
+        `~bufPlay_${slot}_pulseDivide`,
+    ];
+    return `if(currentEnvironment.isKindOf(ProxySpace), { ${proxies.map(p => `${p}.clear`).join('; ')} })`;
+}
+
+function dynbufBuildSnapshot(d) {
+    const slot = d.slot;
+    const nch = _dynbufNumChannels;
+    const snapSec = _dynbufSnapshotSeconds;
+    // Always read from the inputs ring buffer (like original my_footcontroller.sc).
+    // chan selector picks among the snapshot's channels.
+    const sourceKey = '\\bufRecIns';
+    const writeToDisk = !!_dynbufWriteToDisk;
+    const diskPath = writeToDisk && _workspacePath
+        ? path.join(_workspacePath, ENVIL_DIR, 'dynbufs').replace(/\\/g, '/')
+        : null;
+
+    // ALWAYS emit setup — the SC side is idempotent (gated by
+    // Library.at(\envil, \bufRecReady)) and this avoids the trap where
+    // the JS-side flag was flipped to true while sclang wasn't yet in a
+    // ProxySpace (so the setup body silently did nothing).
+    let setup = dynbufBuildSetup() + '; ';
+    _dynbufSysSent = true;
+    // Also (re)ensure per-slot control proxies exist before the player proxy
+    // tries to map them in.
+    const ctrls = dynbufBuildCtrlsForSlot(d);
+
+    // The player proxy synth. Channel count baked in.
+    // ~t is envil's tempo proxy (beats per second). Defaults to 1 if absent.
+    const playerFunc = [
+        `{ |bufNum=0, origTempo=1|`,
+        `  var t = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
+        `  var start       = ~bufPlay_${slot}_start.kr;`,
+        `  var endC        = ~bufPlay_${slot}_end.kr;`,
+        `  var tempoMul    = ~bufPlay_${slot}_tempoMul.kr;`,
+        `  var rateMul     = ~bufPlay_${slot}_rateMul.kr;`,
+        `  var chan        = ~bufPlay_${slot}_chan.kr;`,
+        `  var pulseDivide = ~bufPlay_${slot}_pulseDivide.kr;`,
+        `  var tempoFac    = 2.0 ** (((tempoMul * 8) - 4).round);`,
+        `  var pulse       = Impulse.kr(t * 128 * tempoFac);`,
+        `  var divFactor   = 2 ** ((pulseDivide * 7).round);`,
+        `  var trigger     = PulseDivider.kr(pulse, (128 * 32) / divFactor);`,
+        `  var actualRate  = 2.0 ** (((rateMul * 8) - 4).round);`,
+        `  var rate        = Latch.kr(actualRate, trigger);`,
+        `  var startFrame  = Latch.kr(BufFrames.kr(bufNum) * start, trigger);`,
+        `  var endFrame    = Latch.kr(BufFrames.kr(bufNum) * endC,  trigger).max(startFrame + 1);`,
+        `  var durLocal    = endFrame - startFrame;`,
+        `  var speed       = t / origTempo;`,
+        `  var phaseR      = Sweep.ar(trigger, SampleRate.ir / durLocal * rate * speed).linlin(0, 1, startFrame, endFrame);`,
+        `  var bp          = BufRd.ar(${nch}, bufNum, phaseR, interpolation: 1, loop: 0);`,
+        `  var chanIdx     = K2A.ar(chan.linlin(0, 1, 0, ${nch - 1}).round);`,
+        `  var bpC         = Select.ar(chanIdx, bp);`,
+        `  PitchShift.ar(bpC, pitchRatio: rate.reciprocal / speed);`,
+        `}`,
+    ].join(' ');
+
+    const writeBlock = writeToDisk && diskPath
+        ? ` File.mkdir("${diskPath}"); snap.write(("${diskPath}/" ++ Date.getDate.format("%Y%m%d%H%M%S") ++ "_dynBuf_chans_${nch}_tempo_" ++ origTempo ++ ".wav"), "WAV", "int16");`
+        : '';
+
+    const body = [
+        ctrls,
+        `; if(currentEnvironment.isKindOf(ProxySpace), {`,
+        ` Routine({`,
+        `  var bufRing, phase, snap, dur, readFrom, origTempo;`,
+        `  if(Library.at(\\envil, \\bufRecReady).isNil or: { Library.at(\\envil, \\bufRecChans) != ${nch} }, {`,
+        `   [\\bufRecIns, \\bufRecOuts].do{|k| var b = Library.at(\\envil, k); if(b.notNil and: { b.isKindOf(Buffer) }, { b.free }) };`,
+        `   Library.put(\\envil, \\bufRecChans, ${nch});`,
+        `   Library.put(\\envil, \\bufRecPhase, 0.0);`,
+        `   Library.put(\\envil, \\dynBufs, List.new);`,
+        `   Library.put(\\envil, \\bufRecIns,  Buffer.alloc(Server.default, Server.default.sampleRate * ${_dynbufRingSeconds}, ${nch}));`,
+        `   Library.put(\\envil, \\bufRecOuts, Buffer.alloc(Server.default, Server.default.sampleRate * ${_dynbufRingSeconds}, ${nch}));`,
+        `   Server.default.sync;`,
+        `   ~envilBufRec.clear; ~envilBufRec.ar(1);`,
+        `   ~envilBufRec = { |bufIn= -1, bufOut= -1|`,
+        `     var ph = Phasor.ar(0, BufRateScale.kr(bufIn), 0, BufFrames.kr(bufIn));`,
+        `     var ins  = ${nch}.collect{|i| SoundIn.ar(i) };`,
+        `     var outs = ${nch}.collect{|i| InFeedback.ar(i, 1) };`,
+        `     BufWr.ar(ins,  bufIn,  ph);`,
+        `     BufWr.ar(outs, bufOut, ph);`,
+        `     SendReply.kr(Impulse.kr(50), '/envilBufRecPhase', [A2K.kr(ph)]);`,
+        `     DC.ar(0);`,
+        `   };`,
+        `   ~envilBufRec.set(\\bufIn, Library.at(\\envil, \\bufRecIns).bufnum, \\bufOut, Library.at(\\envil, \\bufRecOuts).bufnum);`,
+        `   ~envilBufRec.play;`,
+        `   OSCdef(\\envilBufRecPhase, { |msg| Library.put(\\envil, \\bufRecPhase, msg[3]) }, '/envilBufRecPhase');`,
+        `   Library.put(\\envil, \\bufRecReady, true);`,
+        `   ">>> envil: dynbuf system ready, recording started. Waiting ${snapSec}s before first snapshot...".postln;`,
+        `   (${snapSec}).wait;`,
+        `  });`,
+        `  bufRing = Library.at(\\envil, ${sourceKey});`,
+        `  phase = (Library.at(\\envil, \\bufRecPhase) ? 0).asInteger;`,
+        `  snap = Buffer.alloc(Server.default, Server.default.sampleRate * ${snapSec}, ${nch});`,
+        `  Server.default.sync;`,
+        `  dur = snap.numFrames;`,
+        `  readFrom = phase - dur;`,
+        `  origTempo = TempoClock.default.tempo;`,
+        `  if(bufRing.isNil, {`,
+        `   "[envil dynbuf] ring buffer not ready yet — try again in a second.".warn;`,
+        `   snap.free;`,
+        `  }, {`,
+        `   if(readFrom > 0, {`,
+        `    bufRing.copyData(snap, 0, readFrom, dur);`,
+        `   }, {`,
+        `    var part1Start = bufRing.numFrames + readFrom;`,
+        `    var part1Dur = -1 * readFrom;`,
+        `    var part2Dur = dur + readFrom;`,
+        `    bufRing.copyData(snap, 0, part1Start, part1Dur);`,
+        `    bufRing.copyData(snap, -1 * readFrom, 0, part2Dur);`,
+        `   });`,
+        `   Library.put(\\envil, \\dynBufs, (Library.at(\\envil, \\dynBufs) ? List.new).add(snap));`,
+        writeBlock,
+        `   ~bufPlay_${slot}.ar(1);`,
+        `   ~bufPlay_${slot} = ${playerFunc};`,
+        `   ~bufPlay_${slot}.set(\\bufNum, snap.bufnum, \\origTempo, origTempo);`,
+        `   ~bufPlay_${slot}_idx.set(\\val, snap.bufnum);`,
+        `   (">>> envil dynbuf snapshot -> ~bufPlay_${slot}  buf=" ++ snap.bufnum ++ "  origTempo=" ++ origTempo).postln;`,
+        `  });`,
+        ` }).play;`,
+        `})`,
+    ].join('');
+
+    return body;
 }
 
 function clamp01(v) {

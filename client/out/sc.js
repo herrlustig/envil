@@ -1,24 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.onSclangExit = onSclangExit;
-exports.onServerStateChange = onServerStateChange;
-exports.addSuppressMarker = addSuppressMarker;
-exports.initOutputChannels = initOutputChannels;
-exports.isSclangRunning = isSclangRunning;
-exports.startSclang = startSclang;
-exports.stopSclang = stopSclang;
-exports.executeCode = executeCode;
-exports.sendCode = sendCode;
-exports.queryCode = queryCode;
-exports.findCodeBlock = findCodeBlock;
-exports.executeBlock = executeBlock;
-exports.bootServer = bootServer;
-exports.rebootServer = rebootServer;
-exports.killServer = killServer;
-exports.stopAllSounds = stopAllSounds;
-exports.checkServerRunning = checkServerRunning;
-exports.probeRunningServer = probeRunningServer;
-exports.openHelpForCursor = openHelpForCursor;
+exports.openHelpForCursor = exports.probeRunningServer = exports.checkServerRunning = exports.stopAllSounds = exports.killServer = exports.rebootServer = exports.bootServer = exports.executeBlock = exports.findCodeBlock = exports.queryCode = exports.sendCode = exports.executeCode = exports.stopSclang = exports.startSclang = exports.isSclangRunning = exports.initOutputChannels = exports.addSuppressMarker = exports.onServerStateChange = exports.onSclangExit = void 0;
 const fs = require("fs");
 const child_process_1 = require("child_process");
 const vscode_1 = require("vscode");
@@ -30,16 +12,19 @@ const exitCallbacks = [];
 function onSclangExit(cb) {
     exitCallbacks.push(cb);
 }
+exports.onSclangExit = onSclangExit;
 const serverStateCallbacks = [];
 function onServerStateChange(cb) {
     serverStateCallbacks.push(cb);
 }
+exports.onServerStateChange = onServerStateChange;
 // ── Markers to suppress from Post Window ──────────────────────────────────────
 const suppressMarkers = new Set();
 let _stdoutBuf = '';
 function addSuppressMarker(marker) {
     suppressMarkers.add(marker);
 }
+exports.addSuppressMarker = addSuppressMarker;
 /**
  * Strip any marker-delimited blocks from text before it reaches the Post Window.
  * Accumulates partial data across chunks to handle split markers.
@@ -79,9 +64,11 @@ function initOutputChannels() {
         postWindowOutput = vscode_1.window.createOutputChannel('SuperCollider Post Window');
     }
 }
+exports.initOutputChannels = initOutputChannels;
 function isSclangRunning() {
     return sclangProcess !== null && !sclangProcess.killed;
 }
+exports.isSclangRunning = isSclangRunning;
 // ── Path helpers ─────────────────────────────────────────────────────────────
 function getCommonMacOSPaths() {
     return [
@@ -217,6 +204,7 @@ async function startSclang(fallbackToExe = true) {
         return false;
     }
 }
+exports.startSclang = startSclang;
 function stopSclang() {
     if (sclangProcess && !sclangProcess.killed) {
         sclangOutput.appendLine('[SuperCollider] Stopping sclang...');
@@ -225,6 +213,7 @@ function stopSclang() {
         sclangOutput.appendLine('[SuperCollider] sclang stopped');
     }
 }
+exports.stopSclang = stopSclang;
 // ── Code execution ────────────────────────────────────────────────────────────
 async function executeCode(code) {
     if (!sclangProcess || sclangProcess.killed) {
@@ -237,6 +226,7 @@ async function executeCode(code) {
         sendCode(code);
     }
 }
+exports.executeCode = executeCode;
 function sendCode(code, silent = false) {
     if (!sclangProcess || !sclangProcess.stdin) {
         vscode_1.window.showErrorMessage('sclang is not running');
@@ -252,6 +242,7 @@ function sendCode(code, silent = false) {
         postWindowOutput.show(true); // reveal SC Post Window, keep editor focus
     }
 }
+exports.sendCode = sendCode;
 /**
  * Send SC code that prints a marker-delimited response and capture it.
  *
@@ -296,6 +287,7 @@ function queryCode(scCode, marker, timeoutMs = 2000) {
             return; cleanup(); resolve(null); }, timeoutMs);
     });
 }
+exports.queryCode = queryCode;
 // ── Block detection (ported from supercollider-vscode) ────────────────────────
 /**
  * Returns a copy of `text` with the same length where every character that is
@@ -449,6 +441,7 @@ function findCodeBlock(document, position) {
     }
     return result ?? document.lineAt(position.line).text.trim();
 }
+exports.findCodeBlock = findCodeBlock;
 async function executeBlock(editor) {
     const { document, selection } = editor;
     let code = selection.isEmpty
@@ -477,11 +470,16 @@ async function executeBlock(editor) {
     }
     await executeCode(wrappedCode);
 }
+exports.executeBlock = executeBlock;
 // ── Server helpers ────────────────────────────────────────────────────────────
 async function bootServer() { await executeCode('s.boot;'); }
+exports.bootServer = bootServer;
 async function rebootServer() { await executeCode('s.reboot;'); }
+exports.rebootServer = rebootServer;
 async function killServer() { await executeCode('s.quit;'); }
+exports.killServer = killServer;
 async function stopAllSounds() { await executeCode('CmdPeriod.run;'); }
+exports.stopAllSounds = stopAllSounds;
 /**
  * Lightweight scsynth liveness check — sends s.serverRunning via queryCode.
  * Returns true if scsynth is running according to sclang's own state.
@@ -494,6 +492,7 @@ async function checkServerRunning() {
     const result = await queryCode(`"${marker}".post; s.serverRunning.asString.post; "${marker}".postln;`, marker, 2000);
     return result?.trim() === 'true';
 }
+exports.checkServerRunning = checkServerRunning;
 /**
  * Probe for a running scsynth / supernova on the default port (57110).
  * If found: set s.serverRunning_(true) and optionally push ProxySpace.
@@ -541,6 +540,7 @@ async function probeRunningServer(autoInitProxy = true, inputProxyCode = '') {
     const result = await queryCode(scCode, marker, 5000);
     return result?.trim() === 'true';
 }
+exports.probeRunningServer = probeRunningServer;
 async function openHelpForCursor(editor) {
     const wordRange = editor.document.getWordRangeAtPosition(editor.selection.active);
     const word = wordRange ? editor.document.getText(wordRange) : null;
@@ -550,4 +550,5 @@ async function openHelpForCursor(editor) {
     }
     await executeCode(`HelpBrowser.openHelpFor("${word}");`);
 }
+exports.openHelpForCursor = openHelpForCursor;
 //# sourceMappingURL=sc.js.map

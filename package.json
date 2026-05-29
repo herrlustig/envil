@@ -277,6 +277,30 @@
             "type": "boolean",
             "default": true,
             "description": "Draw detected landmarks as an overlay on the knob canvas."
+          },
+          "envil.dynbuf.numChannels": {
+            "type": "integer",
+            "default": 2,
+            "minimum": 1,
+            "maximum": 16,
+            "description": "Number of channels recorded by the dynamic buffer system (one per audio input). Channel selector on each row picks one of these."
+          },
+          "envil.dynbuf.ringSeconds": {
+            "type": "number",
+            "default": 32,
+            "minimum": 1,
+            "description": "Length (in seconds) of the always-running ring buffer that snapshots are taken from."
+          },
+          "envil.dynbuf.snapshotSeconds": {
+            "type": "number",
+            "default": 8,
+            "minimum": 0.1,
+            "description": "Default length (in seconds) of a captured snapshot buffer."
+          },
+          "envil.dynbuf.writeToDisk": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, every snapshot is also written to disk as <workspace>/.envil/dynbufs/<timestamp>_dynBuf_chans_N_tempo_T.wav (mirrors original e[\\setupBufferSys])."
           }
         }
       },

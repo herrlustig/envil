@@ -1,6 +1,15 @@
 
 # topic: interactive, innovative livecoding IDE
 
+## dynbuf: live looper enhancements
+the dynamic-buffer system (panel "dyb" rows) supports manual SNAP capture. Future ideas:
+- **auto re-snap mode**: per row, auto-recapture every N beats (live looper without manual triggering). would need a small interval scheduler in the host, same pattern as macro/seq.
+- **real waveform display**: poll the captured buffer's samples (Buffer.getn) and draw the actual waveform under the start/end region instead of the stylised placeholder.
+- **playhead overlay**: have the player synth emit phase via SendReply (already used for the recorder ring) and render a moving line on the canvas.
+- **drag-and-drop file → snapshot slot**: drop a .wav onto a dynbuf row to replace its snapshot (port of `e[\createBufControllerFromFile]`).
+- **per-row buffer length**: expose snapshot duration (currently a global setting) per row.
+- **named slots**: allow renaming `~bufPlay_0` → e.g. `~kick_loop` (mirror macros rename UX).
+
 ## reevaluate code blocks by click/touch
 for supercollider it would be super useful to add a little button at the start and end of most outer enclosing brackets of executable code blocks. this would allow to reeavaluate with mouseclick or touchscreen as an alternative to key-shortcuts
 
