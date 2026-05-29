@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:;"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob: __ENVIL_CSP_SRC__; media-src __ENVIL_CSP_SRC__; connect-src __ENVIL_CSP_SRC__;"/>
 <style>
 /* ── Reset ───────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1086,6 +1086,7 @@ function buildPersistedState() {
             chan: d.chan,
             pulseDivide: d.pulseDivide,
             hasSnapshot: !!d.hasSnapshot,
+            lastWavPath: d.lastWavPath || null,
         })),
     };
 }
@@ -1226,6 +1227,21 @@ window.addEventListener('message', (event) => {
             if (s) s.currentStep = t.step;
         }
         updateSeqStepVisuals();
+    }
+    if (msg.type === 'dynbuf-wave-ready') {
+        const d = (typeof dynbufs !== 'undefined' ? dynbufs : []).find(x => x.slot === msg.slot);
+        if (!d) return;
+        d.hasSnapshot = true;
+        d.lastWavUri = msg.uri;
+        if (msg.filePath) d.lastWavPath = msg.filePath;
+        // Try to derive a canvas-pixel-width-ish bucket count; fall back to 512.
+        const canvas = document.getElementById('dynbuf-canvas-' + d.slot);
+        const w = canvas ? Math.max(64, Math.round(canvas.getBoundingClientRect().width)) : 512;
+        // Append cache-buster so a re-snap (overwriting the same filename) is re-fetched.
+        const fetchUri = msg.uri + (msg.uri.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now();
+        dynbufLoadWavPeaks(d, fetchUri, w);
+        drawDynbufWave(d);
+        persistState();
     }
     if (msg.type === 'mediapipe-config') {
         // Settings changed from extension host
@@ -2497,6 +2513,9 @@ function addDynbuf(slot, opts) {
         chan:        o.chan        != null ? dynbufClamp01(o.chan)        : (slot / Math.max(1, DYNBUF_DEFAULT_ROWS - 1)),  // default: slot 0 → chan 0, slot 1 → chan 1
         pulseDivide: o.pulseDivide != null ? dynbufClamp01(o.pulseDivide) : 0.5,
         hasSnapshot: !!o.hasSnapshot,
+        lastWavPath: typeof o.lastWavPath === 'string' ? o.lastWavPath : null,
+        _peaks: null,  // populated when WAV decoded (Float32Array [min,max,min,max,...])
+        _peaksBuckets: 0,
     };
     // Default chan for slot 0 = 0, slot 1 = ~0.14 (=ch 1 of 8 channels). Override:
     if (o.chan == null) {
@@ -2514,6 +2533,7 @@ function addDynbuf(slot, opts) {
         start: d.start, end: d.end,
         tempoMul: d.tempoMul, rateMul: d.rateMul,
         chan: d.chan, pulseDivide: d.pulseDivide,
+        lastWavPath: d.lastWavPath,
     });
     return d;
 }
@@ -2529,6 +2549,15 @@ function removeDynbuf(d) {
 
 function dynbufSendCtrl(d, key, value) {
     vscode.postMessage({ type: 'dynbuf-control', slot: d.slot, key, value });
+    // If chan changed and we have a cached WAV, re-bucket peaks for that channel.
+    if (key === 'chan' && d.lastWavUri && d._peaksNch && d._peaksNch > 1) {
+        const newCh = Math.round((value || 0) * (d._peaksNch - 1));
+        if (newCh !== d._peaksFromChan) {
+            const canvas = document.getElementById('dynbuf-canvas-' + d.slot);
+            const w = canvas ? Math.max(64, Math.round(canvas.getBoundingClientRect().width)) : 512;
+            dynbufLoadWavPeaks(d, d.lastWavUri, w);
+        }
+    }
 }
 
 function dynbufSnapshot(d, btn) {
@@ -2713,30 +2742,119 @@ function drawDynbufWave(d) {
 
     if (!d.hasSnapshot) return;
 
-    // No real waveform data (would need server-side analysis).
-    // Show a stylised filled region = playback window.
+    // Playback window highlight (start..end)
     const x1 = Math.max(0, Math.min(w, d.start * w));
     const x2 = Math.max(0, Math.min(w, d.end * w));
     g.fillStyle = 'rgba(255,212,121,0.12)';
     g.fillRect(x1, 0, Math.max(1, x2 - x1), h);
-    // Stylised waveform (sine envelope just for visual feedback)
-    g.strokeStyle = 'rgba(255,212,121,0.7)';
+
+    // Real waveform peaks if we have them, otherwise a faint placeholder.
+    g.strokeStyle = d._peaks ? 'rgba(255,212,121,0.85)' : 'rgba(255,212,121,0.35)';
     g.lineWidth = 1;
-    g.beginPath();
-    const seed = d.slot * 9301 + 49297;
-    let r = seed;
-    const rand = () => { r = (r * 9301 + 49297) % 233280; return r / 233280; };
-    for (let x = 0; x < w; x++) {
-        const env = 0.3 + 0.55 * Math.abs(Math.sin((x / w) * Math.PI * 6 + d.slot));
-        const y = h / 2 + (rand() - 0.5) * h * env * 0.6;
-        if (x === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    if (d._peaks && d._peaks.length > 0) {
+        // _peaks is [min0, max0, min1, max1, ...] over d._peaksBuckets buckets.
+        const buckets = d._peaksBuckets || (d._peaks.length / 2);
+        const mid = h / 2;
+        const scale = (h * 0.48);
+        g.beginPath();
+        for (let x = 0; x < w; x++) {
+            const i = Math.min(buckets - 1, Math.floor((x / Math.max(1, w - 1)) * (buckets - 1)));
+            const mn = d._peaks[i * 2];
+            const mx = d._peaks[i * 2 + 1];
+            const y1 = mid - mx * scale;
+            const y2 = mid - mn * scale;
+            g.moveTo(x + 0.5, y1);
+            g.lineTo(x + 0.5, Math.max(y1 + 1, y2));
+        }
+        g.stroke();
+    } else {
+        // Placeholder waveform until peaks load
+        g.beginPath();
+        const seed = d.slot * 9301 + 49297;
+        let r = seed;
+        const rand = () => { r = (r * 9301 + 49297) % 233280; return r / 233280; };
+        for (let x = 0; x < w; x++) {
+            const env = 0.3 + 0.55 * Math.abs(Math.sin((x / w) * Math.PI * 6 + d.slot));
+            const y = h / 2 + (rand() - 0.5) * h * env * 0.6;
+            if (x === 0) g.moveTo(x, y); else g.lineTo(x, y);
+        }
+        g.stroke();
     }
-    g.stroke();
+
     // Start/end markers
     g.strokeStyle = '#ffd479';
     g.lineWidth = 1.5;
     g.beginPath(); g.moveTo(x1, 0); g.lineTo(x1, h); g.stroke();
     g.beginPath(); g.moveTo(x2, 0); g.lineTo(x2, h); g.stroke();
+}
+
+// ── WAV → peaks ─────────────────────────────────────────────────────────
+// Parses a PCM16 little-endian WAV blob and computes [min,max] per bucket.
+// Tiny on purpose: assumes the file format dynbufBuildSnapshot writes
+// ("WAV", "int16"). Falls back to silent failure for anything else.
+async function dynbufLoadWavPeaks(d, uri, targetBuckets) {
+    targetBuckets = Math.max(64, Math.min(2048, targetBuckets | 0 || 512));
+    try {
+        const res = await fetch(uri);
+        if (!res.ok) throw new Error('http ' + res.status);
+        const buf = await res.arrayBuffer();
+        const view = new DataView(buf);
+        if (view.byteLength < 44) throw new Error('too small');
+        // RIFF/WAVE header
+        if (view.getUint32(0, false) !== 0x52494646) throw new Error('not RIFF');
+        if (view.getUint32(8, false) !== 0x57415645) throw new Error('not WAVE');
+        // Walk chunks
+        let off = 12, fmt = null, dataOff = -1, dataLen = 0;
+        while (off + 8 <= view.byteLength) {
+            const id = view.getUint32(off, false);
+            const sz = view.getUint32(off + 4, true);
+            if (id === 0x666d7420 /* "fmt " */) {
+                fmt = {
+                    format:        view.getUint16(off + 8,  true),
+                    numChannels:   view.getUint16(off + 10, true),
+                    sampleRate:    view.getUint32(off + 12, true),
+                    bitsPerSample: view.getUint16(off + 22, true),
+                };
+            } else if (id === 0x64617461 /* "data" */) {
+                dataOff = off + 8; dataLen = sz; break;
+            }
+            off += 8 + sz + (sz & 1);
+        }
+        if (!fmt || dataOff < 0) throw new Error('no fmt/data');
+        if (fmt.format !== 1 || fmt.bitsPerSample !== 16) {
+            console.warn('[dynbuf] unsupported wav format', fmt);
+            return;
+        }
+        const nch = fmt.numChannels;
+        const samplesPerCh = (dataLen >>> 1) / nch;
+        if (samplesPerCh < 2) throw new Error('empty data');
+        const peaks = new Float32Array(targetBuckets * 2);
+        const stride = samplesPerCh / targetBuckets;
+        // Pick a channel to display: prefer the currently selected one.
+        let pickCh = Math.round((d.chan || 0) * (nch - 1));
+        pickCh = Math.max(0, Math.min(nch - 1, pickCh));
+        for (let b = 0; b < targetBuckets; b++) {
+            const s0 = Math.floor(b * stride);
+            const s1 = Math.min(samplesPerCh, Math.floor((b + 1) * stride));
+            let mn = 1, mx = -1;
+            for (let i = s0; i < s1; i++) {
+                const idx = (i * nch + pickCh) * 2;
+                const v = view.getInt16(dataOff + idx, true) / 32768;
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+            }
+            if (s1 <= s0) { mn = 0; mx = 0; }
+            peaks[b * 2] = mn;
+            peaks[b * 2 + 1] = mx;
+        }
+        d._peaks = peaks;
+        d._peaksBuckets = targetBuckets;
+        d._peaksNch = nch;
+        d._peaksFromChan = pickCh;
+        drawDynbufWave(d);
+    } catch (e) {
+        console.warn('[dynbuf] wav load failed:', e.message || e);
+    }
 }
 
 function wireDynbufRange(rangeEl, d, updateUI) {

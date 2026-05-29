@@ -299,8 +299,8 @@
           },
           "envil.dynbuf.writeToDisk": {
             "type": "boolean",
-            "default": false,
-            "description": "When true, every snapshot is also written to disk as <workspace>/.envil/dynbufs/<timestamp>_dynBuf_chans_N_tempo_T.wav (mirrors original e[\\setupBufferSys])."
+            "default": true,
+            "description": "When true, every snapshot is written to <workspace>/.envil/dynbufs/slot_N.wav (one file per slot, overwritten on each SNAP). Required for waveform display and session reload."
           }
         }
       },

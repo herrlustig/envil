@@ -68,7 +68,13 @@ let _dynbufSysSent = false;  // SC setup code emitted? (re-emit on demand; sclan
 let _dynbufNumChannels = 2;
 let _dynbufRingSeconds = 32;
 let _dynbufSnapshotSeconds = 8;
-let _dynbufWriteToDisk = false;
+let _dynbufWriteToDisk = true;
+
+// Notification listener: SC sends /envilDynbufWritten <slot> <path> <sr> <nch> <numFrames>
+// once Buffer.write completes on the audio server side.
+let _dynbufNotifyPort = null;
+let _dynbufNotifyPortNumber = 0;
+let _dynbufNotifyReady = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API
@@ -107,7 +113,7 @@ function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath,
     _dynbufNumChannels     = Math.max(1, Math.min(16, dbCfg.get('numChannels', 2)));
     _dynbufRingSeconds     = Math.max(1, Number(dbCfg.get('ringSeconds', 32)));
     _dynbufSnapshotSeconds = Math.max(0.1, Number(dbCfg.get('snapshotSeconds', 8)));
-    _dynbufWriteToDisk     = !!dbCfg.get('writeToDisk', false);
+    _dynbufWriteToDisk     = !!dbCfg.get('writeToDisk', true);
 
     // Re-read settings on change
     context.subscriptions.push(
@@ -125,7 +131,7 @@ function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath,
                 _dynbufNumChannels     = Math.max(1, Math.min(16, dc.get('numChannels', 2)));
                 _dynbufRingSeconds     = Math.max(1, Number(dc.get('ringSeconds', 32)));
                 _dynbufSnapshotSeconds = Math.max(0.1, Number(dc.get('snapshotSeconds', 8)));
-                _dynbufWriteToDisk     = !!dc.get('writeToDisk', false);
+                _dynbufWriteToDisk     = !!dc.get('writeToDisk', true);
                 // If channel count or ring length changed, the SC ring buffer needs re-alloc
                 if (oldNCh !== _dynbufNumChannels || oldRing !== _dynbufRingSeconds) {
                     _dynbufSysSent = false;
@@ -212,6 +218,13 @@ function openPanel(context) {
         return;
     }
 
+    // Allow webview to fetch dynbuf WAVs from .envil/dynbufs/
+    const localRoots = [vscode.Uri.file(context.extensionPath)];
+    if (_workspacePath) {
+        localRoots.push(vscode.Uri.file(path.join(_workspacePath, ENVIL_DIR)));
+        try { fs.mkdirSync(path.join(_workspacePath, ENVIL_DIR, 'dynbufs'), { recursive: true }); } catch (_) {}
+    }
+
     _panel = vscode.window.createWebviewPanel(
         'envil.touchKnobs',
         '🎛 Touch Knobs',
@@ -219,8 +232,13 @@ function openPanel(context) {
         {
             enableScripts: true,
             retainContextWhenHidden: true,   // keep canvas alive when tab not visible
+            localResourceRoots: localRoots,
         }
     );
+
+    // Open the dynbuf notify port (idempotent). SC will be told its number
+    // each time a snapshot is generated, so we don't need a fixed port.
+    ensureDynbufNotifyPort();
 
     // Load HTML
     const saved = loadLayout();
@@ -231,10 +249,12 @@ function openPanel(context) {
     globalThis.__ENVIL_MP_CONFIG__ = ${JSON.stringify({
         drawLandmarks: _mpDrawLandmarks,
     })};`;
-    _panel.webview.html = rawHtml.replace(
-        'const vscode = acquireVsCodeApi();',
-        `const vscode = acquireVsCodeApi();\n${initialStateScript}`,
-    );
+    _panel.webview.html = rawHtml
+        .replace(/__ENVIL_CSP_SRC__/g, _panel.webview.cspSource)
+        .replace(
+            'const vscode = acquireVsCodeApi();',
+            `const vscode = acquireVsCodeApi();\n${initialStateScript}`,
+        );
 
     // Fresh debug log per panel session (rotates previous to .1)
     try {
@@ -824,7 +844,6 @@ function handleMessage(msg) {
             const slotIdx = Math.max(0, Number(msg.slot) | 0);
             const d = {
                 slot: slotIdx,
-                source: msg.source === 'outs' ? 'outs' : 'ins',
                 playing: msg.playing !== false,
                 start:       clamp01(msg.start       != null ? msg.start       : 0),
                 end:         clamp01(msg.end         != null ? msg.end         : 1),
@@ -833,10 +852,36 @@ function handleMessage(msg) {
                 chan:        clamp01(msg.chan        != null ? msg.chan        : 0),
                 pulseDivide: clamp01(msg.pulseDivide != null ? msg.pulseDivide : 0.5),
                 hasSnapshot: false,
+                lastWavPath: typeof msg.lastWavPath === 'string' ? msg.lastWavPath : null,
             };
             _dynbufs.set(slotIdx, d);
             // Push the recorder system + control proxies (idempotent on SC side)
             sendSC(dynbufBuildSetupAndCtrls(d), true);
+            // If we have a persisted WAV from a previous session and the file
+            // still exists, reload it (so ~bufPlay_N becomes audible without
+            // requiring a fresh SNAP) and notify the webview to draw it.
+            if (d.lastWavPath) {
+                try {
+                    if (fs.existsSync(d.lastWavPath)) {
+                        d.hasSnapshot = true;
+                        sendSC(dynbufBuildReloadFromDisk(d), true);
+                        if (_panel) {
+                            const uri = _panel.webview.asWebviewUri(vscode.Uri.file(d.lastWavPath));
+                            _panel.webview.postMessage({
+                                type: 'dynbuf-wave-ready',
+                                slot: slotIdx,
+                                uri: uri.toString(),
+                                filePath: d.lastWavPath,
+                                nch: _dynbufNumChannels,
+                                restored: true,
+                            });
+                        }
+                        log(`  ↻ dynbuf slot=${slotIdx} reloaded from ${path.relative(_workspacePath || '.', d.lastWavPath)}`);
+                    }
+                } catch (e) {
+                    console.warn('[touch-knobs] dynbuf reload failed:', e.message);
+                }
+            }
             log(`  ＋ dynbuf slot=${slotIdx}  (~bufPlay_${slotIdx})`);
             break;
         }
@@ -884,6 +929,9 @@ function handleMessage(msg) {
             }
             d.hasSnapshot = true;
             sendSC(dynbufBuildSnapshot(d), true);
+            // Host-side fallback: poll for the WAV file appearing on disk and
+            // push a wave-ready message even if SC's OSC notify never arrives.
+            scheduleDynbufWaveFallback(d);
             log(`  ⏺ dynbuf snapshot slot=${slotIdx}`);
             break;
         }
@@ -1224,6 +1272,122 @@ function sendSeqOSC(address, args) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DYNBUF NOTIFY OSC LISTENER
+// ─────────────────────────────────────────────────────────────────────────────
+// SC sends /envilDynbufWritten <slot:i> <path:s> <sr:i> <nch:i> <numFrames:i>
+// once Buffer.write completes. We forward the path to the webview as a
+// webview-safe URI so it can fetch the WAV and draw a real waveform.
+
+function ensureDynbufNotifyPort() {
+    if (_dynbufNotifyPort) return;
+    try {
+        _dynbufNotifyPort = new osc.UDPPort({
+            localAddress: '127.0.0.1',
+            localPort: 0,           // OS picks ephemeral
+            broadcast: false,
+        });
+        _dynbufNotifyPort.on('ready', () => {
+            _dynbufNotifyReady = true;
+            try { _dynbufNotifyPortNumber = _dynbufNotifyPort.socket.address().port; }
+            catch (_) { _dynbufNotifyPortNumber = 0; }
+            log(`  ⟲ dynbuf notify port ready @ udp://127.0.0.1:${_dynbufNotifyPortNumber}`);
+        });
+        _dynbufNotifyPort.on('error', (err) => {
+            console.warn('[touch-knobs] dynbuf notify port error:', err.message);
+        });
+        _dynbufNotifyPort.on('message', (oscMsg) => {
+            try { handleDynbufWritten(oscMsg); }
+            catch (e) { console.warn('[touch-knobs] dynbuf notify handler error:', e.message); }
+        });
+        _dynbufNotifyPort.open();
+    } catch (e) {
+        console.warn('[touch-knobs] failed to open dynbuf notify port:', e.message);
+        _dynbufNotifyPort = null;
+        _dynbufNotifyReady = false;
+    }
+}
+
+function handleDynbufWritten(oscMsg) {
+    if (!oscMsg || oscMsg.address !== '/envilDynbufWritten') return;
+    const a = oscMsg.args || [];
+    const slot       = Number(a[0] && (a[0].value != null ? a[0].value : a[0])) | 0;
+    const filePath   = String(a[1] && (a[1].value != null ? a[1].value : a[1]));
+    const sampleRate = Number(a[2] && (a[2].value != null ? a[2].value : a[2])) | 0;
+    const nch        = Number(a[3] && (a[3].value != null ? a[3].value : a[3])) | 0;
+    const numFrames  = Number(a[4] && (a[4].value != null ? a[4].value : a[4])) | 0;
+    if (!filePath) return;
+    // Persist on the per-slot state
+    const d = _dynbufs.get(slot);
+    if (d) {
+        d.lastWavPath = filePath;
+        d.lastWavSampleRate = sampleRate;
+        d.lastWavNumChannels = nch;
+        d.lastWavNumFrames = numFrames;
+        d.hasSnapshot = true;
+    }
+    // Forward to webview as a webview-safe URI
+    if (_panel) {
+        try {
+            const uri = _panel.webview.asWebviewUri(vscode.Uri.file(filePath));
+            _panel.webview.postMessage({
+                type: 'dynbuf-wave-ready',
+                slot,
+                uri: uri.toString(),
+                filePath,
+                sampleRate,
+                nch,
+                numFrames,
+            });
+        } catch (e) {
+            console.warn('[touch-knobs] asWebviewUri failed:', e.message);
+        }
+    }
+    log(`  📊 dynbuf wav written slot=${slot} (${nch}ch, ${sampleRate} sr, ${numFrames} frames)`);
+}
+
+// Fallback path: after triggering a snapshot, watch for the WAV file appearing
+// on disk and push wave-ready to the webview. This makes the OSC notify port
+// optional — if it works, the webview gets two updates (cheap), if it doesn't,
+// the user still sees the waveform.
+function scheduleDynbufWaveFallback(d) {
+    if (!_workspacePath || !_dynbufWriteToDisk) return;
+    const filePath = path.join(_workspacePath, ENVIL_DIR, 'dynbufs', `slot_${d.slot}.wav`);
+    const startMtime = (() => {
+        try { return fs.statSync(filePath).mtimeMs; } catch (_) { return 0; }
+    })();
+    const startedAt = Date.now();
+    const maxWaitMs = (Number(_dynbufSnapshotSeconds) + 4) * 1000;
+    const tick = () => {
+        if (!_panel) return;
+        let m = 0;
+        try { m = fs.statSync(filePath).mtimeMs; } catch (_) { m = 0; }
+        if (m > startMtime) {
+            try {
+                const uri = _panel.webview.asWebviewUri(vscode.Uri.file(filePath));
+                d.lastWavPath = filePath;
+                d.hasSnapshot = true;
+                _panel.webview.postMessage({
+                    type: 'dynbuf-wave-ready',
+                    slot: d.slot,
+                    uri: uri.toString(),
+                    filePath,
+                    nch: _dynbufNumChannels,
+                });
+            } catch (e) {
+                console.warn('[touch-knobs] dynbuf fallback push failed:', e.message);
+            }
+            return;
+        }
+        if (Date.now() - startedAt > maxWaitMs) {
+            log(`  ⚠ dynbuf slot=${d.slot}: WAV never appeared at ${filePath}`);
+            return;
+        }
+        setTimeout(tick, 250);
+    };
+    setTimeout(tick, 250);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SC COMMUNICATION
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1510,7 +1674,7 @@ function dynbufBuildSnapshot(d) {
     ].join(' ');
 
     const writeBlock = writeToDisk && diskPath
-        ? ` File.mkdir("${diskPath}"); snap.write(("${diskPath}/" ++ Date.getDate.format("%Y%m%d%H%M%S") ++ "_dynBuf_chans_${nch}_tempo_" ++ origTempo ++ ".wav"), "WAV", "int16");`
+        ? ` File.mkdir("${diskPath}"); snap.write("${diskPath}/slot_${slot}.wav", "WAV", "int16"); Server.default.sync; NetAddr("127.0.0.1", ${_dynbufNotifyPortNumber || 0}).sendMsg("/envilDynbufWritten", ${slot}, "${diskPath}/slot_${slot}.wav", Server.default.sampleRate.asInteger, ${nch}, snap.numFrames.asInteger);`
         : '';
 
     const body = [
@@ -1576,6 +1740,54 @@ function dynbufBuildSnapshot(d) {
     ].join('');
 
     return body;
+}
+
+// Build SC code to reload a previously-written dynbuf WAV from disk into
+// ~bufPlay_N. Same player function as fresh snapshot, but reads from file
+// instead of copying from the ring buffer.
+function dynbufBuildReloadFromDisk(d) {
+    const slot = d.slot;
+    const nch = _dynbufNumChannels;
+    const wavPath = d.lastWavPath.replace(/\\/g, '/').replace(/"/g, '\\"');
+    const ctrls = dynbufBuildCtrlsForSlot(d);
+    const playerFunc = [
+        `{ |bufNum=0, origTempo=1|`,
+        `  var t = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
+        `  var start       = ~bufPlay_${slot}_start.kr;`,
+        `  var endC        = ~bufPlay_${slot}_end.kr;`,
+        `  var tempoMul    = ~bufPlay_${slot}_tempoMul.kr;`,
+        `  var rateMul     = ~bufPlay_${slot}_rateMul.kr;`,
+        `  var chan        = ~bufPlay_${slot}_chan.kr;`,
+        `  var pulseDivide = ~bufPlay_${slot}_pulseDivide.kr;`,
+        `  var tempoFac    = 2.0 ** (((tempoMul * 8) - 4).round);`,
+        `  var pulse       = Impulse.kr(t * 128 * tempoFac);`,
+        `  var divFactor   = 2 ** ((pulseDivide * 7).round);`,
+        `  var trigger     = PulseDivider.kr(pulse, (128 * 32) / divFactor);`,
+        `  var actualRate  = 2.0 ** (((rateMul * 8) - 4).round);`,
+        `  var rate        = Latch.kr(actualRate, trigger);`,
+        `  var startFrame  = Latch.kr(BufFrames.kr(bufNum) * start, trigger);`,
+        `  var endFrame    = Latch.kr(BufFrames.kr(bufNum) * endC,  trigger).max(startFrame + 1);`,
+        `  var durLocal    = endFrame - startFrame;`,
+        `  var speed       = t / origTempo;`,
+        `  var phaseR      = Sweep.ar(trigger, SampleRate.ir / durLocal * rate * speed).linlin(0, 1, startFrame, endFrame);`,
+        `  var bp          = BufRd.ar(${nch}, bufNum, phaseR, interpolation: 1, loop: 0);`,
+        `  var chanIdx     = K2A.ar(chan.linlin(0, 1, 0, ${nch - 1}).round);`,
+        `  var bpC         = Select.ar(chanIdx, bp);`,
+        `  PitchShift.ar(bpC, pitchRatio: rate.reciprocal / speed);`,
+        `}`,
+    ].join(' ');
+    return [
+        ctrls,
+        `; if(currentEnvironment.isKindOf(ProxySpace), {`,
+        ` Buffer.read(Server.default, "${wavPath}", action: { |snap|`,
+        `  ~bufPlay_${slot}.ar(1);`,
+        `  ~bufPlay_${slot} = ${playerFunc};`,
+        `  ~bufPlay_${slot}.set(\\bufNum, snap.bufnum, \\origTempo, TempoClock.default.tempo);`,
+        `  ~bufPlay_${slot}_idx.set(\\val, snap.bufnum);`,
+        `  (">>> envil dynbuf reloaded -> ~bufPlay_${slot}  buf=" ++ snap.bufnum).postln;`,
+        ` });`,
+        `})`,
+    ].join('');
 }
 
 function clamp01(v) {
