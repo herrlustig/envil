@@ -896,6 +896,59 @@ function handleMessage(msg) {
             break;
         }
 
+        case 'dynbuf-reload': {
+            // Manual recovery hatch: re-emit the ring recorder setup, the per-slot
+            // control proxies, and (if the WAV exists on disk) Buffer.read it
+            // into ~bufPlay_N again. Also re-notify the webview to redraw the
+            // waveform. Use this when the boot-init didn't fire (e.g. server
+            // was booted manually) or after some SC-side mishap.
+            const slotIdx = Math.max(0, Number(msg.slot) | 0);
+            let d = _dynbufs.get(slotIdx);
+            if (!d) {
+                // Build a minimal stub from the message so SC ctrls can still be installed
+                d = {
+                    slot: slotIdx,
+                    playing: msg.playing !== false,
+                    start:       clamp01(msg.start       != null ? msg.start       : 0),
+                    end:         clamp01(msg.end         != null ? msg.end         : 1),
+                    tempoMul:    clamp01(msg.tempoMul    != null ? msg.tempoMul    : 0.5),
+                    rateMul:     clamp01(msg.rateMul     != null ? msg.rateMul     : 0.5),
+                    chan:        clamp01(msg.chan        != null ? msg.chan        : 0),
+                    pulseDivide: clamp01(msg.pulseDivide != null ? msg.pulseDivide : 0.5),
+                    hasSnapshot: false,
+                    lastWavPath: typeof msg.lastWavPath === 'string' ? msg.lastWavPath : null,
+                };
+                _dynbufs.set(slotIdx, d);
+            }
+            // 1) Re-arm the ring recorder + per-slot ctrls (idempotent on SC side)
+            _dynbufSysSent = false; // force setup re-emit
+            sendSC(dynbufBuildSetupAndCtrls(d), true);
+            // 2) If we know a WAV on disk, reload it and redraw
+            const wavPath = d.lastWavPath || (_workspacePath
+                ? path.join(_workspacePath, ENVIL_DIR, 'dynbufs', `slot_${slotIdx}.wav`)
+                : null);
+            if (wavPath && fs.existsSync(wavPath)) {
+                d.lastWavPath = wavPath;
+                d.hasSnapshot = true;
+                sendSC(dynbufBuildReloadFromDisk(d), true);
+                if (_panel) {
+                    const uri = _panel.webview.asWebviewUri(vscode.Uri.file(wavPath));
+                    _panel.webview.postMessage({
+                        type: 'dynbuf-wave-ready',
+                        slot: slotIdx,
+                        uri: uri.toString(),
+                        filePath: wavPath,
+                        nch: _dynbufNumChannels,
+                        restored: true,
+                    });
+                }
+                log(`  ⟳ dynbuf slot=${slotIdx} manual reload from ${path.relative(_workspacePath || '.', wavPath)}`);
+            } else {
+                log(`  ⟳ dynbuf slot=${slotIdx} reload: no WAV on disk yet — ctrls re-armed`);
+            }
+            break;
+        }
+
         case 'dynbuf-control': {
             const slotIdx = Math.max(0, Number(msg.slot) | 0);
             const d = _dynbufs.get(slotIdx);
@@ -1921,4 +1974,66 @@ function getMediaPipeConfig() {
     };
 }
 
-module.exports = { registerTouchKnobs, hasEnvilDir, handleMediaPipeLandmarks, handleMediaPipeStatus, getMediaPipeConfig };
+/**
+ * Build SC code to be appended inside `s.waitForBoot {...}` so the dynbuf
+ * ring recorder + per-slot control proxies + (if WAVs exist) the player
+ * proxies are all live as soon as the server is up. This makes:
+ *   - `~bufPlay_N.ar` immediately usable from user code without opening the panel
+ *   - SNAP have zero wait time (ring is already filling)
+ *   - dynbufs auto-recover after server reboot, just like macros.
+ *
+ * Reads the persisted .envil/state.json directly so it works even when the
+ * panel isn't open yet.
+ */
+function buildDynbufBootInitSCCode() {
+    try {
+        const setup = dynbufBuildSetup();
+        let slotsCode = '';
+        // Read persisted dynbufs (no in-memory _dynbufs yet if panel never opened)
+        let savedDynbufs = [];
+        try {
+            const state = loadLayout();
+            if (state && Array.isArray(state.dynbufs)) savedDynbufs = state.dynbufs;
+        } catch (_) {}
+        for (const s of savedDynbufs) {
+            const d = {
+                slot: Math.max(0, Number(s.slot) | 0),
+                start:       clamp01(s.start       != null ? s.start       : 0),
+                end:         clamp01(s.end         != null ? s.end         : 1),
+                tempoMul:    clamp01(s.tempoMul    != null ? s.tempoMul    : 0.5),
+                rateMul:     clamp01(s.rateMul     != null ? s.rateMul     : 0.5),
+                chan:        clamp01(s.chan        != null ? s.chan        : 0),
+                pulseDivide: clamp01(s.pulseDivide != null ? s.pulseDivide : 0.5),
+                lastWavPath: typeof s.lastWavPath === 'string' ? s.lastWavPath : null,
+            };
+            slotsCode += '; ' + dynbufBuildCtrlsForSlot(d);
+            if (d.lastWavPath && fs.existsSync(d.lastWavPath)) {
+                slotsCode += '; ' + dynbufBuildReloadFromDisk(d);
+            }
+        }
+        // Wrap the whole boot init in `p.use { ... }` so that the tilde
+        // syntax (~bufPlay_N etc) resolves against the ProxySpace even when
+        // this code is invoked from AppClock (e.g. inside s.waitForBoot)
+        // where currentEnvironment is NOT the pushed ProxySpace.
+        //
+        // Also emit a diagnostic postln BEFORE the guard so the user always
+        // sees whether the boot init reached sclang.
+        const inner = (setup + slotsCode).replace(/\n/g, '\n    ');
+        const wrapped = [
+            `"[envil dynbuf] boot init: evaluating (p=" ++ p.class ++ ")".postln;`,
+            `if(p.isKindOf(ProxySpace), {`,
+            `  p.use({`,
+            `    ${inner}`,
+            `  });`,
+            `}, {`,
+            `  "[envil dynbuf] boot init SKIPPED: p is not a ProxySpace".warn;`,
+            `});`,
+        ].join('\n  ');
+        return '  ' + wrapped;
+    } catch (e) {
+        console.warn('[touch-knobs] buildDynbufBootInitSCCode failed:', e.message);
+        return '';
+    }
+}
+
+module.exports = { registerTouchKnobs, hasEnvilDir, handleMediaPipeLandmarks, handleMediaPipeStatus, getMediaPipeConfig, buildDynbufBootInitSCCode };

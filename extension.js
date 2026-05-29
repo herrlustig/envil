@@ -10,7 +10,7 @@ const { registerHydraProviders } = require('./hydra-language-support');
 const { registerHoverSlider } = require('./hover-slider');
 const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
 const { extractExpressions } = require('./peek-expressions');
-const { registerTouchKnobs, hasEnvilDir } = require('./touch-knobs');
+const { registerTouchKnobs, hasEnvilDir, buildDynbufBootInitSCCode } = require('./touch-knobs');
 const { registerProxyCompletions } = require('./proxy-completions');
 const { registerEnvCompletions, clearEnvKeyCache } = require('./env-completions');
 const { registerPbindCompletions } = require('./pbind-completions');
@@ -187,7 +187,7 @@ async function activate(context) {
                 updateSclangBar(true);
                 // Auto-detect a running scsynth left over from a previous session
                 const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
-                const inputCode = autoInit ? buildInputProxySCCode() : '';
+                const inputCode = autoInit ? (buildInputProxySCCode() + '\n' + buildDynbufBootInitSCCode()) : '';
                 sc.probeRunningServer(autoInit, inputCode).then(found => {
                     if (found) {
                         _isSCSynthRunning = true;
@@ -238,6 +238,7 @@ async function activate(context) {
                     's.waitForBoot {',
                     '  ~out.play;',
                     inputCode,
+                    buildDynbufBootInitSCCode(),
                     '  "[envil] ProxySpace ready.  ~out.ar(2).play".postln;',
                     '};',
                 ].join('\n'));
@@ -289,6 +290,7 @@ async function activate(context) {
                     's.waitForBoot {',
                     '  ~out.play;',
                     inputCode,
+                    buildDynbufBootInitSCCode(),
                     '  "[envil] ProxySpace ready.  ~out.ar(2).play".postln;',
                     '};',
                 ].join('\n'));
@@ -1053,7 +1055,7 @@ async function probeAndReconnect() {
     _isSCSynthRunning = true;
     updateScsynthBar(true);
     const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
-    const inputCode = autoInit ? buildInputProxySCCode() : '';
+    const inputCode = autoInit ? (buildInputProxySCCode() + '\n' + buildDynbufBootInitSCCode()) : '';
     sc.probeRunningServer(autoInit, inputCode);
 }
 
