@@ -224,6 +224,26 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 .dynbuf-row .dynbuf-btn.reload { color: #8af; opacity: 0.6; font-size: 14px; line-height: 1; }
 .dynbuf-row .dynbuf-btn.reload:hover { opacity: 1; color: #fff; border-color: #8af; }
 .dynbuf-row .dynbuf-btn.reload.flash { background: #8af; color: #000; opacity: 1; }
+.dynbuf-health {
+    display: flex; gap: 12px; align-items: center;
+    padding: 4px 8px; font-size: 10px; color: #999;
+    border-top: 1px solid #2a2a2a; border-bottom: 1px solid #2a2a2a;
+    background: #1a1a1a;
+}
+.dynbuf-health .dh-item { display: inline-flex; align-items: center; gap: 4px; }
+.dynbuf-health .dh-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: #555; transition: background 0.2s;
+}
+.dynbuf-health .dh-dot.ok    { background: #2c2; box-shadow: 0 0 4px #2c2; }
+.dynbuf-health .dh-dot.warn  { background: #ea3; box-shadow: 0 0 4px #ea3; }
+.dynbuf-health .dh-dot.err   { background: #f44; box-shadow: 0 0 4px #f44; }
+.dynbuf-row .dynbuf-slot-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: #555; margin-right: 4px; vertical-align: middle;
+}
+.dynbuf-row .dynbuf-slot-dot.ok  { background: #2c2; box-shadow: 0 0 3px #2c2; }
+.dynbuf-row .dynbuf-slot-dot.err { background: #f44; box-shadow: 0 0 3px #f44; }
 .dynbuf-row .dynbuf-range {
     position: absolute; left: 0; right: 0; bottom: 0; height: 10px;
     background: rgba(20,20,20,0.7); border-top: 1px solid #444;
@@ -424,6 +444,11 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
             <button id="seq-tap" class="seq-tap-btn" title="Tap tempo">TAP</button>
         </div>
         <div id="macro-grid" class="macro-grid"></div>
+        <div id="dynbuf-health" class="dynbuf-health" title="dynbuf system health">
+            <span class="dh-item" data-key="backbone"><span class="dh-dot"></span>backbone</span>
+            <span class="dh-item" data-key="proxyspace"><span class="dh-dot"></span>ProxySpace</span>
+            <span class="dh-item" data-key="slots"><span class="dh-dot"></span>slots <span class="dh-count">0/0</span></span>
+        </div>
         <div id="dynbuf-grid" class="dynbuf-grid"></div>
         <div id="seq-grid"></div>
     </div>
@@ -1245,6 +1270,9 @@ window.addEventListener('message', (event) => {
         dynbufLoadWavPeaks(d, fetchUri, w);
         drawDynbufWave(d);
         persistState();
+    }
+    if (msg.type === 'dynbuf-status') {
+        applyDynbufStatus(msg.status || {});
     }
     if (msg.type === 'mediapipe-config') {
         // Settings changed from extension host
@@ -2579,6 +2607,43 @@ function dynbufSetPlaying(d, playing) {
     vscode.postMessage({ type: 'dynbuf-play-toggle', slot: d.slot, playing: d.playing });
 }
 
+// ── Health status from extension host ──────────────────────────────────────
+// Updates the top health bar + each row's per-slot dot.
+let _dynbufStatusCache = null;
+function applyDynbufStatus(status) {
+    _dynbufStatusCache = status || {};
+    const root = document.getElementById('dynbuf-health');
+    if (!root) return;
+    const setDot = (key, cls) => {
+        const item = root.querySelector(`.dh-item[data-key="${key}"] .dh-dot`);
+        if (!item) return;
+        item.classList.remove('ok', 'warn', 'err');
+        if (cls) item.classList.add(cls);
+    };
+    setDot('backbone', status.backboneReady && status.backboneAlive ? 'ok' : 'err');
+    setDot('proxyspace', status.isProxySpace ? 'ok' : 'warn');
+    // slot count
+    const slotEntries = Object.entries(status.slots || {});
+    const total = slotEntries.length;
+    const exposed = slotEntries.filter(([, v]) => v && v.exposed).length;
+    const countEl = root.querySelector('.dh-item[data-key="slots"] .dh-count');
+    if (countEl) countEl.textContent = `${exposed}/${total}`;
+    let slotsCls = 'err';
+    if (total === 0) slotsCls = '';
+    else if (exposed === total) slotsCls = 'ok';
+    else if (exposed > 0) slotsCls = 'warn';
+    setDot('slots', slotsCls);
+    // Update per-row dots
+    for (const [slotStr, info] of slotEntries) {
+        const slot = Number(slotStr) | 0;
+        const dot = document.querySelector(`#dynbuf-row-${slot} .dynbuf-slot-dot`);
+        if (dot) {
+            dot.classList.remove('ok', 'err');
+            dot.classList.add(info && info.exposed ? 'ok' : 'err');
+        }
+    }
+}
+
 // ── Render one row ──────────────────────────────────────────────────────────────────
 function renderDynbufRow(d) {
     const existing = document.getElementById(dynbufRowId(d));
@@ -2739,16 +2804,22 @@ function renderDynbufRow(d) {
 
     row.appendChild(canvasWrap);
 
-    // Label overlay
+    // Label overlay (with health dot)
     const label = document.createElement('span');
     label.className = 'dynbuf-label';
-    label.textContent = dynbufProxyName(d);
+    const dot = document.createElement('span');
+    dot.className = 'dynbuf-slot-dot';
+    dot.title = 'Slot proxy health (green = ~bufPlay_N exposed in current ProxySpace)';
+    label.appendChild(dot);
+    label.appendChild(document.createTextNode(dynbufProxyName(d)));
     canvasWrap.appendChild(label);
 
     if (nextSibling) dynbufGrid.insertBefore(row, nextSibling);
     else dynbufGrid.appendChild(row);
 
     drawDynbufWave(d);
+    // Re-apply cached status so the new row's dot is colored immediately
+    if (_dynbufStatusCache) applyDynbufStatus(_dynbufStatusCache);
 }
 
 function drawDynbufWave(d) {

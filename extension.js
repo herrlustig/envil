@@ -10,7 +10,7 @@ const { registerHydraProviders } = require('./hydra-language-support');
 const { registerHoverSlider } = require('./hover-slider');
 const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
 const { extractExpressions } = require('./peek-expressions');
-const { registerTouchKnobs, hasEnvilDir, buildDynbufBootInitSCCode } = require('./touch-knobs');
+const { registerTouchKnobs, hasEnvilDir, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode } = require('./touch-knobs');
 const { registerProxyCompletions } = require('./proxy-completions');
 const { registerEnvCompletions, clearEnvKeyCache } = require('./env-completions');
 const { registerPbindCompletions } = require('./pbind-completions');
@@ -187,7 +187,7 @@ async function activate(context) {
                 updateSclangBar(true);
                 // Auto-detect a running scsynth left over from a previous session
                 const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
-                const inputCode = autoInit ? (buildInputProxySCCode() + '\n' + buildDynbufBootInitSCCode()) : '';
+                const inputCode = autoInit ? (buildInputProxySCCode() + '\n' + buildDynbufBackboneRegisterCode() + '\n' + buildDynbufBootInitSCCode()) : '';
                 sc.probeRunningServer(autoInit, inputCode).then(found => {
                     if (found) {
                         _isSCSynthRunning = true;
@@ -235,9 +235,13 @@ async function activate(context) {
                     '  p.quant = 1;',
                     '  "[envil] ProxySpace pushed. fadeTime=4, quant=1".postln;',
                     '});',
+                    '// dynbuf BACKBONE (ProxySpace-independent) — registers on ServerTree,',
+                    '// auto-(re)builds on every (re)boot; fires immediately if server is up.',
+                    buildDynbufBackboneRegisterCode(),
                     's.waitForBoot {',
                     '  ~out.play;',
                     inputCode,
+                    '  // dynbuf per-slot REPRESENTATIONS (ProxySpace-scoped) — auto-expose persisted slots',
                     buildDynbufBootInitSCCode(),
                     '  "[envil] ProxySpace ready.  ~out.ar(2).play".postln;',
                     '};',
@@ -287,9 +291,13 @@ async function activate(context) {
                     'p.fadeTime = 4;',
                     'p.quant = 1;',
                     '"[envil] ProxySpace re-pushed. fadeTime=4, quant=1".postln;',
+                    '// dynbuf BACKBONE (ProxySpace-independent) — registers on ServerTree,',
+                    '// auto-(re)builds on every (re)boot.',
+                    buildDynbufBackboneRegisterCode(),
                     's.waitForBoot {',
                     '  ~out.play;',
                     inputCode,
+                    '  // dynbuf per-slot REPRESENTATIONS (ProxySpace-scoped) — auto-expose persisted slots',
                     buildDynbufBootInitSCCode(),
                     '  "[envil] ProxySpace ready.  ~out.ar(2).play".postln;',
                     '};',
@@ -1055,7 +1063,7 @@ async function probeAndReconnect() {
     _isSCSynthRunning = true;
     updateScsynthBar(true);
     const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
-    const inputCode = autoInit ? (buildInputProxySCCode() + '\n' + buildDynbufBootInitSCCode()) : '';
+    const inputCode = autoInit ? (buildInputProxySCCode() + '\n' + buildDynbufBackboneRegisterCode() + '\n' + buildDynbufBootInitSCCode()) : '';
     sc.probeRunningServer(autoInit, inputCode);
 }
 

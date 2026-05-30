@@ -76,6 +76,14 @@ let _dynbufNotifyPort = null;
 let _dynbufNotifyPortNumber = 0;
 let _dynbufNotifyReady = false;
 
+// Heartbeat: while panel is open, poll sclang every N ms for health status
+// (backbone + per-slot proxy presence). Cached + forwarded to webview.
+let _dynbufHeartbeatTimer = null;
+let _dynbufHeartbeatMs = 2500;
+let _dynbufLastStatus = null;        // last /envilDynbufStatus payload
+let _dynbufBackboneSent = false;     // ServerTree register code already sent? (per sclang session)
+let _dynbufBackboneLastRepairMs = 0; // throttle auto-repair re-sends while backbone is red
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -267,10 +275,25 @@ function openPanel(context) {
     // Handle messages from webview
     _panel.webview.onDidReceiveMessage(handleMessage, null, context.subscriptions);
 
+    // Send backbone register code once per panel session (if sclang is up).
+    // ServerTree.add is idempotent on our side because we remove the previous
+    // closure first (see dynbufBuildBackboneCode).
+    try {
+        const sc = _getSC ? _getSC() : null;
+        if (sc && sc.isSclangRunning()) {
+            sendSC(buildDynbufBackboneRegisterCode(), true);
+            _dynbufBackboneSent = true;
+        }
+    } catch (_) {}
+
+    // Start health heartbeat
+    startDynbufHeartbeat();
+
     _panel.onDidDispose(() => {
         seqStopTimer();
         macroStopTimer();
         stopTempoSync();
+        stopDynbufHeartbeat();
         _panel = null;
     }, null, context.subscriptions);
 
@@ -981,6 +1004,16 @@ function handleMessage(msg) {
                 _dynbufs.set(slotIdx, d);
             }
             d.hasSnapshot = true;
+            // Only re-arm backbone if last-known status says it's red. The
+            // heartbeat already self-heals; re-arming on every SNAP would
+            // free + reallocate the ring buffers and lose recent audio.
+            if (!_dynbufLastStatus || !_dynbufLastStatus.backboneReady) {
+                sendSC(buildDynbufBackboneRegisterCode(), true);
+            }
+            // Send ctrls FIRST in a separate write — sclang's stdin
+            // command-line buffer has a hard limit (~6KB per chunk), so
+            // we split ctrls + snapshot routine across two writes.
+            sendSC(dynbufBuildCtrlsForSlot(d), true);
             sendSC(dynbufBuildSnapshot(d), true);
             // Host-side fallback: poll for the WAV file appearing on disk and
             // push a wave-ready message even if SC's OSC notify never arrives.
@@ -1349,7 +1382,11 @@ function ensureDynbufNotifyPort() {
             console.warn('[touch-knobs] dynbuf notify port error:', err.message);
         });
         _dynbufNotifyPort.on('message', (oscMsg) => {
-            try { handleDynbufWritten(oscMsg); }
+            try {
+                if (!oscMsg) return;
+                if (oscMsg.address === '/envilDynbufWritten') handleDynbufWritten(oscMsg);
+                else if (oscMsg.address === '/envilDynbufStatus') handleDynbufStatus(oscMsg);
+            }
             catch (e) { console.warn('[touch-knobs] dynbuf notify handler error:', e.message); }
         });
         _dynbufNotifyPort.open();
@@ -1396,6 +1433,91 @@ function handleDynbufWritten(oscMsg) {
         }
     }
     log(`  📊 dynbuf wav written slot=${slot} (${nch}ch, ${sampleRate} sr, ${numFrames} frames)`);
+}
+
+// Handle status reply from `buildDynbufStatusQueryCode`. Updates host-side
+// health cache + pushes to the webview so the panel can render dots/badges.
+function handleDynbufStatus(oscMsg) {
+    if (!oscMsg || oscMsg.address !== '/envilDynbufStatus') return;
+    const a = (oscMsg.args || []).map(x => Number(x && x.value != null ? x.value : x) | 0);
+    if (a.length < 3) return;
+    const [backboneReady, isProxySpace, backboneAlive, ...rest] = a;
+    // rest is groups of 3: [slot, exposed, numChannels]
+    const slots = {};
+    for (let i = 0; i + 2 < rest.length; i += 3) {
+        slots[rest[i]] = { exposed: !!rest[i + 1], nch: rest[i + 2] | 0 };
+    }
+    const status = {
+        backboneReady: !!backboneReady,
+        backboneAlive: !!backboneAlive,
+        isProxySpace: !!isProxySpace,
+        slots,
+    };
+    _dynbufLastStatus = status;
+    if (_panel) {
+        _panel.webview.postMessage({ type: 'dynbuf-status', status });
+    }
+    // Self-heal backbone: only when bufRecReady is genuinely false. bbAlive
+    // is best-effort (depends on NodeWatcher) and shouldn't trigger repair on
+    // its own. Throttle hard so the post window doesn't get spammed.
+    if (!status.backboneReady) {
+        const now = Date.now();
+        if ((now - _dynbufBackboneLastRepairMs) > 15000) {
+            _dynbufBackboneLastRepairMs = now;
+            sendSC(buildDynbufBackboneRegisterCode(), true);
+        }
+    }
+    // Self-heal: if backbone says ProxySpace exists but a known slot is NOT
+    // exposed, silently re-emit the per-slot install code (no log spam).
+    if (isProxySpace) {
+        for (const [slotStr, info] of Object.entries(slots)) {
+            const slotIdx = Number(slotStr) | 0;
+            if (!info.exposed) {
+                const d = _dynbufs.get(slotIdx);
+                if (d) {
+                    sendSC(dynbufBuildCtrlsForSlot(d), true);
+                    // Also try reload-from-disk to (re)wire the player proxy
+                    if (d.lastWavPath && fs.existsSync(d.lastWavPath)) {
+                        sendSC(dynbufBuildReloadFromDisk(d), true);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Heartbeat: every N seconds, send the status-query SC snippet so the panel
+// always shows fresh health, and missing per-slot proxies self-heal after a
+// fresh ProxySpace.push. Disabled while sclang is down.
+function startDynbufHeartbeat() {
+    if (_dynbufHeartbeatTimer) return;
+    _dynbufHeartbeatTimer = setInterval(() => {
+        try {
+            const sc = _getSC ? _getSC() : null;
+            if (!sc || !sc.isSclangRunning()) return;
+            // Build query covering all known slots (panel-registered + persisted)
+            const slotsSet = new Set();
+            for (const k of _dynbufs.keys()) slotsSet.add(Number(k) | 0);
+            try {
+                const state = loadLayout();
+                if (state && Array.isArray(state.dynbufs)) {
+                    for (const s of state.dynbufs) slotsSet.add(Math.max(0, Number(s.slot) | 0));
+                }
+            } catch (_) {}
+            const slots = Array.from(slotsSet).sort((a, b) => a - b);
+            const code = buildDynbufStatusQueryCode(slots);
+            if (code) sendSC(code, true);
+        } catch (e) {
+            console.warn('[touch-knobs] heartbeat error:', e.message);
+        }
+    }, _dynbufHeartbeatMs);
+}
+
+function stopDynbufHeartbeat() {
+    if (_dynbufHeartbeatTimer) {
+        clearInterval(_dynbufHeartbeatTimer);
+        _dynbufHeartbeatTimer = null;
+    }
 }
 
 // Fallback path: after triggering a snapshot, watch for the WAV file appearing
@@ -1537,105 +1659,137 @@ function macroProxyName(m) {
 // DYNAMIC BUFFER (live looper) — SC code emitters
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Port of e[\setupBufferSys] from my_footcontroller.sc.
-// On the SC side we keep:
-//   currentEnvironment[\envilBufRecReady]   — guard (true once setup done)
-//   currentEnvironment[\envilBufRecIns]     — Buffer (ring, audio inputs)
-//   currentEnvironment[\envilBufRecOuts]    — Buffer (ring, output busses)
-//   currentEnvironment[\envilBufRecPhase]   — Float, current write head (frames)
-//   currentEnvironment[\envilBufRecChans]   — Int, channel count
-//   currentEnvironment[\envilDynBufs]       — List of snapshot Buffers (kept alive)
-//   ~envilBufRec                            — the always-running recorder proxy
-//   OSCdef \envilBufRecPhase                — listens on /envilBufRecPhase
+// Architecture (two clean layers):
 //
-// Per slot N:
-//   ~bufPlay_N            — the player NodeProxy (audio, mono)
-//   ~bufPlay_N_idx        — control proxy holding the snapshot bufnum (\val)
-//   ~bufPlay_N_<arg>      — control proxy per arg (start, end, tempoMul,
-//                            rateMul, chan, pulseDivide) which the player
-//                            reads from via NodeProxy bus-mapping.
-//   ~bufPlay_N            (play/stop via mute / set \amp 0)
+//   1) BACKBONE  (server-scoped, ProxySpace-INDEPENDENT)
+//      The always-on ring recorder. Lives entirely in `Library.at(\envil, *)`
+//      and as a plain `Synth(\envilBufRec, ...)` on the rootNode. NO tilde
+//      syntax, NO NodeProxy. Registered via `ServerTree.add(fn, s)` so it
+//      auto-(re)builds on every boot / reboot / cmd-period. Also fires once
+//      immediately when registered if the server is already running.
 //
-// Setup is emitted lazily, every time a slot operation happens; the guard
-// makes it a no-op on subsequent calls. If config changes (channel count
-// or ring length) we reset _dynbufSysSent → next operation re-emits the
-// setup which clears + re-allocates.
+//      Library keys:
+//        \envil, \bufRecReady    — Boolean guard
+//        \envil, \bufRecChans    — Int, channel count
+//        \envil, \bufRecRingSec  — Int, ring length seconds
+//        \envil, \bufRecIns      — Buffer (ring, audio inputs)
+//        \envil, \bufRecOuts     — Buffer (ring, output busses, InFeedback)
+//        \envil, \bufRecPhase    — Float, current write head (frames)
+//        \envil, \bufRecSynth    — the Synth instance
+//        \envil, \dynBufs        — List of snapshot Buffers (kept alive)
+//        \envil, \dynBufBySlot   — IdentityDictionary slot → snapshot Buffer
+//
+//   2) REPRESENTATIONS  (ProxySpace-scoped, slot-per-slot)
+//      The per-slot NodeProxies that the user / Pbinds interact with. Only
+//      created when `currentEnvironment.isKindOf(ProxySpace)`. Re-emitted on:
+//        - panel register / snapshot / reload / reload-button
+//        - heartbeat (every few seconds while panel open) — self-heals after
+//          a fresh ProxySpace.push.
+//
+//      Per slot N:
+//        ~bufPlay_N            — player NodeProxy (audio, mono)
+//        ~bufPlay_N_idx        — control proxy holding current bufnum (\val)
+//        ~bufPlay_N_<arg>      — control proxies for start, end, tempoMul,
+//                                rateMul, chan, pulseDivide
 
-function dynbufBuildSetup() {
+// Backbone: register the ServerTree closure that builds / repairs the ring
+// recorder on every server (re)boot. Also fires immediately if server is up.
+// Idempotent on the SC side: re-evaluating this snippet replaces the closure
+// (via Library.put) instead of stacking up duplicates.
+function dynbufBuildBackboneCode() {
     const nch = _dynbufNumChannels;
     const ringSec = _dynbufRingSeconds;
-    // Channel count is baked into the recorder synth (compile-time literal).
-    // NOTE: We use Library (global class Dictionary) for non-audio state,
-    // because ProxySpace.put wraps ANY value in a NodeProxy, which would
-    // make `Library.at(\envil, \bufRecPhase)` return a NodeProxy instead
-    // of a Float.
     return [
-        `if(currentEnvironment.isKindOf(ProxySpace), {`,
-        ` if(Library.at(\\envil, \\bufRecReady).isNil or: { Library.at(\\envil, \\bufRecChans) != ${nch} }, {`,
+        `(`,
+        `// ── envil dynbuf backbone (ProxySpace-independent) ──`,
+        `Library.put(\\envil, \\bufRecChansCfg, ${nch});`,
+        `Library.put(\\envil, \\bufRecRingSecCfg, ${ringSec});`,
+        `Library.put(\\envil, \\backboneFn, {`,
         `  Routine({`,
-        `   [\\bufRecIns, \\bufRecOuts].do{|k| var b = Library.at(\\envil, k); if(b.notNil and: { b.isKindOf(Buffer) }, { b.free }) };`,
-        `   Library.put(\\envil, \\bufRecChans, ${nch});`,
-        `   Library.put(\\envil, \\bufRecPhase, 0.0);`,
-        `   Library.put(\\envil, \\dynBufs, List.new);`,
-        `   Library.put(\\envil, \\bufRecIns,  Buffer.alloc(Server.default, Server.default.sampleRate * ${ringSec}, ${nch}));`,
-        `   Library.put(\\envil, \\bufRecOuts, Buffer.alloc(Server.default, Server.default.sampleRate * ${ringSec}, ${nch}));`,
-        `   Server.default.sync;`,
-        `   ~envilBufRec.clear; ~envilBufRec.ar(1);`,
-        `   ~envilBufRec = { |bufIn= -1, bufOut= -1|`,
-        `     var phase = Phasor.ar(0, BufRateScale.kr(bufIn), 0, BufFrames.kr(bufIn));`,
-        `     var ins  = ${nch}.collect{|i| SoundIn.ar(i) };`,
-        `     var outs = ${nch}.collect{|i| InFeedback.ar(i, 1) };`,
-        `     BufWr.ar(ins,  bufIn,  phase);`,
-        `     BufWr.ar(outs, bufOut, phase);`,
-        `     SendReply.kr(Impulse.kr(50), '/envilBufRecPhase', [A2K.kr(phase)]);`,
-        `     DC.ar(0);`,
-        `   };`,
-        `   ~envilBufRec.set(\\bufIn, Library.at(\\envil, \\bufRecIns).bufnum, \\bufOut, Library.at(\\envil, \\bufRecOuts).bufnum);`,
-        `   ~envilBufRec.play;`,
-        `   OSCdef(\\envilBufRecPhase, { |msg| Library.put(\\envil, \\bufRecPhase, msg[3]) }, '/envilBufRecPhase');`,
-        `   Library.put(\\envil, \\bufRecReady, true);`,
-        `   ">>> envil: dynbuf system ready (chans=${nch}, ring=${ringSec}s)".postln;`,
+        `    var srv = Server.default;`,
+        `    var nch = Library.at(\\envil, \\bufRecChansCfg) ? 2;`,
+        `    var ringSec = Library.at(\\envil, \\bufRecRingSecCfg) ? 32;`,
+        `    var bufIn, bufOut, syn;`,
+        `    Library.put(\\envil, \\bufRecReady, false);`,
+        `    "[envil backbone] step 1: cleaning up old state".postln;`,
+        `    (Library.at(\\envil, \\bufRecSynth)) !? { |x| try { x.free } };`,
+        `    [\\bufRecIns, \\bufRecOuts].do{|k| var b = Library.at(\\envil, k); if(b.notNil and: { b.isKindOf(Buffer) }, { try { b.free } }) };`,
+        `    Library.put(\\envil, \\bufRecPhase, 0.0);`,
+        `    "[envil backbone] step 2: registering SynthDef".postln;`,
+        `    SynthDef(\\envilBufRec, { |bufIn= -1, bufOut= -1|`,
+        `      var phase = Phasor.ar(0, BufRateScale.kr(bufIn), 0, BufFrames.kr(bufIn));`,
+        `      var ins   = nch.collect{|i| SoundIn.ar(i) };`,
+        `      var outs  = nch.collect{|i| InFeedback.ar(i, 1) };`,
+        `      BufWr.ar(ins,  bufIn,  phase);`,
+        `      BufWr.ar(outs, bufOut, phase);`,
+        `      SendReply.kr(Impulse.kr(50), '/envilBufRecPhase', [A2K.kr(phase)]);`,
+        `      DC.ar(0);`,
+        `    }).add;`,
+        `    srv.sync;`,
+        `    "[envil backbone] step 3: allocating ring buffers".postln;`,
+        `    bufIn  = Buffer.alloc(srv, srv.sampleRate * ringSec, nch);`,
+        `    bufOut = Buffer.alloc(srv, srv.sampleRate * ringSec, nch);`,
+        `    Library.put(\\envil, \\bufRecIns,  bufIn);`,
+        `    Library.put(\\envil, \\bufRecOuts, bufOut);`,
+        `    srv.sync;`,
+        `    "[envil backbone] step 4: starting recorder synth".postln;`,
+        `    syn = Synth(\\envilBufRec, [\\bufIn, bufIn.bufnum, \\bufOut, bufOut.bufnum], target: RootNode(srv), addAction: \\addToHead);`,
+        `    syn.register;`,
+        `    Library.put(\\envil, \\bufRecSynth, syn);`,
+        `    OSCdef(\\envilBufRecPhase, { |msg| Library.put(\\envil, \\bufRecPhase, msg[3]) }, '/envilBufRecPhase');`,
+        `    Library.put(\\envil, \\bufRecChans, nch);`,
+        `    Library.put(\\envil, \\bufRecRingSec, ringSec);`,
+        `    Library.put(\\envil, \\bufRecReady, true);`,
+        `    ("[envil backbone] \u2713 ring recorder up (chans=" ++ nch ++ " ring=" ++ ringSec ++ "s synth=" ++ syn.nodeID ++ ")").postln;`,
         `  }).play;`,
-        ` });`,
-        `})`,
-    ].join(' ');
+        `});`,
+        `// Register on ServerTree \u2014 fires automatically on every (re)boot.`,
+        `// Remove previous wrapper if any (idempotent).`,
+        `(Library.at(\\envil, \\backboneTreeFn)) !? { |fn| ServerTree.remove(fn, Server.default) };`,
+        `Library.put(\\envil, \\backboneTreeFn, { Library.at(\\envil, \\backboneFn).value });`,
+        `ServerTree.add(Library.at(\\envil, \\backboneTreeFn), Server.default);`,
+        `"[envil backbone] ServerTree fn registered".postln;`,
+        `// Fire immediately if server already running`,
+        `if(Server.default.serverRunning, { "[envil backbone] server already running \u2014 firing now".postln; Library.at(\\envil, \\backboneFn).value }, { "[envil backbone] server not running yet \u2014 will auto-init on s.boot".postln });`,
+        `)`,
+    ].join('\n');
 }
+
+// Backwards-compat alias (some call sites still use the old name).
+function dynbufBuildSetup() { return dynbufBuildBackboneCode(); }
 
 // Ensures the per-slot control proxies (~bufPlay_N_start etc.) exist and
 // hold the current panel values. Idempotent.
+//
+// Compact form: a single closure `fn` performs the install-if-needed-and-set
+// dance, so each key only emits ~30 chars rather than ~220. Big win for
+// staying under sclang's stdin command-line buffer limit (~6KB).
 function dynbufBuildCtrlsForSlot(d) {
     const slot = d.slot;
-    const keys = [
-        ['start',       d.start],
-        ['end',         d.end],
-        ['tempoMul',    d.tempoMul],
-        ['rateMul',     d.rateMul],
-        ['chan',        d.chan],
-        ['pulseDivide', d.pulseDivide],
+    // [proxy, val, lagTime]
+    const items = [
+        [`~bufPlay_${slot}_idx`,         0,                       0],
+        [`~bufPlay_${slot}_start`,       d.start,                 0.02],
+        [`~bufPlay_${slot}_end`,         d.end,                   0.02],
+        [`~bufPlay_${slot}_tempoMul`,    d.tempoMul,              0.02],
+        [`~bufPlay_${slot}_rateMul`,     d.rateMul,               0.02],
+        [`~bufPlay_${slot}_chan`,        d.chan,                  0.02],
+        [`~bufPlay_${slot}_pulseDivide`, d.pulseDivide,           0.02],
     ];
-    const ctrlSrc = `{ |val=0, lagTime=0.02| Lag.kr(val, lagTime) }`;
-    // Re-install the control source whenever the proxy lacks a \val arg
-    // (e.g. user did `~bufPlay_N_rateMul = 0.5` in their code, which replaced
-    // the source with a constant). This lets the UI knob "win back" control.
-    const needsCtrl = (p) => `(${p}.source.isNil or: { ${p}.controlNames.isNil or: { ${p}.controlNames.any({|cn| cn.name == \\val }).not } })`;
-    const parts = keys.map(([k, v]) => {
-        const p = `~bufPlay_${slot}_${k}`;
-        return `if(${needsCtrl(p)}, { ${p}.kr(1); ${p} = ${ctrlSrc} }, { if(Server.default.serverRunning and: { ${p}.isPlaying.not }, { ${p}.send }) }); ${p}.set(\\val, ${Number(v).toFixed(6)})`;
-    });
-    // Bufnum index proxy (~bufPlay_N_idx) holding the snapshot bufnum
-    const idx = `~bufPlay_${slot}_idx`;
-    parts.unshift(`if(${needsCtrl(idx)}, { ${idx}.kr(1); ${idx} = { |val=0, lagTime=0| Lag.kr(val, lagTime) } })`);
-    return `if(currentEnvironment.isKindOf(ProxySpace), { ${parts.join('; ')} })`;
+    // Helper closure: takes proxy + value + lagTime; reinstalls the control
+    // synth if the user replaced .source with a constant (no \val arg) and
+    // pushes the value via .set(\val, v).
+    const helperDef = `var fn = { |p, v, lag| if(p.source.isNil or: { p.controlNames.isNil or: { p.controlNames.any({|cn| cn.name == \\val }).not } }, { p.kr(1); p.source = { |val=0, lagTime=0| Lag.kr(val, lagTime) }; p.set(\\lagTime, lag) }, { if(Server.default.serverRunning and: { p.isPlaying.not }, { p.send }) }); p.set(\\val, v) };`;
+    const calls = items.map(([p, v, lag]) => `fn.value(${p}, ${Number(v).toFixed(6)}, ${Number(lag).toFixed(3)});`).join(' ');
+    return `if(currentEnvironment.isKindOf(ProxySpace), { ${helperDef} ${calls} })`;
 }
 
 function dynbufBuildSetupAndCtrls(d) {
-    let pieces = [];
-    if (!_dynbufSysSent) {
-        pieces.push(dynbufBuildSetup());
-        _dynbufSysSent = true;
-    }
-    pieces.push(dynbufBuildCtrlsForSlot(d));
-    return pieces.join('; ');
+    // NOTE: backbone is now auto-managed by ServerTree (registered separately
+    // when the panel opens / sclang starts / server reboots). We do NOT prepend
+    // it here — prepending plus the per-slot ctrls plus the snapshot routine
+    // produced payloads big enough to choke sclang's command-line parser.
+    return dynbufBuildCtrlsForSlot(d);
 }
 
 function dynbufBuildSetCtrl(slot, key, val) {
@@ -1687,15 +1841,13 @@ function dynbufBuildSnapshot(d) {
         ? path.join(_workspacePath, ENVIL_DIR, 'dynbufs').replace(/\\/g, '/')
         : null;
 
-    // ALWAYS emit setup — the SC side is idempotent (gated by
-    // Library.at(\envil, \bufRecReady)) and this avoids the trap where
-    // the JS-side flag was flipped to true while sclang wasn't yet in a
-    // ProxySpace (so the setup body silently did nothing).
-    let setup = dynbufBuildSetup() + '; ';
-    _dynbufSysSent = true;
-    // Also (re)ensure per-slot control proxies exist before the player proxy
-    // tries to map them in.
-    const ctrls = dynbufBuildCtrlsForSlot(d);
+    // Backbone is registered separately via ServerTree (sent on extension
+    // load / sclang start / server reboot). The per-slot ctrls are sent in
+    // a SEPARATE sendSC call BEFORE this snapshot code by the message handler
+    // (see the 'dynbuf-snapshot' case) — this keeps each individual sclang
+    // stdin write below the ~6KB command-line buffer limit.
+    // The snapshot routine waits up to 3s for `bufRecReady` and warns clearly
+    // if the backbone is missing (then user clicks ↻ to re-arm).
 
     // The player proxy synth. Channel count baked in.
     // ~t is envil's tempo proxy (beats per second). Defaults to 1 if absent.
@@ -1731,66 +1883,48 @@ function dynbufBuildSnapshot(d) {
         : '';
 
     const body = [
-        ctrls,
-        `; if(currentEnvironment.isKindOf(ProxySpace), {`,
+        `if(currentEnvironment.isKindOf(ProxySpace), {`,
         ` Routine({`,
-        `  var bufRing, phase, snap, dur, readFrom, origTempo;`,
-        `  if(Library.at(\\envil, \\bufRecReady).isNil or: { Library.at(\\envil, \\bufRecChans) != ${nch} }, {`,
-        `   [\\bufRecIns, \\bufRecOuts].do{|k| var b = Library.at(\\envil, k); if(b.notNil and: { b.isKindOf(Buffer) }, { b.free }) };`,
-        `   Library.put(\\envil, \\bufRecChans, ${nch});`,
-        `   Library.put(\\envil, \\bufRecPhase, 0.0);`,
-        `   Library.put(\\envil, \\dynBufs, List.new);`,
-        `   Library.put(\\envil, \\bufRecIns,  Buffer.alloc(Server.default, Server.default.sampleRate * ${_dynbufRingSeconds}, ${nch}));`,
-        `   Library.put(\\envil, \\bufRecOuts, Buffer.alloc(Server.default, Server.default.sampleRate * ${_dynbufRingSeconds}, ${nch}));`,
-        `   Server.default.sync;`,
-        `   ~envilBufRec.clear; ~envilBufRec.ar(1);`,
-        `   ~envilBufRec = { |bufIn= -1, bufOut= -1|`,
-        `     var ph = Phasor.ar(0, BufRateScale.kr(bufIn), 0, BufFrames.kr(bufIn));`,
-        `     var ins  = ${nch}.collect{|i| SoundIn.ar(i) };`,
-        `     var outs = ${nch}.collect{|i| InFeedback.ar(i, 1) };`,
-        `     BufWr.ar(ins,  bufIn,  ph);`,
-        `     BufWr.ar(outs, bufOut, ph);`,
-        `     SendReply.kr(Impulse.kr(50), '/envilBufRecPhase', [A2K.kr(ph)]);`,
-        `     DC.ar(0);`,
-        `   };`,
-        `   ~envilBufRec.set(\\bufIn, Library.at(\\envil, \\bufRecIns).bufnum, \\bufOut, Library.at(\\envil, \\bufRecOuts).bufnum);`,
-        `   ~envilBufRec.play;`,
-        `   OSCdef(\\envilBufRecPhase, { |msg| Library.put(\\envil, \\bufRecPhase, msg[3]) }, '/envilBufRecPhase');`,
-        `   Library.put(\\envil, \\bufRecReady, true);`,
-        `   ">>> envil: dynbuf system ready, recording started. Waiting ${snapSec}s before first snapshot...".postln;`,
-        `   (${snapSec}).wait;`,
-        `  });`,
-        `  bufRing = Library.at(\\envil, ${sourceKey});`,
-        `  phase = (Library.at(\\envil, \\bufRecPhase) ? 0).asInteger;`,
-        `  snap = Buffer.alloc(Server.default, Server.default.sampleRate * ${snapSec}, ${nch});`,
-        `  Server.default.sync;`,
-        `  dur = snap.numFrames;`,
-        `  readFrom = phase - dur;`,
-        `  origTempo = TempoClock.default.tempo;`,
-        `  if(bufRing.isNil, {`,
-        `   "[envil dynbuf] ring buffer not ready yet — try again in a second.".warn;`,
-        `   snap.free;`,
+        `  var bufRing, phase, snap, dur, readFrom, origTempo, attempts;`,
+        `  // Wait for backbone (max ~3s) — should already be up via ServerTree, but be safe.`,
+        `  attempts = 0;`,
+        `  while({ Library.at(\\envil, \\bufRecReady) != true and: { attempts < 30 } }, { 0.1.wait; attempts = attempts + 1 });`,
+        `  if(Library.at(\\envil, \\bufRecReady) != true, {`,
+        `    "[envil dynbuf] SNAP aborted: backbone not ready. Try the panel \u21bb (reload) button or re-evaluate the backbone setup.".warn;`,
         `  }, {`,
-        `   if(readFrom > 0, {`,
-        `    bufRing.copyData(snap, 0, readFrom, dur);`,
+        `   bufRing = Library.at(\\envil, ${sourceKey});`,
+        `   phase = (Library.at(\\envil, \\bufRecPhase) ? 0).asInteger;`,
+        `   snap = Buffer.alloc(Server.default, Server.default.sampleRate * ${snapSec}, ${nch});`,
+        `   Server.default.sync;`,
+        `   dur = snap.numFrames;`,
+        `   readFrom = phase - dur;`,
+        `   origTempo = TempoClock.default.tempo;`,
+        `   if(bufRing.isNil, {`,
+        `    "[envil dynbuf] ring buffer missing in Library — backbone repair needed.".warn;`,
+        `    snap.free;`,
         `   }, {`,
-        `    var part1Start = bufRing.numFrames + readFrom;`,
-        `    var part1Dur = -1 * readFrom;`,
-        `    var part2Dur = dur + readFrom;`,
-        `    bufRing.copyData(snap, 0, part1Start, part1Dur);`,
-        `    bufRing.copyData(snap, -1 * readFrom, 0, part2Dur);`,
-        `   });`,
-        `   Library.put(\\envil, \\dynBufs, (Library.at(\\envil, \\dynBufs) ? List.new).add(snap));`,
+        `    if(readFrom > 0, {`,
+        `     bufRing.copyData(snap, 0, readFrom, dur);`,
+        `    }, {`,
+        `     var part1Start = bufRing.numFrames + readFrom;`,
+        `     var part1Dur = -1 * readFrom;`,
+        `     var part2Dur = dur + readFrom;`,
+        `     bufRing.copyData(snap, 0, part1Start, part1Dur);`,
+        `     bufRing.copyData(snap, -1 * readFrom, 0, part2Dur);`,
+        `    });`,
+        `    Library.put(\\envil, \\dynBufs, (Library.at(\\envil, \\dynBufs) ? List.new).add(snap));`,
+        `    (Library.at(\\envil, \\dynBufBySlot) ?? { var d = IdentityDictionary.new; Library.put(\\envil, \\dynBufBySlot, d); d }).put(${slot}, snap);`,
         writeBlock,
-        `   ~bufPlay_${slot}.ar(1);`,
-        `   ~bufPlay_${slot} = ${playerFunc};`,
-        `   ~bufPlay_${slot}.set(\\bufNum, snap.bufnum, \\origTempo, origTempo);`,
-        `   ~bufPlay_${slot}_idx.set(\\val, snap.bufnum);`,
-        `   (">>> envil dynbuf snapshot -> ~bufPlay_${slot}  buf=" ++ snap.bufnum ++ "  origTempo=" ++ origTempo).postln;`,
+        `    ~bufPlay_${slot}.ar(1);`,
+        `    ~bufPlay_${slot} = ${playerFunc};`,
+        `    ~bufPlay_${slot}.set(\\bufNum, snap.bufnum, \\origTempo, origTempo);`,
+        `    ~bufPlay_${slot}_idx.set(\\val, snap.bufnum);`,
+        `    (">>> envil dynbuf snapshot -> ~bufPlay_${slot}  buf=" ++ snap.bufnum ++ "  origTempo=" ++ origTempo).postln;`,
+        `   });`,
         `  });`,
         ` }).play;`,
         `})`,
-    ].join('');
+    ].join('\n');
 
     return body;
 }
@@ -1975,28 +2109,31 @@ function getMediaPipeConfig() {
 }
 
 /**
- * Build SC code to be appended inside `s.waitForBoot {...}` so the dynbuf
- * ring recorder + per-slot control proxies + (if WAVs exist) the player
- * proxies are all live as soon as the server is up. This makes:
- *   - `~bufPlay_N.ar` immediately usable from user code without opening the panel
- *   - SNAP have zero wait time (ring is already filling)
- *   - dynbufs auto-recover after server reboot, just like macros.
+ * Build SC code for the per-slot ProxySpace exposure step. Safe to call
+ * whether a ProxySpace is current or not — the inner code is guarded.
  *
  * Reads the persisted .envil/state.json directly so it works even when the
  * panel isn't open yet.
+ *
+ * Note: this no longer sets up the BACKBONE — that's now done independently
+ * by `buildDynbufBackboneRegisterCode()` which uses ServerTree and is sent
+ * BEFORE waitForBoot (since it's ProxySpace-independent).
  */
 function buildDynbufBootInitSCCode() {
     try {
-        const setup = dynbufBuildSetup();
         let slotsCode = '';
-        // Read persisted dynbufs (no in-memory _dynbufs yet if panel never opened)
         let savedDynbufs = [];
         try {
             const state = loadLayout();
             if (state && Array.isArray(state.dynbufs)) savedDynbufs = state.dynbufs;
         } catch (_) {}
+        // Also include any slots currently registered by an open panel (may be
+        // more up-to-date than the persisted layout).
+        const knownSlots = new Set();
+        for (const s of savedDynbufs) knownSlots.add(Math.max(0, Number(s.slot) | 0));
+        const allSlots = [];
         for (const s of savedDynbufs) {
-            const d = {
+            allSlots.push({
                 slot: Math.max(0, Number(s.slot) | 0),
                 start:       clamp01(s.start       != null ? s.start       : 0),
                 end:         clamp01(s.end         != null ? s.end         : 1),
@@ -2005,35 +2142,77 @@ function buildDynbufBootInitSCCode() {
                 chan:        clamp01(s.chan        != null ? s.chan        : 0),
                 pulseDivide: clamp01(s.pulseDivide != null ? s.pulseDivide : 0.5),
                 lastWavPath: typeof s.lastWavPath === 'string' ? s.lastWavPath : null,
-            };
+            });
+        }
+        for (const d of allSlots) {
             slotsCode += '; ' + dynbufBuildCtrlsForSlot(d);
             if (d.lastWavPath && fs.existsSync(d.lastWavPath)) {
                 slotsCode += '; ' + dynbufBuildReloadFromDisk(d);
             }
         }
-        // Wrap the whole boot init in `p.use { ... }` so that the tilde
-        // syntax (~bufPlay_N etc) resolves against the ProxySpace even when
-        // this code is invoked from AppClock (e.g. inside s.waitForBoot)
-        // where currentEnvironment is NOT the pushed ProxySpace.
-        //
-        // Also emit a diagnostic postln BEFORE the guard so the user always
-        // sees whether the boot init reached sclang.
-        const inner = (setup + slotsCode).replace(/\n/g, '\n    ');
-        const wrapped = [
-            `"[envil dynbuf] boot init: evaluating (p=" ++ p.class ++ ")".postln;`,
-            `if(p.isKindOf(ProxySpace), {`,
-            `  p.use({`,
-            `    ${inner}`,
+        if (!slotsCode) return '';
+        // Wrap in `p.use { ... }` so tilde-syntax resolves to the ProxySpace
+        // regardless of which thread we're on (e.g. AppClock from waitForBoot).
+        const inner = slotsCode.replace(/^; /, '').replace(/\n/g, '\n    ');
+        return [
+            `  "[envil dynbuf] expose slots: evaluating".postln;`,
+            `  if(p.isKindOf(ProxySpace), {`,
+            `    p.use({`,
+            `      ${inner}`,
+            `    });`,
+            `  }, {`,
+            `    "[envil dynbuf] expose slots SKIPPED: p is not a ProxySpace".warn;`,
             `  });`,
-            `}, {`,
-            `  "[envil dynbuf] boot init SKIPPED: p is not a ProxySpace".warn;`,
-            `});`,
-        ].join('\n  ');
-        return '  ' + wrapped;
+        ].join('\n');
     } catch (e) {
         console.warn('[touch-knobs] buildDynbufBootInitSCCode failed:', e.message);
         return '';
     }
 }
 
-module.exports = { registerTouchKnobs, hasEnvilDir, handleMediaPipeLandmarks, handleMediaPipeStatus, getMediaPipeConfig, buildDynbufBootInitSCCode };
+/**
+ * Build the SC code that registers the backbone (ring recorder) on
+ * ServerTree, so it auto-(re)builds on every server (re)boot. Safe to call
+ * even when no server is running yet — registration is class-level. If the
+ * server IS already running, the backbone is built immediately.
+ *
+ * Send this OUTSIDE `s.waitForBoot` (it's ProxySpace-independent and doesn't
+ * need to wait for the server).
+ */
+function buildDynbufBackboneRegisterCode() {
+    return dynbufBuildBackboneCode();
+}
+
+/**
+ * Build SC code that reports backbone + per-slot health via the dynbuf
+ * notify OSC port. The host's heartbeat sends this every few seconds while
+ * the panel is open and updates the panel UI accordingly.
+ *
+ * OSC payload (sent to /envilDynbufStatus):
+ *   [backboneReady:i, isProxySpace:i, slot0_exposed:i, slot1_exposed:i, ...]
+ *
+ * `<slotN_exposed>` is 1 iff all of: ~bufPlay_N has a source AND each ctrl
+ * proxy has a \val controlName.
+ */
+function buildDynbufStatusQueryCode(slots) {
+    if (!_dynbufNotifyPortNumber) return '';
+    const items = slots.map(slot => {
+        const player = `~bufPlay_${slot}`;
+        const idx = `~bufPlay_${slot}_idx`;
+        const start = `~bufPlay_${slot}_start`;
+        return `${slot}, (${player}.source.notNil and: { ${idx}.source.notNil and: { ${start}.source.notNil } }).if(1, 0), ${player}.bus.notNil.if(${player}.numChannels ? 0, 0)`;
+    });
+    const slotPairs = items.length ? ', ' + items.join(', ') : '';
+    return [
+        `(`,
+        `var addr = NetAddr("127.0.0.1", ${_dynbufNotifyPortNumber});`,
+        `var bbReady = (Library.at(\\envil, \\bufRecReady) == true).if(1, 0);`,
+        `var isPS = currentEnvironment.isKindOf(ProxySpace).if(1, 0);`,
+        `var bbSyn = Library.at(\\envil, \\bufRecSynth);`,
+        `var bbAlive = (bbSyn.notNil and: { try { bbSyn.isPlaying } { false } }).if(1, 0);`,
+        `addr.sendMsg("/envilDynbufStatus", bbReady, isPS, bbAlive${slotPairs});`,
+        `)`,
+    ].join(' ');
+}
+
+module.exports = { registerTouchKnobs, hasEnvilDir, handleMediaPipeLandmarks, handleMediaPipeStatus, getMediaPipeConfig, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode };
