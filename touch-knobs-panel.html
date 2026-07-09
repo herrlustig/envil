@@ -204,8 +204,15 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     color: #ffd479;
 }
 .dynbuf-row .dynbuf-btn-stack {
-    display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; width: 32px;
+    display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; width: 58px;
 }
+.dynbuf-row .dynbuf-name {
+    display: flex; align-items: center; gap: 3px; flex-shrink: 0;
+    font-size: 8px; font-family: "JetBrains Mono", "Fira Code", monospace;
+    color: #ffd479; cursor: grab; overflow: hidden; white-space: nowrap;
+    line-height: 1.5; opacity: 0.85; user-select: none;
+}
+.dynbuf-row .dynbuf-name:hover { opacity: 1; }
 .dynbuf-row .dynbuf-btn {
     height: 18px; font-size: 9px; line-height: 16px;
     text-align: center; cursor: pointer;
@@ -699,6 +706,8 @@ function draw() {
             ctx.fillRect(kx - m1.width / 2 - PAD_X, y1 - PAD_Y, m1.width + PAD_X * 2, 13 + PAD_Y * 2);
             ctx.fillStyle = k.color;
             ctx.fillText(txt1, kx, y1);
+            // remember label rect for drag-to-editor (CSS px)
+            k._nameRect = { x: kx - m1.width / 2 - PAD_X, y: y1 - PAD_Y, w: m1.width + PAD_X * 2, h: 13 + PAD_Y * 2 };
 
             // Row 2: XY values
             ctx.font = '10px monospace';
@@ -720,6 +729,8 @@ function draw() {
             ctx.fillRect(kx - m1.width / 2 - PAD_X, y1 - 13 - PAD_Y, m1.width + PAD_X * 2, 13 + PAD_Y * 2);
             ctx.fillStyle = k.color;
             ctx.fillText(txt1, kx, y1);
+            // remember label rect for drag-to-editor (CSS px)
+            k._nameRect = { x: kx - m1.width / 2 - PAD_X, y: y1 - 13 - PAD_Y, w: m1.width + PAD_X * 2, h: 13 + PAD_Y * 2 };
 
             // Row 2: XY values
             ctx.font = '10px monospace';
@@ -967,6 +978,39 @@ function flashKnob(knob) {
 
 // Mouse events
 canvas.addEventListener('mousedown', onPointerDown);
+
+// ── Drag knob NAME label into the editor → inserts "~v_c<note>" ───────────
+// The labels are canvas-drawn, so we hit-test their cached rects on mousedown
+// and enable native HTML5 drag only for that press.
+let _knobDragName = null;
+canvas.addEventListener('mousedown', (e) => {
+    _knobDragName = null;
+    canvas.draggable = false;
+    const { nx, ny } = getPointerNorm(e);
+    if (hitTest(nx, ny)) return;  // pressing the knob circle → normal drag
+    const r = canvas.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    for (let i = knobs.length - 1; i >= 0; i--) {
+        const rc = knobs[i]._nameRect;
+        if (rc && mx >= rc.x && mx <= rc.x + rc.w && my >= rc.y && my <= rc.y + rc.h) {
+            _knobDragName = '~' + PROXY_PREFIX + '_c' + knobMidiNote(knobs[i]);
+            canvas.draggable = true;
+            return;
+        }
+    }
+});
+canvas.addEventListener('dragstart', (e) => {
+    if (_knobDragName) {
+        e.dataTransfer.setData('text/plain', _knobDragName);
+        e.dataTransfer.effectAllowed = 'copy';
+    } else {
+        e.preventDefault();
+    }
+});
+canvas.addEventListener('dragend', () => {
+    _knobDragName = null;
+    canvas.draggable = false;
+});
 window.addEventListener('mousemove', onPointerMove);
 window.addEventListener('mouseup', onPointerUp);
 
@@ -1563,18 +1607,13 @@ function renderMacroRow(m) {
     const label = document.createElement('span');
     label.className = 'macro-label';
     label.id = 'macro-label-' + m.id;
-    label.textContent = m.name;
+    label.textContent = '~mcr_' + m.macroNum;
     label.style.color = m.color;
-    label.title = 'Click to rename';
-    label.addEventListener('click', () => {
-        const newName = prompt('Rename macro curve:', m.name);
-        if (newName && newName.trim()) {
-            const old = m.name;
-            m.name = newName.trim().replace(/[^a-zA-Z0-9_]/g, '');
-            label.textContent = m.name;
-            vscode.postMessage({ type: 'macro-rename', oldName: old, newName: m.name });
-            persistState();
-        }
+    label.title = 'Drag into the editor to insert ~mcr_' + m.macroNum;
+    label.draggable = true;
+    label.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', '~mcr_' + m.macroNum);
+        e.dataTransfer.effectAllowed = 'copy';
     });
     // label is appended to canvasWrap later (overlaid on canvas)
 
@@ -1797,7 +1836,7 @@ function syncMacroRowControls(m) {
         durationInput.title = seqSyncSC ? 'Macro duration in beats' : 'Macro duration in seconds';
     }
     if (unit) unit.textContent = macroDurationUnit();
-    if (label) label.textContent = m.name;
+    if (label) label.textContent = '~mcr_' + m.macroNum;
     updateMacroSeekBar(m);
 }
 
@@ -2242,15 +2281,21 @@ function renderSeqRow(s) {
 
     const label = document.createElement('span');
     label.className = 'seq-label';
-    label.textContent = s.name;
-    label.title = 'Click to rename';
+    label.textContent = '~seq_' + s.name;
+    label.title = 'Click to rename · drag into the editor to insert ~seq_' + s.name;
     label.style.color = s.color;
+    label.draggable = true;
+    label.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', '~seq_' + s.name);
+        e.dataTransfer.effectAllowed = 'copy';
+    });
     label.addEventListener('click', () => {
         const newName = prompt('Rename sequencer:', s.name);
         if (newName && newName.trim()) {
             const old = s.name;
             s.name = newName.trim().replace(/[^a-zA-Z0-9_]/g, '');
-            label.textContent = s.name;
+            label.textContent = '~seq_' + s.name;
+            label.title = 'Click to rename · drag into the editor to insert ~seq_' + s.name;
             vscode.postMessage({ type: 'seq-rename', oldName: old, newName: s.name });
             persistState();
         }
@@ -2541,18 +2586,13 @@ function addDynbuf(slot, opts) {
         end:         o.end         != null ? dynbufClamp01(o.end)         : 1,
         tempoMul:    o.tempoMul    != null ? dynbufClamp01(o.tempoMul)    : 0.5,
         rateMul:     o.rateMul     != null ? dynbufClamp01(o.rateMul)     : 0.5,
-        chan:        o.chan        != null ? dynbufClamp01(o.chan)        : (slot / Math.max(1, DYNBUF_DEFAULT_ROWS - 1)),  // default: slot 0 → chan 0, slot 1 → chan 1
+        chan:        o.chan        != null ? dynbufClamp01(o.chan)        : Math.min(1, slot / 7),  // default: slot N → channel cN (of c0-c7)
         pulseDivide: o.pulseDivide != null ? dynbufClamp01(o.pulseDivide) : 0.5,
         hasSnapshot: !!o.hasSnapshot,
         lastWavPath: typeof o.lastWavPath === 'string' ? o.lastWavPath : null,
         _peaks: null,  // populated when WAV decoded (Float32Array [min,max,min,max,...])
         _peaksBuckets: 0,
     };
-    // Default chan for slot 0 = 0, slot 1 = ~0.14 (=ch 1 of 8 channels). Override:
-    if (o.chan == null) {
-        // Map slot index directly to channel index assuming 8 channels.
-        d.chan = Math.min(1, slot / 7);
-    }
     dynbufs.push(d);
     renderDynbufRow(d);
     updateStatus();
@@ -2657,6 +2697,22 @@ function renderDynbufRow(d) {
     // ── Button stack ──────────────────────────────────────────────────
     const stack = document.createElement('div');
     stack.className = 'dynbuf-btn-stack';
+
+    // Name (drag into the editor to insert the proxy name) + health dot
+    const nameEl = document.createElement('div');
+    nameEl.className = 'dynbuf-name';
+    const dot = document.createElement('span');
+    dot.className = 'dynbuf-slot-dot';
+    dot.title = 'Slot proxy health (green = ~bufPlay_N exposed in current ProxySpace)';
+    nameEl.appendChild(dot);
+    nameEl.appendChild(document.createTextNode(dynbufProxyName(d)));
+    nameEl.title = 'Drag into the editor to insert ' + dynbufProxyName(d);
+    nameEl.draggable = true;
+    nameEl.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', dynbufProxyName(d));
+        e.dataTransfer.effectAllowed = 'copy';
+    });
+    stack.appendChild(nameEl);
 
     const snapBtn = document.createElement('div');
     snapBtn.className = 'dynbuf-btn snap';
@@ -2803,16 +2859,6 @@ function renderDynbufRow(d) {
     canvasWrap.appendChild(range);
 
     row.appendChild(canvasWrap);
-
-    // Label overlay (with health dot)
-    const label = document.createElement('span');
-    label.className = 'dynbuf-label';
-    const dot = document.createElement('span');
-    dot.className = 'dynbuf-slot-dot';
-    dot.title = 'Slot proxy health (green = ~bufPlay_N exposed in current ProxySpace)';
-    label.appendChild(dot);
-    label.appendChild(document.createTextNode(dynbufProxyName(d)));
-    canvasWrap.appendChild(label);
 
     if (nextSibling) dynbufGrid.insertBefore(row, nextSibling);
     else dynbufGrid.appendChild(row);
@@ -3064,7 +3110,14 @@ function wireDynbufNumDrag(el, d, key, valSpan, formatter) {
         drag.dragging = true;
         drag.lastY = e.clientY;
         const sensitivity = e.shiftKey ? 0.001 : 0.005;
-        drag.accum = dynbufClamp01(drag.accum + dy * sensitivity);
+        drag.accum = drag.accum + dy * sensitivity;
+        if (key === 'chan') {
+            // chan loops: dragging past c7 wraps to c0 and vice versa
+            if (drag.accum > 1) drag.accum -= 1;
+            else if (drag.accum < 0) drag.accum += 1;
+        } else {
+            drag.accum = dynbufClamp01(drag.accum);
+        }
         d[key] = drag.accum;
         valSpan.textContent = formatter(d[key]);
         dynbufSendCtrl(d, key, d[key]);
@@ -3096,7 +3149,7 @@ if (savedState && Array.isArray(savedState.dynbufs)) {
 // slider value 1.0 maps to channel index nch-1 = 1, i.e. right channel).
 if (dynbufs.length === 0) {
     addDynbuf(0, { chan: 0 });
-    addDynbuf(1, { chan: 1 });
+    addDynbuf(1, { chan: 1 / 7 });  // normalized: c1 of c0-c7
     persistState();
 }
 updateStatus();

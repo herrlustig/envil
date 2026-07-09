@@ -280,10 +280,10 @@
           },
           "envil.dynbuf.numChannels": {
             "type": "integer",
-            "default": 2,
+            "default": 8,
             "minimum": 1,
             "maximum": 16,
-            "description": "Number of channels recorded by the dynamic buffer system (one per audio input). Channel selector on each row picks one of these."
+            "description": "Number of channels recorded by the dynamic buffer system. Default layout (8): c0-c3 = hardware inputs 0-3, c4-c5 = main output buses (~out L/R), c6-c7 = free (re-point via Library.at(\\envil, \\setRecBus).value(idx, busIndex)). Channel selector on each row picks one of these."
           },
           "envil.dynbuf.ringSeconds": {
             "type": "number",
@@ -315,6 +315,20 @@
             ],
             "default": "/usr/bin/sclang",
             "description": "Path to the sclang executable."
+          },
+          "envil.supercollider.server.numInputBusChannels": {
+            "type": "integer",
+            "default": 4,
+            "minimum": 0,
+            "maximum": 128,
+            "description": "Number of hardware input bus channels (s.options.numInputBusChannels) applied before every server boot/reboot started from the plugin."
+          },
+          "envil.supercollider.server.numOutputBusChannels": {
+            "type": "integer",
+            "default": 2,
+            "minimum": 1,
+            "maximum": 128,
+            "description": "Number of hardware output bus channels (s.options.numOutputBusChannels) applied before every server boot/reboot started from the plugin."
           },
           "envil.supercollider.proxySpace.autoInit": {
             "type": "boolean",

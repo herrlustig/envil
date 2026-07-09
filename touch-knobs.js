@@ -65,7 +65,7 @@ let _macroLastTickMs = 0;
 // ── Host-side dynamic-buffer (live looper) state ─────────────────────────
 let _dynbufs = new Map();    // slot (int) → { slot, source, playing, start, end, tempoMul, rateMul, chan, pulseDivide, hasSnapshot }
 let _dynbufSysSent = false;  // SC setup code emitted? (re-emit on demand; sclang side is idempotent)
-let _dynbufNumChannels = 2;
+let _dynbufNumChannels = 8;
 let _dynbufRingSeconds = 32;
 let _dynbufSnapshotSeconds = 8;
 let _dynbufWriteToDisk = true;
@@ -118,7 +118,7 @@ function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath,
 
     // ── Dynbuf config ────────────────────────────────────────────────────
     const dbCfg = vscode.workspace.getConfiguration('envil.dynbuf');
-    _dynbufNumChannels     = Math.max(1, Math.min(16, dbCfg.get('numChannels', 2)));
+    _dynbufNumChannels     = Math.max(1, Math.min(16, dbCfg.get('numChannels', 8)));
     _dynbufRingSeconds     = Math.max(1, Number(dbCfg.get('ringSeconds', 32)));
     _dynbufSnapshotSeconds = Math.max(0.1, Number(dbCfg.get('snapshotSeconds', 8)));
     _dynbufWriteToDisk     = !!dbCfg.get('writeToDisk', true);
@@ -136,7 +136,7 @@ function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath,
                 const dc = vscode.workspace.getConfiguration('envil.dynbuf');
                 const oldNCh = _dynbufNumChannels;
                 const oldRing = _dynbufRingSeconds;
-                _dynbufNumChannels     = Math.max(1, Math.min(16, dc.get('numChannels', 2)));
+                _dynbufNumChannels     = Math.max(1, Math.min(16, dc.get('numChannels', 8)));
                 _dynbufRingSeconds     = Math.max(1, Number(dc.get('ringSeconds', 32)));
                 _dynbufSnapshotSeconds = Math.max(0.1, Number(dc.get('snapshotSeconds', 8)));
                 _dynbufWriteToDisk     = !!dc.get('writeToDisk', true);
@@ -1670,10 +1670,16 @@ function macroProxyName(m) {
 //
 //      Library keys:
 //        \envil, \bufRecReady    — Boolean guard
-//        \envil, \bufRecChans    — Int, channel count
+//        \envil, \bufRecChans    — Int, channel count (default 8)
 //        \envil, \bufRecRingSec  — Int, ring length seconds
-//        \envil, \bufRecIns      — Buffer (ring, audio inputs)
-//        \envil, \bufRecOuts     — Buffer (ring, output busses, InFeedback)
+//        \envil, \bufRecIns      — Buffer (single N-ch ring, InFeedback taps)
+//        \envil, \recBusses      — Array of bus indices, one per ring channel.
+//                                  Default (8ch): [nOut+0..nOut+3, 0, 1, 2, 3]
+//                                  → c0-c3 = hardware inputs, c4/c5 = ~out L/R
+//                                  (main out buses), c6/c7 = free/custom.
+//        \envil, \setRecBus      — fn(idx, bus): re-point ring channel idx to
+//                                  any bus, e.g. a proxy:
+//                                  Library.at(\envil,\setRecBus).value(6, ~pat.bus.index)
 //        \envil, \bufRecPhase    — Float, current write head (frames)
 //        \envil, \bufRecSynth    — the Synth instance
 //        \envil, \dynBufs        — List of snapshot Buffers (kept alive)
@@ -1707,40 +1713,50 @@ function dynbufBuildBackboneCode() {
         `Library.put(\\envil, \\backboneFn, {`,
         `  Routine({`,
         `    var srv = Server.default;`,
-        `    var nch = Library.at(\\envil, \\bufRecChansCfg) ? 2;`,
+        `    var nch = Library.at(\\envil, \\bufRecChansCfg) ? 8;`,
         `    var ringSec = Library.at(\\envil, \\bufRecRingSecCfg) ? 32;`,
-        `    var bufIn, bufOut, syn;`,
+        `    var nOut, nIns, busses, bufIn, syn;`,
         `    Library.put(\\envil, \\bufRecReady, false);`,
         `    "[envil backbone] step 1: cleaning up old state".postln;`,
         `    (Library.at(\\envil, \\bufRecSynth)) !? { |x| try { x.free } };`,
         `    [\\bufRecIns, \\bufRecOuts].do{|k| var b = Library.at(\\envil, k); if(b.notNil and: { b.isKindOf(Buffer) }, { try { b.free } }) };`,
         `    Library.put(\\envil, \\bufRecPhase, 0.0);`,
+        `    // Default source layout (like my_footcontroller.sc):`,
+        `    //   first half  = hardware inputs (bus nOut+i)`,
+        `    //   second half = output buses 0.. (c4/c5 capture ~out L/R; rest free)`,
+        `    nOut = srv.options.numOutputBusChannels;`,
+        `    nIns = (nch / 2).asInteger;`,
+        `    busses = nch.collect{|i| if(i < nIns, { nOut + i }, { i - nIns }) };`,
+        `    Library.put(\\envil, \\recBusses, busses);`,
+        `    Library.put(\\envil, \\setRecBus, { |idx, bus|`,
+        `      var arr = Library.at(\\envil, \\recBusses);`,
+        `      arr[idx] = bus.asInteger;`,
+        `      Library.at(\\envil, \\bufRecSynth) !? { |sy| sy.setn(\\busses, arr) };`,
+        `      ("[envil dynbuf] rec slot c" ++ idx ++ " -> bus " ++ bus).postln;`,
+        `    });`,
         `    "[envil backbone] step 2: registering SynthDef".postln;`,
-        `    SynthDef(\\envilBufRec, { |bufIn= -1, bufOut= -1|`,
+        `    SynthDef(\\envilBufRec, { |bufIn= -1|`,
+        `      var busses = \\busses.kr(Array.fill(nch, 0));`,
         `      var phase = Phasor.ar(0, BufRateScale.kr(bufIn), 0, BufFrames.kr(bufIn));`,
-        `      var ins   = nch.collect{|i| SoundIn.ar(i) };`,
-        `      var outs  = nch.collect{|i| InFeedback.ar(i, 1) };`,
-        `      BufWr.ar(ins,  bufIn,  phase);`,
-        `      BufWr.ar(outs, bufOut, phase);`,
+        `      var ins = nch.collect{|i| InFeedback.ar(busses[i]) };`,
+        `      BufWr.ar(ins, bufIn, phase);`,
         `      SendReply.kr(Impulse.kr(50), '/envilBufRecPhase', [A2K.kr(phase)]);`,
         `      DC.ar(0);`,
         `    }).add;`,
         `    srv.sync;`,
-        `    "[envil backbone] step 3: allocating ring buffers".postln;`,
-        `    bufIn  = Buffer.alloc(srv, srv.sampleRate * ringSec, nch);`,
-        `    bufOut = Buffer.alloc(srv, srv.sampleRate * ringSec, nch);`,
-        `    Library.put(\\envil, \\bufRecIns,  bufIn);`,
-        `    Library.put(\\envil, \\bufRecOuts, bufOut);`,
+        `    "[envil backbone] step 3: allocating ring buffer".postln;`,
+        `    bufIn = Buffer.alloc(srv, srv.sampleRate * ringSec, nch);`,
+        `    Library.put(\\envil, \\bufRecIns, bufIn);`,
         `    srv.sync;`,
         `    "[envil backbone] step 4: starting recorder synth".postln;`,
-        `    syn = Synth(\\envilBufRec, [\\bufIn, bufIn.bufnum, \\bufOut, bufOut.bufnum], target: RootNode(srv), addAction: \\addToHead);`,
+        `    syn = Synth(\\envilBufRec, [\\bufIn, bufIn.bufnum, \\busses, busses], target: RootNode(srv), addAction: \\addToHead);`,
         `    syn.register;`,
         `    Library.put(\\envil, \\bufRecSynth, syn);`,
         `    OSCdef(\\envilBufRecPhase, { |msg| Library.put(\\envil, \\bufRecPhase, msg[3]) }, '/envilBufRecPhase');`,
         `    Library.put(\\envil, \\bufRecChans, nch);`,
         `    Library.put(\\envil, \\bufRecRingSec, ringSec);`,
         `    Library.put(\\envil, \\bufRecReady, true);`,
-        `    ("[envil backbone] \u2713 ring recorder up (chans=" ++ nch ++ " ring=" ++ ringSec ++ "s synth=" ++ syn.nodeID ++ ")").postln;`,
+        `    ("[envil backbone] \u2713 ring recorder up (chans=" ++ nch ++ " ring=" ++ ringSec ++ "s busses=" ++ busses ++ " synth=" ++ syn.nodeID ++ ")").postln;`,
         `  }).play;`,
         `});`,
         `// Register on ServerTree \u2014 fires automatically on every (re)boot.`,
@@ -1851,15 +1867,19 @@ function dynbufBuildSnapshot(d) {
 
     // The player proxy synth. Channel count baked in.
     // ~t is envil's tempo proxy (beats per second). Defaults to 1 if absent.
+    // NOTE: Mix() unwraps the 1-elem array returned by NodeProxy.kr — without
+    // it, Select.ar multichannel-expands to nch chans and the mono proxy mixes
+    // ALL channels together (chan knob would be inaudible).
+    // NOTE: this array is .join(' ')ed — NO // comments inside!
     const playerFunc = [
         `{ |bufNum=0, origTempo=1|`,
         `  var t = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
-        `  var start       = ~bufPlay_${slot}_start.kr;`,
-        `  var endC        = ~bufPlay_${slot}_end.kr;`,
-        `  var tempoMul    = ~bufPlay_${slot}_tempoMul.kr;`,
-        `  var rateMul     = ~bufPlay_${slot}_rateMul.kr;`,
-        `  var chan        = ~bufPlay_${slot}_chan.kr;`,
-        `  var pulseDivide = ~bufPlay_${slot}_pulseDivide.kr;`,
+        `  var start       = Mix(~bufPlay_${slot}_start.kr);`,
+        `  var endC        = Mix(~bufPlay_${slot}_end.kr);`,
+        `  var tempoMul    = Mix(~bufPlay_${slot}_tempoMul.kr);`,
+        `  var rateMul     = Mix(~bufPlay_${slot}_rateMul.kr);`,
+        `  var chan        = Mix(~bufPlay_${slot}_chan.kr);`,
+        `  var pulseDivide = Mix(~bufPlay_${slot}_pulseDivide.kr);`,
         `  var tempoFac    = 2.0 ** (((tempoMul * 8) - 4).round);`,
         `  var pulse       = Impulse.kr(t * 128 * tempoFac);`,
         `  var divFactor   = 2 ** ((pulseDivide * 7).round);`,
@@ -1940,12 +1960,12 @@ function dynbufBuildReloadFromDisk(d) {
     const playerFunc = [
         `{ |bufNum=0, origTempo=1|`,
         `  var t = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
-        `  var start       = ~bufPlay_${slot}_start.kr;`,
-        `  var endC        = ~bufPlay_${slot}_end.kr;`,
-        `  var tempoMul    = ~bufPlay_${slot}_tempoMul.kr;`,
-        `  var rateMul     = ~bufPlay_${slot}_rateMul.kr;`,
-        `  var chan        = ~bufPlay_${slot}_chan.kr;`,
-        `  var pulseDivide = ~bufPlay_${slot}_pulseDivide.kr;`,
+        `  var start       = Mix(~bufPlay_${slot}_start.kr);`,
+        `  var endC        = Mix(~bufPlay_${slot}_end.kr);`,
+        `  var tempoMul    = Mix(~bufPlay_${slot}_tempoMul.kr);`,
+        `  var rateMul     = Mix(~bufPlay_${slot}_rateMul.kr);`,
+        `  var chan        = Mix(~bufPlay_${slot}_chan.kr);`,
+        `  var pulseDivide = Mix(~bufPlay_${slot}_pulseDivide.kr);`,
         `  var tempoFac    = 2.0 ** (((tempoMul * 8) - 4).round);`,
         `  var pulse       = Impulse.kr(t * 128 * tempoFac);`,
         `  var divFactor   = 2 ** ((pulseDivide * 7).round);`,

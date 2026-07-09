@@ -53,6 +53,25 @@ let _isSCSynthRunning = false;
 // Hydra output channel
 let hydraOutput = null;
 
+// ── Server options SC code builder ────────────────────────────────────────────
+//
+// Applies the configured hardware I/O channel counts to s.options.
+// MUST be evaluated BEFORE s.boot / s.reboot / s.waitForBoot — scsynth reads
+// the options only at boot time. Because this runs right before the plugin
+// boots the server (i.e. AFTER startup.scd already ran), these values win
+// over anything a user startup file set earlier.
+
+function buildServerOptionsSCCode() {
+    const cfg = vscode.workspace.getConfiguration('envil.supercollider.server');
+    const ins = cfg.get('numInputBusChannels', 4);
+    const outs = cfg.get('numOutputBusChannels', 2);
+    return [
+        `s.options.numInputBusChannels = ${ins};`,
+        `s.options.numOutputBusChannels = ${outs};`,
+        `"[envil] server options: ${ins} ins / ${outs} outs".postln;`,
+    ].join('\n');
+}
+
 // ── Input proxy SC code builder ───────────────────────────────────────────────
 //
 // Generates SC code that creates, for each hardware input channel:
@@ -221,6 +240,8 @@ async function activate(context) {
                 // s.waitForBoot runs on AppClock — push there only affects that thread.
                 const inputCode = buildInputProxySCCode();
                 await sc.executeCode([
+                    '// Hardware I/O channel counts (must be set before boot)',
+                    buildServerOptionsSCCode(),
                     '// Auto-reset allocators on every server boot/reboot',
                     'ServerTree.add({',
                     '  s.newBusAllocators;',
@@ -247,7 +268,7 @@ async function activate(context) {
                     '};',
                 ].join('\n'));
             } else {
-                await sc.bootServer();
+                await sc.executeCode(buildServerOptionsSCCode() + '\ns.boot;');
             }
             _isSCSynthRunning = true;
             updateScsynthBar(true);
@@ -274,6 +295,8 @@ async function activate(context) {
             if (autoInit) {
                 const inputCode = buildInputProxySCCode();
                 await sc.executeCode([
+                    '// Hardware I/O channel counts (must be set before reboot)',
+                    buildServerOptionsSCCode(),
                     '// Auto-reset allocators on every server boot/reboot',
                     'ServerTree.add({',
                     '  s.newBusAllocators;',
@@ -303,7 +326,7 @@ async function activate(context) {
                     '};',
                 ].join('\n'));
             } else {
-                await sc.rebootServer();
+                await sc.executeCode(buildServerOptionsSCCode() + '\ns.reboot;');
             }
         }),
 
