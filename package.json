@@ -348,6 +348,45 @@
             "enum": ["Tartini", "Pitch", "ZeroCrossing"],
             "description": "Pitch detection UGen for ~fN proxies. Tartini (sc3-plugins, best quality/perf tradeoff), Pitch (built-in, heavier), ZeroCrossing (lightest, rawer)."
           },
+          "envil.supercollider.midi.autoProxies": {
+            "type": "boolean",
+            "default": true,
+            "description": "Automatically expose incoming MIDI as NodeProxies (lazily, on first message): ~<pfx>_c<num> for CCs (0..1), ~<pfx>_n<num> for note velocities, ~<pfx>_n / ~<pfx>_n_val for last note. Prefix per device via midi.devicePrefixes."
+          },
+          "envil.supercollider.midi.devicePrefixes": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "default": {
+              "midiin3 (akai mpd24)": "b",
+              "akai mpd24 midi 3": "b",
+              "akai mpd24": "a",
+              "teensy midi": "f",
+              "triggerio": "t",
+              "launch control xl": "l",
+              "uac-8": "b",
+              "fast track ultra": "b",
+              "umc404hd": "b",
+              "digital jockey": "j",
+              "umx 61": "u",
+              "arduino leonardo": "al",
+              "seaboard": "sea",
+              "midi function": "jam",
+              "midi gadget": "jam"
+            },
+            "description": "MIDI device name (case-insensitive substring, first match wins — put more specific entries first) → proxy prefix. E.g. \"teensy midi\": \"f\" makes CC 49 appear as ~f_c49."
+          },
+          "envil.supercollider.midi.defaultPrefix": {
+            "type": "string",
+            "default": "m",
+            "description": "Proxy prefix for MIDI devices not matched in midi.devicePrefixes (all unmatched devices share it)."
+          },
+          "envil.supercollider.midi.watchdogSeconds": {
+            "type": "integer",
+            "default": 60,
+            "minimum": 0,
+            "maximum": 3600,
+            "description": "MIDI watchdog interval in seconds: periodically reconnects all MIDI sources (hot-plug resilience, like e[\\startMidiWatchdog] in the old rig) and posts a check line to the console. 0 disables the watchdog."
+          },
           "envil.supercollider.sclang.sclang_conf": {
             "type": [
               "string",

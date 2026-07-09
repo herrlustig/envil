@@ -96,14 +96,14 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 }
 .macro-row {
     display: flex; align-items: center; gap: 4px; margin-bottom: 6px;
-    position: relative; margin-top: 10px;
+    position: relative; margin-top: 14px;
 }
 .macro-row .macro-label {
-    position: absolute; top: -10px; left: 0; z-index: 2;
-    font-size: 8px; padding: 0px 3px; border-radius: 2px;
+    position: absolute; top: -13px; left: 0; z-index: 2;
+    font-size: 11px; padding: 0px 4px; border-radius: 2px;
     background: rgba(0,0,0,0.45);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    max-width: 90px; cursor: pointer; opacity: 0.7; line-height: 1.4;
+    max-width: 130px; cursor: pointer; opacity: 0.7; line-height: 1.4;
 }
 .macro-row .macro-label:hover { opacity: 1; }
 .macro-row .macro-btn-stack {
@@ -193,22 +193,22 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 }
 .dynbuf-row {
     display: flex; align-items: stretch; gap: 4px; margin-bottom: 6px;
-    position: relative; margin-top: 10px; height: 80px;
+    position: relative; margin-top: 14px; height: 80px;
 }
 .dynbuf-row .dynbuf-label {
-    position: absolute; top: -10px; left: 0; z-index: 2;
-    font-size: 8px; padding: 0px 3px; border-radius: 2px;
+    position: absolute; top: -13px; left: 0; z-index: 2;
+    font-size: 11px; padding: 0px 4px; border-radius: 2px;
     background: rgba(0,0,0,0.45);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    max-width: 120px; opacity: 0.7; line-height: 1.4;
+    max-width: 160px; opacity: 0.7; line-height: 1.4;
     color: #ffd479;
 }
 .dynbuf-row .dynbuf-btn-stack {
-    display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; width: 58px;
+    display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; width: 74px;
 }
 .dynbuf-row .dynbuf-name {
     display: flex; align-items: center; gap: 3px; flex-shrink: 0;
-    font-size: 8px; font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 11px; font-family: "JetBrains Mono", "Fira Code", monospace;
     color: #ffd479; cursor: grab; overflow: hidden; white-space: nowrap;
     line-height: 1.5; opacity: 0.85; user-select: none;
 }
@@ -218,8 +218,8 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 }
 .dynbuf-row .dynbuf-pat {
     flex-shrink: 0; margin-left: auto; cursor: grab;
-    font-size: 8px; font-weight: 700; line-height: 1;
-    padding: 1px 3px; border: 1px solid #7a5ec7; border-radius: 3px;
+    font-size: 11px; font-weight: 700; line-height: 1;
+    padding: 2px 5px; border: 1px solid #7a5ec7; border-radius: 3px;
     color: #b49aff; background: rgba(122,94,199,0.15);
 }
 .dynbuf-row .dynbuf-pat:hover { color: #fff; background: rgba(122,94,199,0.5); }
@@ -333,14 +333,14 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 }
 .seq-row {
     display: flex; align-items: center; gap: 2px; margin-bottom: 3px;
-    position: relative; margin-top: 10px;
+    position: relative; margin-top: 14px;
 }
 .seq-row .seq-label {
-    position: absolute; top: -10px; left: 0; z-index: 2;
-    font-size: 8px; padding: 0px 3px; border-radius: 2px;
+    position: absolute; top: -13px; left: 0; z-index: 2;
+    font-size: 11px; padding: 0px 4px; border-radius: 2px;
     background: rgba(0,0,0,0.45);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    max-width: 90px; cursor: pointer; opacity: 0.7; line-height: 1.4;
+    max-width: 130px; cursor: pointer; opacity: 0.7; line-height: 1.4;
 }
 .seq-row .seq-label:hover { opacity: 1; }
 .seq-step {
@@ -710,62 +710,62 @@ function draw() {
         ctx.shadowBlur = 0;
 
         // Note name in centre of knob
-        ctx.font = 'bold 11px "JetBrains Mono", "Fira Code", monospace';
+        ctx.font = 'bold 13px "JetBrains Mono", "Fira Code", monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillStyle = isActive ? '#000' : '#222';
         ctx.fillText(midiNoteName(knobMidiNote(k)), kx, ky);
 
         // Label + value — flip above knob when near bottom edge
-        const labelBelow = ky + KNOB_RADIUS + 22 < h;
+        const labelBelow = ky + KNOB_RADIUS + 38 < h;
         const ccLabel = '~' + PROXY_PREFIX + '_c' + knobMidiNote(k);
         const PAD_X = 4, PAD_Y = 2;
         const LABEL_BG = 'rgba(0,0,0,0.65)';  // dark bg so text pops
 
         if (labelBelow) {
             // Row 1: proxy name
-            ctx.font = '11px "JetBrains Mono", "Fira Code", monospace';
+            ctx.font = '13px "JetBrains Mono", "Fira Code", monospace';
             ctx.textAlign = 'center'; ctx.textBaseline = 'top';
             const txt1 = ccLabel;
             const m1 = ctx.measureText(txt1);
             const y1 = ky + KNOB_RADIUS + 4;
             ctx.fillStyle = LABEL_BG;
-            ctx.fillRect(kx - m1.width / 2 - PAD_X, y1 - PAD_Y, m1.width + PAD_X * 2, 13 + PAD_Y * 2);
+            ctx.fillRect(kx - m1.width / 2 - PAD_X, y1 - PAD_Y, m1.width + PAD_X * 2, 16 + PAD_Y * 2);
             ctx.fillStyle = k.color;
             ctx.fillText(txt1, kx, y1);
             // remember label rect for drag-to-editor (CSS px)
-            k._nameRect = { x: kx - m1.width / 2 - PAD_X, y: y1 - PAD_Y, w: m1.width + PAD_X * 2, h: 13 + PAD_Y * 2 };
+            k._nameRect = { x: kx - m1.width / 2 - PAD_X, y: y1 - PAD_Y, w: m1.width + PAD_X * 2, h: 16 + PAD_Y * 2 };
 
             // Row 2: XY values
-            ctx.font = '10px monospace';
+            ctx.font = '12px monospace';
             const txt2 = scX(k).toFixed(2) + '  ' + scY(k).toFixed(2);
             const m2 = ctx.measureText(txt2);
-            const y2 = ky + KNOB_RADIUS + 17;
+            const y2 = ky + KNOB_RADIUS + 21;
             ctx.fillStyle = LABEL_BG;
-            ctx.fillRect(kx - m2.width / 2 - PAD_X, y2 - PAD_Y, m2.width + PAD_X * 2, 12 + PAD_Y * 2);
+            ctx.fillRect(kx - m2.width / 2 - PAD_X, y2 - PAD_Y, m2.width + PAD_X * 2, 14 + PAD_Y * 2);
             ctx.fillStyle = '#ffffffcc';
             ctx.fillText(txt2, kx, y2);
         } else {
             // Row 1: proxy name
-            ctx.font = '11px "JetBrains Mono", "Fira Code", monospace';
+            ctx.font = '13px "JetBrains Mono", "Fira Code", monospace';
             ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
             const txt1 = ccLabel;
             const m1 = ctx.measureText(txt1);
-            const y1 = ky - KNOB_RADIUS - 17;
+            const y1 = ky - KNOB_RADIUS - 21;
             ctx.fillStyle = LABEL_BG;
-            ctx.fillRect(kx - m1.width / 2 - PAD_X, y1 - 13 - PAD_Y, m1.width + PAD_X * 2, 13 + PAD_Y * 2);
+            ctx.fillRect(kx - m1.width / 2 - PAD_X, y1 - 16 - PAD_Y, m1.width + PAD_X * 2, 16 + PAD_Y * 2);
             ctx.fillStyle = k.color;
             ctx.fillText(txt1, kx, y1);
             // remember label rect for drag-to-editor (CSS px)
-            k._nameRect = { x: kx - m1.width / 2 - PAD_X, y: y1 - 13 - PAD_Y, w: m1.width + PAD_X * 2, h: 13 + PAD_Y * 2 };
+            k._nameRect = { x: kx - m1.width / 2 - PAD_X, y: y1 - 16 - PAD_Y, w: m1.width + PAD_X * 2, h: 16 + PAD_Y * 2 };
 
             // Row 2: XY values
-            ctx.font = '10px monospace';
+            ctx.font = '12px monospace';
             const txt2 = scX(k).toFixed(2) + '  ' + scY(k).toFixed(2);
             const m2 = ctx.measureText(txt2);
             const y2 = ky - KNOB_RADIUS - 4;
             ctx.fillStyle = LABEL_BG;
-            ctx.fillRect(kx - m2.width / 2 - PAD_X, y2 - 12 - PAD_Y, m2.width + PAD_X * 2, 12 + PAD_Y * 2);
+            ctx.fillRect(kx - m2.width / 2 - PAD_X, y2 - 14 - PAD_Y, m2.width + PAD_X * 2, 14 + PAD_Y * 2);
             ctx.fillStyle = '#ffffffcc';
             ctx.fillText(txt2, kx, y2);
         }
@@ -1041,6 +1041,19 @@ canvas.addEventListener('dragstart', (e) => {
     if (_knobDragName) {
         e.dataTransfer.setData('text/plain', _knobDragName);
         e.dataTransfer.effectAllowed = 'copy';
+        // Custom drag image: without this the browser ghosts the ENTIRE
+        // canvas under the cursor. Use a small pill showing the proxy name.
+        try {
+            const ghost = document.createElement('div');
+            ghost.textContent = _knobDragName;
+            ghost.style.cssText = 'position:fixed; top:-100px; left:-100px; ' +
+                'padding:3px 8px; border-radius:4px; background:#1e1e1e; ' +
+                'color:#ffd479; border:1px solid #666; ' +
+                'font:13px "JetBrains Mono", "Fira Code", monospace;';
+            document.body.appendChild(ghost);
+            e.dataTransfer.setDragImage(ghost, 10, 10);
+            setTimeout(() => ghost.remove(), 0);
+        } catch (_) { /* setDragImage unsupported → default ghost */ }
     } else {
         e.preventDefault();
     }

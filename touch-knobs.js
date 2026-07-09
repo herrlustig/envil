@@ -83,6 +83,7 @@ let _dynbufHeartbeatMs = 2500;
 let _dynbufLastStatus = null;        // last /envilDynbufStatus payload
 let _dynbufBackboneSent = false;     // ServerTree register code already sent? (per sclang session)
 let _dynbufBackboneLastRepairMs = 0; // throttle auto-repair re-sends while backbone is red
+let _knobResyncLastMs = 0;           // throttle knob/macro proxy resync bursts
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API
@@ -203,6 +204,11 @@ function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath,
             }
         }
     }
+
+    // Open the notify port at activation (not just panel-open) so the
+    // knob/macro resync register code can embed its port number even when
+    // the panel has never been opened this session.
+    ensureDynbufNotifyPort();
 
     context.subscriptions.push(
         vscode.commands.registerCommand('envil.touchKnobs.open', () => openPanel(context)),
@@ -328,6 +334,11 @@ function openPanel(context) {
         if (sc && sc.isSclangRunning()) {
             sendSC(buildDynbufBackboneRegisterCode(), true);
             _dynbufBackboneSent = true;
+            // knob/macro self-heal register + immediate resync so the knobs
+            // shown in the panel are live in the ProxySpace from the start
+            const kr = buildKnobResyncRegisterCode();
+            if (kr) sendSC(kr, true);
+            knobResyncAll('panel open');
         }
     } catch (_) {}
 
@@ -1463,6 +1474,7 @@ function ensureDynbufNotifyPort() {
                 if (!oscMsg) return;
                 if (oscMsg.address === '/envilDynbufWritten') handleDynbufWritten(oscMsg);
                 else if (oscMsg.address === '/envilDynbufStatus') handleDynbufStatus(oscMsg);
+                else if (oscMsg.address === '/envilKnobsResync') knobResyncAll('server boot');
             }
             catch (e) { console.warn('[touch-knobs] dynbuf notify handler error:', e.message); }
         });
@@ -1732,6 +1744,89 @@ function macroProxyName(m) {
     return `~mcr_${positiveInteger(m && m.macroNum, 1)}`;
 }
 
+// ── Knob/macro proxy self-init + self-heal ─────────────────────────────────────
+//
+// Same self-heal contract as the dynbuf backbone / input proxies: a tiny
+// ServerTree-registered SC closure pings us back (/envilKnobsResync) on EVERY
+// server (re)boot — including boots triggered outside the extension — and we
+// answer by re-creating ALL knob + macro proxies with FRESH values from the
+// persisted panel state (works even while the panel is closed). Host-driven so
+// values are never stale, unlike embedding them in the register code itself.
+
+// Batched, chunked (stay well under sclang's ~6KB stdin limit per write).
+function knobResyncAll(reason) {
+    const now = Date.now();
+    if (now - _knobResyncLastMs < 1000) return;   // debounce boot bursts
+    _knobResyncLastMs = now;
+
+    const sc = _getSC ? _getSC() : null;
+    if (!sc || !sc.isSclangRunning()) return;
+
+    const state = loadLayout() || {};
+    const parts = [];
+
+    // ── 2D knobs: ~v_c<midiNote> with last x/y ──
+    const knobs = Array.isArray(state.knobs) ? state.knobs : [];
+    const knobSrc = `{ |x=0, y=0, lagTime=${DEFAULT_LAG_TIME}| [Lag.kr(x, lagTime), Lag.kr(y, lagTime)] }`;
+    for (const k of knobs) {
+        const noteNum = Number(k.midiNote != null ? k.midiNote : k.id) | 0;
+        const x = clamp01(Number(k.nx) || 0);
+        const y = clamp01(Number(k.ny) || 0);
+        const pn = `~${PROXY_PREFIX}_c${noteNum}`;
+        parts.push(`if(${pn}.source.isNil or: { ${pn}.numChannels != 2 }, { ${pn}.mold(2, \\control); ${pn} = ${knobSrc} }, { if(Server.default.serverRunning and: { ${pn}.isPlaying.not }, { ${pn}.send }) }); ${pn}.set(\\x, ${x}, \\y, ${y})`);
+    }
+
+    // ── shared tap/note proxies: ~v_n / ~v_n_val (idle = 0) ──
+    if (knobs.length > 0) {
+        const noteSrc = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
+        for (const pn of [`~${PROXY_PREFIX}_n`, `~${PROXY_PREFIX}_n_val`]) {
+            parts.push(`if(${pn}.source.isNil, { ${pn} = ${noteSrc} }, { if(Server.default.serverRunning and: { ${pn}.isPlaying.not }, { ${pn}.send }) })`);
+        }
+    }
+
+    // ── macros: ~mcr_<num> with last sampled value ──
+    // (playing macros heal themselves every tick, but idle ones would
+    //  otherwise stay dead until pressed play)
+    const macros = _macros.length > 0 ? _macros : (Array.isArray(state.macros) ? state.macros : []);
+    for (const m of macros) {
+        const pos = clamp01(Number(m.position != null ? m.position : m.currentPos) || 0);
+        const val = macroSampleValue(m, pos);
+        parts.push(`${macroEnsureSCCode(macroProxyName(m))}; ${macroProxyName(m)}.set(\\val, ${val})`);
+    }
+
+    if (parts.length === 0) return;
+
+    // Chunked sends: ~5 proxies per write, each wrapped in the ProxySpace guard
+    const CHUNK = 5;
+    for (let i = 0; i < parts.length; i += CHUNK) {
+        const body = parts.slice(i, i + CHUNK).join('; ');
+        sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${body} })`, true);
+    }
+    log(`  ♻ knob/macro proxies resynced (${knobs.length} knobs, ${macros.length} macros) — ${reason}`);
+}
+
+// SC register code: ServerTree closure that pings /envilKnobsResync on every
+// boot; fires immediately if the server is already running. Idempotent.
+// Send as its own executeCode write. Returns '' until the notify port is up.
+function buildKnobResyncRegisterCode() {
+    ensureDynbufNotifyPort();
+    if (!_dynbufNotifyPortNumber) return '';
+    return [
+        `(`,
+        `Library.put(\\envil, \\knobResyncFn, {`,
+        `  Routine({`,
+        `    Server.default.sync;`,
+        `    NetAddr("127.0.0.1", ${_dynbufNotifyPortNumber}).sendMsg("/envilKnobsResync");`,
+        `  }).play;`,
+        `});`,
+        `(Library.at(\\envil, \\knobResyncTreeFn)) !? { |fn| ServerTree.remove(fn, Server.default) };`,
+        `Library.put(\\envil, \\knobResyncTreeFn, { Library.at(\\envil, \\knobResyncFn).value });`,
+        `ServerTree.add(Library.at(\\envil, \\knobResyncTreeFn), Server.default);`,
+        `if(Server.default.serverRunning, { Library.at(\\envil, \\knobResyncFn).value }, { "[envil] knob/macro proxies registered — will auto-init on s.boot".postln });`,
+        `);`,
+    ].join('\n');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DYNAMIC BUFFER (live looper) — SC code emitters
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1844,7 +1939,7 @@ function dynbufBuildBackboneCode() {
         `"[envil backbone] ServerTree fn registered".postln;`,
         `// Fire immediately if server already running`,
         `if(Server.default.serverRunning, { "[envil backbone] server already running \u2014 firing now".postln; Library.at(\\envil, \\backboneFn).value }, { "[envil backbone] server not running yet \u2014 will auto-init on s.boot".postln });`,
-        `)`,
+        `);`,
     ].join('\n');
 }
 
@@ -2349,4 +2444,4 @@ function buildDynbufStatusQueryCode(slots) {
     ].join(' ');
 }
 
-module.exports = { registerTouchKnobs, hasEnvilDir, handleMediaPipeLandmarks, handleMediaPipeStatus, getMediaPipeConfig, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode };
+module.exports = { registerTouchKnobs, hasEnvilDir, handleMediaPipeLandmarks, handleMediaPipeStatus, getMediaPipeConfig, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode, buildKnobResyncRegisterCode };

@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.openHelpForCursor = exports.probeRunningServer = exports.checkServerRunning = exports.stopAllSounds = exports.killServer = exports.rebootServer = exports.bootServer = exports.executeBlock = exports.findCodeBlock = exports.queryCode = exports.sendCode = exports.executeCode = exports.stopSclang = exports.startSclang = exports.isSclangRunning = exports.initOutputChannels = exports.addSuppressMarker = exports.onServerStateChange = exports.onSclangExit = void 0;
 const fs = require("fs");
+const path = require("path");
 const child_process_1 = require("child_process");
 const vscode_1 = require("vscode");
 let sclangProcess = null;
@@ -65,6 +66,58 @@ function initOutputChannels() {
     }
 }
 exports.initOutputChannels = initOutputChannels;
+// ── SC post-window file log ──────────────────────────────────────────────────
+// Everything shown in the Post Window is mirrored to <workspace>/.envil/sc-post.log
+// so AI agents (and scripts) can read SC output directly instead of asking the
+// user to copy-paste. Rotates to sc-post.log.1 at 512 KB (same as webview.log).
+let _scLogPath = null;
+let _scLogLineBuf = '';
+const SC_LOG_MAX_BYTES = 512 * 1024;
+function getScLogPath() {
+    if (_scLogPath)
+        return _scLogPath;
+    const folders = vscode_1.workspace.workspaceFolders;
+    if (!folders || folders.length === 0)
+        return null;
+    const base = path.join(folders[0].uri.fsPath, '.envil');
+    try {
+        fs.mkdirSync(base, { recursive: true });
+    }
+    catch (_) {
+        return null;
+    }
+    _scLogPath = path.join(base, 'sc-post.log');
+    return _scLogPath;
+}
+function appendScLog(text) {
+    const p = getScLogPath();
+    if (!p || !text)
+        return;
+    try {
+        // line-buffer so timestamps land on complete lines only
+        _scLogLineBuf += text;
+        const lastNL = _scLogLineBuf.lastIndexOf('\n');
+        if (lastNL === -1)
+            return;
+        const complete = _scLogLineBuf.slice(0, lastNL);
+        _scLogLineBuf = _scLogLineBuf.slice(lastNL + 1);
+        // simple rotation: if file > MAX, rename to .1 and start fresh
+        try {
+            const st = fs.statSync(p);
+            if (st.size > SC_LOG_MAX_BYTES) {
+                try {
+                    fs.renameSync(p, p + '.1');
+                }
+                catch (_) { }
+            }
+        }
+        catch (_) { /* file may not exist yet */ }
+        const ts = new Date().toISOString();
+        const out = complete.split('\n').map(l => `[${ts}] ${l}`).join('\n') + '\n';
+        fs.appendFileSync(p, out);
+    }
+    catch (_) { /* never let logging break the bridge */ }
+}
 function isSclangRunning() {
     return sclangProcess !== null && !sclangProcess.killed;
 }
@@ -170,8 +223,10 @@ async function startSclang(fallbackToExe = true) {
             proc.stdout?.on('data', (data) => {
                 const text = data.toString();
                 const filtered = filterMarkers(text);
-                if (filtered)
+                if (filtered) {
                     postWindowOutput.append(filtered);
+                    appendScLog(filtered);
+                }
                 for (const fn of stdoutListeners)
                     fn(text);
                 // ── Detect scsynth state changes from sclang output ──
@@ -184,9 +239,14 @@ async function startSclang(fallbackToExe = true) {
                         cb(false);
                 }
             });
-            proc.stderr?.on('data', (data) => postWindowOutput.append(data.toString()));
+            proc.stderr?.on('data', (data) => {
+                const text = data.toString();
+                postWindowOutput.append(text);
+                appendScLog(text);
+            });
             proc.on('exit', (code) => {
                 sclangOutput.appendLine(`[SuperCollider] sclang exited with code ${code}`);
+                appendScLog(`──── sclang exited (code ${code}) ────\n`);
                 sclangProcess = null;
                 for (const cb of exitCallbacks)
                     cb(code);
@@ -195,6 +255,7 @@ async function startSclang(fallbackToExe = true) {
         };
         sclangProcess = spawnProcess(sclangPath);
         sclangOutput.appendLine('[SuperCollider] sclang process spawned, waiting for output...');
+        appendScLog(`──── sclang started (${new Date().toISOString()}) ────\n`);
         postWindowOutput.show(true);
         return true;
     }
@@ -521,13 +582,19 @@ async function probeRunningServer(autoInitProxy = true, inputProxyCode = '') {
     ].filter(Boolean).join('\n') : '';
     const scCode = [
         'fork {',
-        '  var resp, running = false;',
+        '  var resp, running = false, t = 0;',
         '  resp = OSCFunc({ |msg| running = true; resp.free }, \'/status.reply\');',
         '  s.addr.sendMsg(\'/status\');',
         '  1.5.wait;',
         '  resp.free;',
         '  if(running, {',
-        '    s.serverRunning_(true);',
+        // SC 3.13: Server.serverRunning_ no longer exists — adopt the running
+        // server properly: alive thread + /notify handshake, then wait until
+        // statusWatcher flips serverRunning true (so code sent right after
+        // this probe sees an honest s.serverRunning).
+        '    s.startAliveThread(0);',
+        '    s.notify;',
+        '    while({ s.serverRunning.not and: { t < 40 } }, { 0.1.wait; t = t + 1 });',
         '    s.newBusAllocators;',
         '    s.newBufferAllocators;',
         '    s.newNodeAllocators;',

@@ -10,7 +10,7 @@ const { registerHydraProviders } = require('./hydra-language-support');
 const { registerHoverSlider } = require('./hover-slider');
 const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
 const { extractExpressions } = require('./peek-expressions');
-const { registerTouchKnobs, hasEnvilDir, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode } = require('./touch-knobs');
+const { registerTouchKnobs, hasEnvilDir, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode, buildKnobResyncRegisterCode } = require('./touch-knobs');
 const { registerProxyCompletions } = require('./proxy-completions');
 const { registerEnvCompletions, clearEnvKeyCache } = require('./env-completions');
 const { registerPbindCompletions } = require('./pbind-completions');
@@ -75,9 +75,12 @@ function buildServerOptionsSCCode() {
 // ── Input proxy SC code builder ───────────────────────────────────────────────
 //
 // Generates SC code that creates, for each hardware input channel:
-//   ~i0 … ~iN  — SoundIn.ar with LeakDC + gentle compression
-//   ~f0 … ~fN  — pitch detection (Tartini / Pitch / ZeroCrossing), latched
-//   ~a0 … ~aN  — amplitude follower
+//   ~i0 … ~iN        — SoundIn.ar with LeakDC + gentle compression
+//   ~pd0 … ~pdN      — pitch analysis bundle [latchedFreq, gate] (internal;
+//                      Tartini/Pitch runs ONCE here — it's CPU-heavy)
+//   ~f0 … ~fN        — latched pitch (reads ~pdN channel 0)
+//   ~hasFreq0 … N    — pitch-confidence gate 0/1 (reads ~pdN channel 1)
+//   ~a0 … ~aN        — amplitude follower
 //
 // Inspired by my_footcontroller.sc  e[\setupProxy]
 // Must be called from INSIDE s.waitForBoot (needs running server).
@@ -102,31 +105,37 @@ function buildInputProxySCCode() {
         lines.push(`    in;`);
         lines.push(`  };`);
 
-        // ~fN — pitch detection proxy (all var decls first — SC requirement)
-        // Tartini mode auto-falls back to Pitch.kr if sc3-plugins not installed
-        lines.push(`  ~f${i}.kr(1);`);
-        if (method === 'Tartini') {
-            lines.push(`  ~f${i} = { |threshold=0.9, maxFreq=2000|`);
+        // ~pdN — analysis bundle [freqLatched, gate]; the (expensive) pitch
+        // UGen lives ONLY here so ~fN + ~hasFreqN don't double the CPU cost.
+        // Tartini mode auto-falls back to Pitch.kr if sc3-plugins not installed.
+        if (method === 'Tartini' || method === 'Pitch') {
+            lines.push(`  ~pd${i}.kr(2);`);
+            lines.push(`  ~pd${i}.fadeTime = 0;`);
+            lines.push(`  ~pd${i} = { |threshold=0.9, maxFreq=2000|`);
             lines.push(`    var in = Mix(~i${i}.ar);`);
             lines.push(`    var freq, hasFreq, gate;`);
-            lines.push(`    #freq, hasFreq = if(\\Tartini.asClass.notNil, {`);
-            lines.push(`      \\Tartini.asClass.kr(in, n: 4096);`);
-            lines.push(`    }, {`);
-            lines.push(`      Pitch.kr(in, minFreq: 60, maxFreq: maxFreq, ampThreshold: 0.05);`);
-            lines.push(`    });`);
+            if (method === 'Tartini') {
+                lines.push(`    #freq, hasFreq = if(\\Tartini.asClass.notNil, {`);
+                lines.push(`      \\Tartini.asClass.kr(in, n: 4096);`);
+                lines.push(`    }, {`);
+                lines.push(`      Pitch.kr(in, minFreq: 60, maxFreq: maxFreq, ampThreshold: 0.05);`);
+                lines.push(`    });`);
+            } else {
+                lines.push(`    #freq, hasFreq = Pitch.kr(in, minFreq: 60, maxFreq: maxFreq, ampThreshold: 0.05);`);
+            }
             lines.push(`    gate = (hasFreq > threshold) * (freq < maxFreq);`);
-            lines.push(`    Latch.kr(freq, gate);`);
+            lines.push(`    [Latch.kr(freq, gate), gate];`);
             lines.push(`  };`);
-        } else if (method === 'Pitch') {
-            lines.push(`  ~f${i} = { |threshold=0.9, maxFreq=2000|`);
-            lines.push(`    var in = Mix(~i${i}.ar);`);
-            lines.push(`    var freq, hasFreq, gate;`);
-            lines.push(`    #freq, hasFreq = Pitch.kr(in, minFreq: 60, maxFreq: maxFreq, ampThreshold: 0.05);`);
-            lines.push(`    gate = (hasFreq > threshold) * (freq < maxFreq);`);
-            lines.push(`    Latch.kr(freq, gate);`);
-            lines.push(`  };`);
+            lines.push(`  ~f${i}.kr(1);`);
+            lines.push(`  ~f${i}.fadeTime = 0;`);
+            lines.push(`  ~f${i} = { ~pd${i}.kr(2)[0] };`);
+            lines.push(`  ~hasFreq${i}.kr(1);`);
+            lines.push(`  ~hasFreq${i}.fadeTime = 0;`);
+            lines.push(`  ~hasFreq${i} = { ~pd${i}.kr(2)[1] };`);
         } else {
-            // ZeroCrossing — lightest, rawer
+            // ZeroCrossing — lightest, rawer. Gate = amplitude threshold.
+            lines.push(`  ~f${i}.kr(1);`);
+            lines.push(`  ~f${i}.fadeTime = 0;`);
             lines.push(`  ~f${i} = { |maxFreq=2000|`);
             lines.push(`    var in = Mix(~i${i}.ar);`);
             lines.push(`    var freq;`);
@@ -134,15 +143,178 @@ function buildInputProxySCCode() {
             lines.push(`    freq = ZeroCrossing.ar(in);`);
             lines.push(`    freq.min(maxFreq);`);
             lines.push(`  };`);
+            lines.push(`  ~hasFreq${i}.kr(1);`);
+            lines.push(`  ~hasFreq${i}.fadeTime = 0;`);
+            lines.push(`  ~hasFreq${i} = { |threshold=0.02| Amplitude.kr(Mix(~i${i}.ar)) > threshold };`);
         }
 
         // ~aN — amplitude follower proxy
         lines.push(`  ~a${i}.kr(1);`);
+        lines.push(`  ~a${i}.fadeTime = 0;`);
         lines.push(`  ~a${i} = { Amplitude.kr(Mix(~i${i}.ar)) };`);
     }
 
-    lines.push(`  "[envil] ${n} input proxies ready: ~i0..~i${n - 1}, ~f0..~f${n - 1}, ~a0..~a${n - 1}".postln;`);
+    lines.push(`  "[envil] ${n} input proxies ready: ~i0..~i${n - 1}, ~f0.. ~hasFreq0.. ~a0..".postln;`);
     return lines.join('\n');
+}
+
+// ── Input proxy REGISTER code (self-init + self-heal) ────────────────────────
+//
+// Wraps buildInputProxySCCode in a Library function registered on ServerTree
+// (same pattern as the dynbuf backbone): re-fires on EVERY server (re)boot,
+// fires immediately if the server is already running, and wraps the body in
+// `p.use { ... }` so tilde-syntax resolves to the ProxySpace regardless of
+// which thread evaluates it (waitForBoot/AppClock does NOT — that was the bug
+// that made ~i/~f/~a silently land nowhere).
+// Send as its own executeCode write (keeps payloads under sclang's ~6KB stdin
+// limit). Idempotent: re-evaluating replaces the previous ServerTree closure.
+
+function buildInputProxyRegisterCode() {
+    const body = buildInputProxySCCode();
+    if (!body) return '';
+    const indented = body.split('\n').map(l => '      ' + l).join('\n');
+    return [
+        `(`,
+        `// ── envil input proxies: ServerTree-registered (self-init + self-heal) ──`,
+        `// capture the MAIN-thread ProxySpace: this code arrives via stdin and runs`,
+        `// on the interpreter thread — the SAME space the user's editor evals see.`,
+        `// (currentEnvironment is per-thread; a ProxySpace.push inside a Routine/`,
+        `// ServerTree fn diverges \`p\` from what the editor resolves ~tildes in!)`,
+        `if(currentEnvironment.isKindOf(ProxySpace), { Library.put(\\envil, \\pspace, currentEnvironment) });`,
+        `Library.put(\\envil, \\inputProxiesFn, {`,
+        `  // throttle: ServerTree + boot-waiter can both fire within ms of each`,
+        `  // other; a double re-assign overlaps two synths per proxy for fadeTime`,
+        `  // seconds (Out.kr sums -> ~hasFreq reads 2!) and can orphan nodes.`,
+        `  var last = Library.at(\\envil, \\inputProxiesLastFire) ? -10;`,
+        `  if((Main.elapsedTime - last) > 5, {`,
+        `    Library.put(\\envil, \\inputProxiesLastFire, Main.elapsedTime);`,
+        `    Routine({`,
+        `      var srv = Server.default;`,
+        `      var ps = Library.at(\\envil, \\pspace) ? p;`,
+        `      srv.sync;`,
+        `      if(ps.isKindOf(ProxySpace), {`,
+        `        ps.use({`,
+        indented,
+        `        });`,
+        `      }, {`,
+        `        "[envil] input proxies SKIPPED: no ProxySpace found".warn;`,
+        `      });`,
+        `    }).play;`,
+        `  });`,
+        `});`,
+        `(Library.at(\\envil, \\inputProxiesTreeFn)) !? { |fn| ServerTree.remove(fn, Server.default) };`,
+        `Library.put(\\envil, \\inputProxiesTreeFn, { Library.at(\\envil, \\inputProxiesFn).value });`,
+        `ServerTree.add(Library.at(\\envil, \\inputProxiesTreeFn), Server.default);`,
+        `// fire now if server is up — else wait up to 30s for it (adoption of an`,
+        `// already-running server sets serverRunning asynchronously), else ServerTree`,
+        `if(Server.default.serverRunning, {`,
+        `  Library.at(\\envil, \\inputProxiesFn).value;`,
+        `}, {`,
+        `  "[envil] input proxies registered — waiting for server".postln;`,
+        `  Routine({`,
+        `    var n = 0;`,
+        `    while({ Server.default.serverRunning.not and: { n < 60 } }, { 0.5.wait; n = n + 1 });`,
+        `    if(Server.default.serverRunning, { Library.at(\\envil, \\inputProxiesFn).value });`,
+        `  }).play(AppClock);`,
+        `});`,
+        `);`,
+    ].join('\n');
+}
+
+// ── Auto MIDI proxy SC code builder ──────────────────────────────────────────
+//
+// Ported from my_footcontroller.sc  e[\initMidi] + e[\createProxyPresets],
+// but LAZY: instead of pre-creating 85 proxies × devices (old script needed
+// maxNodes = 512*4 for that!), proxies are created on the FIRST message that
+// touches them. Naming convention (same as the old rig):
+//   ~<pfx>_c<num>    — CC value 0..1        (e.g. ~f_c49)
+//   ~<pfx>_n<num>    — noteOn velocity 0..1, 0 again on noteOff
+//   ~<pfx>_n         — last note number played on that device
+//   ~<pfx>_n_val     — velocity of last note (0 on release)
+//
+// <pfx> comes from envil.supercollider.midi.devicePrefixes (case-insensitive
+// substring match on "device name"); unknown devices share defaultPrefix.
+// Language-level + idempotent (MIDIdef keys replace themselves) — send it
+// OUTSIDE s.waitForBoot. Proxy creation is guarded until ProxySpace+server up.
+
+function buildMidiProxySCCode() {
+    const cfg = vscode.workspace.getConfiguration('envil.supercollider.midi');
+    if (!cfg.get('autoProxies', true)) return '';
+
+    const sanitizePfx = (s) => String(s).replace(/[^A-Za-z0-9_]/g, '').slice(0, 12) || 'm';
+    const defaultPrefix = sanitizePfx(cfg.get('defaultPrefix', 'm'));
+    const watchdogSec = Math.max(0, Math.min(3600, Number(cfg.get('watchdogSeconds', 60)) || 0));
+    const map = cfg.get('devicePrefixes', {}) || {};
+    const pairs = Object.entries(map)
+        .filter(([k, v]) => k && typeof v === 'string')
+        .map(([k, v]) => `["${String(k).toLowerCase().replace(/[\\"]/g, '')}", "${sanitizePfx(v)}"]`)
+        .join(', ');
+
+    return [
+        `{`,
+        `// ── envil auto MIDI proxies (lazy) ──`,
+        `var prefixMap = [ ${pairs} ];`,
+        `var defaultPrefix = "${defaultPrefix}";`,
+        `var watchdogSec = ${watchdogSec};`,
+        `if(MIDIClient.initialized.not, { MIDIClient.init(verbose: false); MIDIIn.connectAll(false) });`,
+        `Library.put(\\envil, \\midiPrefixCache, IdentityDictionary());`,
+        `Library.put(\\envil, \\midiPrefixFor, { |srcID|`,
+        `  var cache = Library.at(\\envil, \\midiPrefixCache);`,
+        `  cache[srcID] ?? {`,
+        `    var src = MIDIClient.sources.detect { |ep| ep.uid == srcID };`,
+        `    var name = if(src.notNil, { (src.device.asString ++ " " ++ src.name.asString).toLower }, { "" });`,
+        `    var hit = prefixMap.detect { |pair| name.contains(pair[0]) };`,
+        `    var pfx = if(hit.notNil, { hit[1] }, { defaultPrefix });`,
+        `    cache.put(srcID, pfx);`,
+        `    ("[envil midi] device '" ++ name ++ "' -> ~" ++ pfx ++ "_c<num> / ~" ++ pfx ++ "_n<num>").postln;`,
+        `    pfx;`,
+        `  };`,
+        `});`,
+        `Library.put(\\envil, \\midiSetProxy, { |name, v|`,
+        `  var ps = Library.at(\\envil, \\pspace) ? p;`,
+        `  if(ps.isKindOf(ProxySpace) and: { Server.default.serverRunning }, {`,
+        `    var px = ps[name.asSymbol];`,
+        `    if(px.source.isNil or: { px.controlNames.isNil or: { px.controlNames.any({ |cn| cn.name == \\val }).not } }, {`,
+        `      px.kr(1); px.source = { |val=0, lagTime=0| Lag.kr(val, lagTime) };`,
+        `      ("[envil midi] created ~" ++ name).postln;`,
+        `    });`,
+        `    px.set(\\val, v);`,
+        `  });`,
+        `});`,
+        `MIDIdef.cc(\\envilAutoCC, { |val, num, chan, src|`,
+        `  var pfx = Library.at(\\envil, \\midiPrefixFor).value(src);`,
+        `  Library.at(\\envil, \\midiSetProxy).value(pfx ++ "_c" ++ num, val / 127);`,
+        `}).permanent_(true);`,
+        `MIDIdef.noteOn(\\envilAutoNoteOn, { |vel, num, chan, src|`,
+        `  var pfx = Library.at(\\envil, \\midiPrefixFor).value(src);`,
+        `  var set = Library.at(\\envil, \\midiSetProxy);`,
+        `  set.value(pfx ++ "_n" ++ num, vel / 127);`,
+        `  set.value(pfx ++ "_n", num);`,
+        `  set.value(pfx ++ "_n_val", vel / 127);`,
+        `}).permanent_(true);`,
+        `MIDIdef.noteOff(\\envilAutoNoteOff, { |vel, num, chan, src|`,
+        `  var pfx = Library.at(\\envil, \\midiPrefixFor).value(src);`,
+        `  var set = Library.at(\\envil, \\midiSetProxy);`,
+        `  set.value(pfx ++ "_n" ++ num, 0);`,
+        `  set.value(pfx ++ "_n_val", 0);`,
+        `}).permanent_(true);`,
+        `// watchdog: periodic MIDI reconnect (like e[\\startMidiWatchdog]) — 0 = off`,
+        `Library.at(\\envil, \\midiWatchdog) !? { |r| try { r.stop } };`,
+        `if(watchdogSec > 0, {`,
+        `  var rt = Routine({`,
+        `    loop {`,
+        `      try {`,
+        `        MIDIClient.sources.do { |src| if((src.device.asString ++ src.name.asString).contains("SuperCollider").not, { try { MIDIIn.connect(0, src) } }) };`,
+        `        ("[envil midi] watchdog \u2713 " ++ MIDIClient.sources.size ++ " sources reconnected (every " ++ watchdogSec ++ "s)").postln;`,
+        `      } { |err| ("[envil midi] watchdog error: " ++ err.errorString).postln };`,
+        `      watchdogSec.wait;`,
+        `    };`,
+        `  }).play(AppClock);`,
+        `  Library.put(\\envil, \\midiWatchdog, rt);`,
+        `});`,
+        `("[envil midi] auto proxies armed (" ++ MIDIClient.sources.size ++ " sources, default ~" ++ defaultPrefix ++ "_*, watchdog " ++ if(watchdogSec > 0, { watchdogSec.asString ++ "s" }, { "off" }) ++ ")").postln;`,
+        `}.value;`,
+    ].join('\n');
 }
 
 // ── Activate ─────────────────────────────────────────────────────────────────
@@ -206,11 +378,18 @@ async function activate(context) {
                 updateSclangBar(true);
                 // Auto-detect a running scsynth left over from a previous session
                 const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
-                const inputCode = autoInit ? (buildInputProxySCCode() + '\n' + buildDynbufBackboneRegisterCode() + '\n' + buildDynbufBootInitSCCode()) : '';
+                const inputCode = autoInit ? (buildDynbufBackboneRegisterCode() + '\n' + buildDynbufBootInitSCCode()) : '';
                 sc.probeRunningServer(autoInit, inputCode).then(found => {
                     if (found) {
                         _isSCSynthRunning = true;
                         updateScsynthBar(true);
+                    }
+                    // Self-guarding, ServerTree-registered — safe to send whether or
+                    // not a server was found (they fire now or on next boot).
+                    if (autoInit) {
+                        const ir = buildInputProxyRegisterCode(); if (ir) sc.executeCode(ir);
+                        const m = buildMidiProxySCCode(); if (m) sc.executeCode(m);
+                        const kr = buildKnobResyncRegisterCode(); if (kr) sc.executeCode(kr);
                     }
                 });
             }
@@ -238,7 +417,6 @@ async function activate(context) {
             if (autoInit) {
                 // ProxySpace.push MUST be at top level (main interpreter thread).
                 // s.waitForBoot runs on AppClock — push there only affects that thread.
-                const inputCode = buildInputProxySCCode();
                 await sc.executeCode([
                     '// Hardware I/O channel counts (must be set before boot)',
                     buildServerOptionsSCCode(),
@@ -261,12 +439,17 @@ async function activate(context) {
                     buildDynbufBackboneRegisterCode(),
                     's.waitForBoot {',
                     '  ~out.play;',
-                    inputCode,
                     '  // dynbuf per-slot REPRESENTATIONS (ProxySpace-scoped) — auto-expose persisted slots',
                     buildDynbufBootInitSCCode(),
                     '  "[envil] ProxySpace ready.  ~out.ar(2).play".postln;',
                     '};',
                 ].join('\n'));
+                // input proxies (~i/~f/~hasFreq/~a) — ServerTree-registered, fires on boot
+                { const ir = buildInputProxyRegisterCode(); if (ir) await sc.executeCode(ir); }
+                // auto MIDI proxies — separate write (language-level, keeps payload small)
+                { const m = buildMidiProxySCCode(); if (m) await sc.executeCode(m); }
+                // knob/macro proxies — ServerTree ping → host resyncs with fresh values
+                { const kr = buildKnobResyncRegisterCode(); if (kr) await sc.executeCode(kr); }
             } else {
                 await sc.executeCode(buildServerOptionsSCCode() + '\ns.boot;');
             }
@@ -293,7 +476,6 @@ async function activate(context) {
             const sc = getSC(); if (!sc) return;
             const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
             if (autoInit) {
-                const inputCode = buildInputProxySCCode();
                 await sc.executeCode([
                     '// Hardware I/O channel counts (must be set before reboot)',
                     buildServerOptionsSCCode(),
@@ -319,12 +501,17 @@ async function activate(context) {
                     buildDynbufBackboneRegisterCode(),
                     's.waitForBoot {',
                     '  ~out.play;',
-                    inputCode,
                     '  // dynbuf per-slot REPRESENTATIONS (ProxySpace-scoped) — auto-expose persisted slots',
                     buildDynbufBootInitSCCode(),
                     '  "[envil] ProxySpace ready.  ~out.ar(2).play".postln;',
                     '};',
                 ].join('\n'));
+                // input proxies (~i/~f/~hasFreq/~a) — ServerTree-registered, fires on boot
+                { const ir = buildInputProxyRegisterCode(); if (ir) await sc.executeCode(ir); }
+                // auto MIDI proxies — separate write (language-level, keeps payload small)
+                { const m = buildMidiProxySCCode(); if (m) await sc.executeCode(m); }
+                // knob/macro proxies — ServerTree ping → host resyncs with fresh values
+                { const kr = buildKnobResyncRegisterCode(); if (kr) await sc.executeCode(kr); }
             } else {
                 await sc.executeCode(buildServerOptionsSCCode() + '\ns.reboot;');
             }
@@ -1006,6 +1193,47 @@ function pingScsynthOSC(timeoutMs = 1500) {
     });
 }
 
+// ── Proxy-register self-heal (rides the heartbeat) ──────────────────────────
+// The input/MIDI/knob registers must survive ANY sclang start path (status-bar
+// button, auto-start on first eval, window reload) plus Library wipes from a
+// class-lib recompile. One-shot sends tied to the startSCLang command miss
+// most of those paths — so verify via Library and re-send on the heartbeat,
+// the same pattern that makes the dynbuf backbone bulletproof.
+let _regHealBusy = false;
+let _regHealLastSendMs = 0;
+
+async function ensureProxyRegisters(sc) {
+    if (_regHealBusy || !sc.queryCode) return;
+    const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
+    if (!autoInit) return;
+    if (Date.now() - _regHealLastSendMs < 10000) return;  // let a fresh send settle
+    _regHealBusy = true;
+    try {
+        const marker = '<<E_REG>>';
+        sc.addSuppressMarker(marker);
+        // Side effect: refresh the main-thread ProxySpace capture every tick —
+        // queryCode runs on the interpreter thread, i.e. the space the user's
+        // editor evals resolve ~tildes in (p can diverge; see input register).
+        const q = `if(currentEnvironment.isKindOf(ProxySpace), { Library.put(\\envil, \\pspace, currentEnvironment) }); ("${marker}" ++ [\\inputProxiesFn, \\midiSetProxy, \\knobResyncFn].collect({ |k| Library.at(\\envil, k).notNil.binaryValue }).join(",") ++ "${marker}").postln;`;
+        const res = await sc.queryCode(q, marker, 2500);
+        if (!res) return;  // interpreter still compiling/busy — retry next tick
+        const [inOk, midiOk, knobOk] = res.trim().split(',').map(v => v === '1');
+        if (!inOk) {
+            const ir = buildInputProxyRegisterCode();
+            if (ir) { _regHealLastSendMs = Date.now(); sc.executeCode(ir); console.log('[envil] ♥ (re)sent input proxy register'); }
+        }
+        if (!midiOk) {
+            const m = buildMidiProxySCCode();
+            if (m) { _regHealLastSendMs = Date.now(); sc.executeCode(m); console.log('[envil] ♥ (re)sent MIDI proxy code'); }
+        }
+        if (!knobOk) {
+            const kr = buildKnobResyncRegisterCode();
+            if (kr) { _regHealLastSendMs = Date.now(); sc.executeCode(kr); console.log('[envil] ♥ (re)sent knob resync register'); }
+        }
+    } catch (_) { /* heartbeat retries next tick */ }
+    finally { _regHealBusy = false; }
+}
+
 function startHeartbeat() {
     registerSclangExitCallback();
     stopHeartbeat();
@@ -1021,6 +1249,9 @@ async function heartbeatTick() {
     const sc = getSC();
     const sclangAlive = sc ? sc.isSclangRunning() : false;
     updateSclangBar(sclangAlive);
+
+    // ── proxy registers: verify installed, re-send if missing (self-heal) ──
+    if (sclangAlive && sc) ensureProxyRegisters(sc);
 
     // ── scsynth: direct OSC /status ping (with full stats) ──
     const status = await pingScsynthOSC();
@@ -1086,8 +1317,14 @@ async function probeAndReconnect() {
     _isSCSynthRunning = true;
     updateScsynthBar(true);
     const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
-    const inputCode = autoInit ? (buildInputProxySCCode() + '\n' + buildDynbufBackboneRegisterCode() + '\n' + buildDynbufBootInitSCCode()) : '';
-    sc.probeRunningServer(autoInit, inputCode);
+    const inputCode = autoInit ? (buildDynbufBackboneRegisterCode() + '\n' + buildDynbufBootInitSCCode()) : '';
+    await sc.probeRunningServer(autoInit, inputCode);
+    // Self-guarding, ServerTree-registered — fire now (server confirmed) or on next boot.
+    if (autoInit) {
+        const ir = buildInputProxyRegisterCode(); if (ir) sc.executeCode(ir);
+        const m = buildMidiProxySCCode(); if (m) sc.executeCode(m);
+        const kr = buildKnobResyncRegisterCode(); if (kr) sc.executeCode(kr);
+    }
 }
 
 // ── Server / socket helpers (unchanged from envil) ────────────────────────────

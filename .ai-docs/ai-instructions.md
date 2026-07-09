@@ -21,8 +21,15 @@ repository. Load this file in your VS Code workspace via
   (configured in `touch-knobs.js`). Read this file directly instead of
   asking the user to copy-paste from devtools.
 - The previous session is preserved as `webview.log.1`.
-- SuperCollider post-window output lives in a VS Code OutputChannel the AI
-  cannot read directly — ask the user to paste SC errors when needed.
+- **SuperCollider Post Window output is mirrored to
+  `<workspace>/.envil/sc-post.log`** (implemented in `client/src/sc.ts`,
+  `appendScLog`). Timestamped lines, rotates to `sc-post.log.1` at 512 KB,
+  session boundaries marked `──── sclang started/exited ────`. The live
+  workspace is usually `~/Desktop/00_band_repo/` — **read this file
+  (e.g. `tail -100`) to see SC errors and `[envil]` status lines directly**
+  instead of asking the user to paste from the Post Window. Note: output
+  suppressed from the Post Window (queryCode marker blocks like heartbeat
+  probes) is also absent from the log by design.
 
 ## SuperCollider code emission rules
 
