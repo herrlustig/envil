@@ -25,7 +25,17 @@ const exitCallbacks: ExitCallback[] = [];
 export function onSclangExit(cb: ExitCallback): void {
     exitCallbacks.push(cb);
 }
+// ── sclang start callbacks ────────────────────────────────────────────────────
+// Fired on EVERY spawn — whether via the startSCLang command OR the implicit
+// auto-start when the user evals code (executeBlock/executeCode) with no
+// interpreter running. Host-side init (probe, proxy registers, status bar)
+// hooks in here so ALL start paths behave identically.
+type StartCallback = () => void;
+const startCallbacks: StartCallback[] = [];
 
+export function onSclangStart(cb: StartCallback): void {
+    startCallbacks.push(cb);
+}
 // ── scsynth state change callbacks (driven by stdout pattern matching) ────────
 type ServerStateCallback = (running: boolean) => void;
 const serverStateCallbacks: ServerStateCallback[] = [];
@@ -271,6 +281,7 @@ export async function startSclang(fallbackToExe = true): Promise<boolean> {
         sclangOutput.appendLine('[SuperCollider] sclang process spawned, waiting for output...');
         appendScLog(`──── sclang started (${new Date().toISOString()}) ────\n`);
         postWindowOutput.show(true);
+        for (const cb of startCallbacks) { try { cb(); } catch (_) { /* host init must not break spawn */ } }
         return true;
     } catch (err) {
         sclangOutput.appendLine(`[SuperCollider] Failed to start sclang: ${err}`);
@@ -582,9 +593,12 @@ export async function probeRunningServer(autoInitProxy = true, inputProxyCode = 
         '    s.startAliveThread(0);',
         '    s.notify;',
         '    while({ s.serverRunning.not and: { t < 40 } }, { 0.1.wait; t = t + 1 });',
-        '    s.newBusAllocators;',
-        '    s.newBufferAllocators;',
-        '    s.newNodeAllocators;',
+        // NEVER reset allocators here! This probe runs on EVERY sclang start;
+        // the user's startup.scd has already pushed p and allocated buses for
+        // ~out etc. Resetting makes every later proxy/buffer/node COLLIDE with
+        // the existing ones (kr buses sum → macros read 0..2, snapshot bufnums
+        // overwritten by the ring buffer, "node id already in use" storms).
+        // A fresh interpreter's allocators are already fresh anyway.
         proxyBlock,
         '    "[envil] ✓ Reconnected to running scsynth (existing nodes untouched)".postln;',
         '  });',

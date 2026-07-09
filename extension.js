@@ -205,6 +205,28 @@ function buildInputProxyRegisterCode() {
         `(Library.at(\\envil, \\inputProxiesTreeFn)) !? { |fn| ServerTree.remove(fn, Server.default) };`,
         `Library.put(\\envil, \\inputProxiesTreeFn, { Library.at(\\envil, \\inputProxiesFn).value });`,
         `ServerTree.add(Library.at(\\envil, \\inputProxiesTreeFn), Server.default);`,
+        `// ── bus re-base on every boot ─────────────────────────────────────────`,
+        `// SC's notify handshake (prHandleClientLoginInfoFromServer -> clientID_)`,
+        `// resets ALL allocators on every boot. Our ONE surviving ProxySpace would`,
+        `// keep stale bus indices that new allocations then collide with (kr buses`,
+        `// sum -> macros read 0..2, bufplay ctrls shared with ~mcr_N!). ServerBoot`,
+        `// runs AFTER that reset and BEFORE ServerTree (and NOT on Cmd-Period):`,
+        `// free every proxy bus so everything re-allocates fresh. Sources are kept;`,
+        `// proxies rebuild lazily (ServerTree heals + user evals).`,
+        `// ALSO call serverQuit on each proxy: plain ProxySpaces never register`,
+        `// for ServerQuit (only Ndef's dict does), so 'loaded' stays true across`,
+        `// a reboot and proxies s_new synthdefs the NEW server never received`,
+        `// ("Cannot create synth (synthdef: temp__...)" storms). serverQuit sets`,
+        `// loaded=false -> defs are re-sent with the next rebuild.`,
+        `(Library.at(\\envil, \\busRebaseFn)) !? { |fn| ServerBoot.remove(fn, Server.default) };`,
+        `Library.put(\\envil, \\busRebaseFn, {`,
+        `  var ps = Library.at(\\envil, \\pspace) ? p;`,
+        `  if(ps.isKindOf(ProxySpace), {`,
+        `    ps.do { |px| px.serverQuit; if(px.bus.notNil, { px.freeBus }) };`,
+        `    "[envil] proxy buses re-based (boot allocator reset)".postln;`,
+        `  });`,
+        `});`,
+        `ServerBoot.add(Library.at(\\envil, \\busRebaseFn), Server.default);`,
         `// fire now if server is up — else wait up to 30s for it (adoption of an`,
         `// already-running server sets serverRunning asynchronously), else ServerTree`,
         `if(Server.default.serverRunning, {`,
@@ -303,7 +325,8 @@ function buildMidiProxySCCode() {
         `if(watchdogSec > 0, {`,
         `  var rt = Routine({`,
         `    loop {`,
-        `      try {`,
+        `      Library.put(\\envil, \\midiWatchdogBeat, Main.elapsedTime);`,
+        `      try {`, 
         `        MIDIClient.sources.do { |src| if((src.device.asString ++ src.name.asString).contains("SuperCollider").not, { try { MIDIIn.connect(0, src) } }) };`,
         `        ("[envil midi] watchdog \u2713 " ++ MIDIClient.sources.size ++ " sources reconnected (every " ++ watchdogSec ++ "s)").postln;`,
         `      } { |err| ("[envil midi] watchdog error: " ++ err.errorString).postln };`,
@@ -348,6 +371,10 @@ async function activate(context) {
 
     // Restore environment if it was previously active
     const isEnvActive = vscode.workspace.getConfiguration().get(envilEnvironmentContextKey) || false;
+    // Post-start init for EVERY sclang spawn path (command, auto-start on
+    // eval, …) — registered UNCONDITIONALLY so Ctrl+Enter auto-start gets the
+    // identical init even when the envil environment flag is off.
+    registerSclangStartCallback();
     if (isEnvActive) {
         showNotification('Loading ENVIL environment ...');
         startServersAndSockets(workspaceFolder);
@@ -370,29 +397,9 @@ async function activate(context) {
 
         vscode.commands.registerCommand('envil.supercollider.startSCLang', async () => {
             const sc = getSC(); if (!sc) return;
-            clearSCCompletionCaches();   // class library may recompile
-            clearEnvKeyCache();          // env state is gone after restart
-            const ok = await sc.startSclang();
-            if (ok) {
-                // Bar will update on next heartbeat tick, but set immediately for snappy UX
-                updateSclangBar(true);
-                // Auto-detect a running scsynth left over from a previous session
-                const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
-                const inputCode = autoInit ? (buildDynbufBackboneRegisterCode() + '\n' + buildDynbufBootInitSCCode()) : '';
-                sc.probeRunningServer(autoInit, inputCode).then(found => {
-                    if (found) {
-                        _isSCSynthRunning = true;
-                        updateScsynthBar(true);
-                    }
-                    // Self-guarding, ServerTree-registered — safe to send whether or
-                    // not a server was found (they fire now or on next boot).
-                    if (autoInit) {
-                        const ir = buildInputProxyRegisterCode(); if (ir) sc.executeCode(ir);
-                        const m = buildMidiProxySCCode(); if (m) sc.executeCode(m);
-                        const kr = buildKnobResyncRegisterCode(); if (kr) sc.executeCode(kr);
-                    }
-                });
-            }
+            // Init (cache clears, probe, proxy registers, status bar) happens in
+            // the onSclangStart callback — shared with the auto-start-on-eval path.
+            await sc.startSclang();
         }),
 
         vscode.commands.registerCommand('envil.supercollider.stopSCLang', () => {
@@ -420,12 +427,9 @@ async function activate(context) {
                 await sc.executeCode([
                     '// Hardware I/O channel counts (must be set before boot)',
                     buildServerOptionsSCCode(),
-                    '// Auto-reset allocators on every server boot/reboot',
-                    'ServerTree.add({',
-                    '  s.newBusAllocators;',
-                    '  s.newBufferAllocators;',
-                    '  "[envil] Bus/Buffer allocators reset.".postln;',
-                    '}, s);',
+                    '// NOTE: no allocator resets here — we keep ONE ProxySpace per',
+                    '// session, and its proxies own their buses. Resetting the',
+                    '// allocators makes new proxies/buffers collide with them.',
                     'TempoClock.default = TempoClock(queueSize: 8192).permanent_(true);',
                     'if(currentEnvironment.isKindOf(ProxySpace).not, {',
                     '  p = ProxySpace.push(s);',
@@ -479,23 +483,15 @@ async function activate(context) {
                 await sc.executeCode([
                     '// Hardware I/O channel counts (must be set before reboot)',
                     buildServerOptionsSCCode(),
-                    '// Auto-reset allocators on every server boot/reboot',
-                    'ServerTree.add({',
-                    '  s.newBusAllocators;',
-                    '  s.newBufferAllocators;',
-                    '  "[envil] Bus/Buffer allocators reset.".postln;',
-                    '}, s);',
-                    '// Clear stale ProxySpace so proxies get fresh buses after reboot',
-                    'if(currentEnvironment.isKindOf(ProxySpace), {',
-                    '  currentEnvironment.clear;',
-                    '  currentEnvironment.pop;',
+                    '// ONE ProxySpace per session: no pop/re-push, no allocator',
+                    '// resets (existing proxies own their buses — resetting makes',
+                    '// new allocations collide and sum on the same buses).',
+                    'if(currentEnvironment.isKindOf(ProxySpace).not, {',
+                    '  p = ProxySpace.push(s);',
+                    '  p.fadeTime = 4;',
+                    '  p.quant = 1;',
                     '});',
                     's.reboot;',
-                    'p = ProxySpace.push(s);',
-                    '~out.ar(2);',
-                    'p.fadeTime = 4;',
-                    'p.quant = 1;',
-                    '"[envil] ProxySpace re-pushed. fadeTime=4, quant=1".postln;',
                     '// dynbuf BACKBONE (ProxySpace-independent) — registers on ServerTree,',
                     '// auto-(re)builds on every (re)boot.',
                     buildDynbufBackboneRegisterCode(),
@@ -1115,7 +1111,42 @@ function updateQueueBar(status, queueSize, proxyCount, tdefCount, pdefCount, mem
 const dgram = require('dgram');
 
 let _sclangExitRegistered = false;
+let _sclangStartRegistered = false;
 let _heartbeatTimer = null;
+
+// One init path for EVERY sclang spawn — the startSCLang command AND the
+// implicit auto-start when the user Ctrl+Enters code with no interpreter
+// running (sc.ts executeBlock/executeCode call startSclang() directly; that
+// path used to skip ALL of this, which is why proxies existed only when
+// sclang was started via the command).
+function registerSclangStartCallback() {
+    if (_sclangStartRegistered) return;
+    const sc = getSC();
+    if (!sc || !sc.onSclangStart) return;
+    sc.onSclangStart(() => {
+        console.log('[envil] sclang started — running post-start init');
+        clearSCCompletionCaches();   // class library may recompile
+        clearEnvKeyCache();          // env state is gone after restart
+        updateSclangBar(true);
+        // Auto-detect a running scsynth left over from a previous session
+        const autoInit = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('autoInit', true);
+        const inputCode = autoInit ? (buildDynbufBackboneRegisterCode() + '\n' + buildDynbufBootInitSCCode()) : '';
+        sc.probeRunningServer(autoInit, inputCode).then(found => {
+            if (found) {
+                _isSCSynthRunning = true;
+                updateScsynthBar(true);
+            }
+            // Self-guarding, ServerTree-registered — safe to send whether or
+            // not a server was found (they fire now or on next boot).
+            if (autoInit) {
+                const ir = buildInputProxyRegisterCode(); if (ir) sc.executeCode(ir);
+                const m = buildMidiProxySCCode(); if (m) sc.executeCode(m);
+                const kr = buildKnobResyncRegisterCode(); if (kr) sc.executeCode(kr);
+            }
+        }).catch(() => { /* heartbeat heal covers any missed init */ });
+    });
+    _sclangStartRegistered = true;
+}
 
 function registerSclangExitCallback() {
     if (_sclangExitRegistered) return;
@@ -1193,14 +1224,20 @@ function pingScsynthOSC(timeoutMs = 1500) {
     });
 }
 
-// ── Proxy-register self-heal (rides the heartbeat) ──────────────────────────
-// The input/MIDI/knob registers must survive ANY sclang start path (status-bar
-// button, auto-start on first eval, window reload) plus Library wipes from a
-// class-lib recompile. One-shot sends tied to the startSCLang command miss
-// most of those paths — so verify via Library and re-send on the heartbeat,
-// the same pattern that makes the dynbuf backbone bulletproof.
+// ── Proxy self-heal (rides the heartbeat, dynbuf-style) ─────────────────────
+// Outcome-based, like the dynbuf backbone: every tick we check what ACTUALLY
+// exists in the interpreter — not whether we once registered something.
+//   input:  does ~i0 have a source in the MAIN thread's ProxySpace?
+//   midi:   does MIDIdef \envilAutoCC exist (survives cmd-period, not recompile)?
+//   knob:   is the resync ServerTree fn registered?
+// The query runs as a stdin eval = main interpreter thread = the exact space
+// the user's editor evals resolve ~tildes in. It also refreshes the
+// Library \envil \pspace capture, so even a hostile startup.scd that swaps
+// ProxySpaces mid-session gets converged back within one tick. Heals are
+// idempotent + throttled (10s JS-side, 5s SC-side for inputs).
 let _regHealBusy = false;
 let _regHealLastSendMs = 0;
+let _optsRebootWarned = false;   // one warning per session when a live server has wrong I/O
 
 async function ensureProxyRegisters(sc) {
     if (_regHealBusy || !sc.queryCode) return;
@@ -1209,26 +1246,65 @@ async function ensureProxyRegisters(sc) {
     if (Date.now() - _regHealLastSendMs < 10000) return;  // let a fresh send settle
     _regHealBusy = true;
     try {
+        const numInputs = vscode.workspace.getConfiguration('envil.supercollider.proxySpace').get('numInputs', 2);
+        const cfgIns = vscode.workspace.getConfiguration('envil.supercollider.server').get('numInputBusChannels', 4);
+        const wdSec = Math.max(0, Math.min(3600, Number(vscode.workspace.getConfiguration('envil.supercollider.midi').get('watchdogSeconds', 60)) || 0));
         const marker = '<<E_REG>>';
         sc.addSuppressMarker(marker);
-        // Side effect: refresh the main-thread ProxySpace capture every tick —
-        // queryCode runs on the interpreter thread, i.e. the space the user's
-        // editor evals resolve ~tildes in (p can diverge; see input register).
-        const q = `if(currentEnvironment.isKindOf(ProxySpace), { Library.put(\\envil, \\pspace, currentEnvironment) }); ("${marker}" ++ [\\inputProxiesFn, \\midiSetProxy, \\knobResyncFn].collect({ |k| Library.at(\\envil, k).notNil.binaryValue }).join(",") ++ "${marker}").postln;`;
+        const q = `{ var ps, srv, e, inLive, inArmed, midiOk, wdOk, knobOk, bbOk, optIns; `
+            + `ps = currentEnvironment.isKindOf(ProxySpace); `
+            + `if(ps, { Library.put(\\envil, \\pspace, currentEnvironment) }); `
+            + `srv = Server.default.serverRunning; `
+            + `e = if(ps, { currentEnvironment.envir }, { nil }); `
+            + `inLive = e.notNil and: { e[\\i0].notNil and: { e[\\i0].source.notNil } }; `
+            + `inArmed = Library.at(\\envil, \\inputProxiesFn).notNil; `
+            + `midiOk = MIDIdef.all[\\envilAutoCC].notNil and: { Library.at(\\envil, \\midiSetProxy).notNil }; `
+            + `wdOk = (Library.at(\\envil, \\midiWatchdogBeat) ? -1e9) > (Main.elapsedTime - ${wdSec * 2 + 30}); `
+            + `knobOk = Library.at(\\envil, \\knobResyncFn).notNil; `
+            + `bbOk = Library.at(\\envil, \\backboneFn).notNil; `
+            + `optIns = Server.default.options.numInputBusChannels; `
+            + `("${marker}" ++ [ps, srv, inLive, inArmed, midiOk, wdOk, knobOk, bbOk].collect(_.binaryValue).join(",") ++ "," ++ optIns ++ "${marker}").postln; }.value;`;
         const res = await sc.queryCode(q, marker, 2500);
         if (!res) return;  // interpreter still compiling/busy — retry next tick
-        const [inOk, midiOk, knobOk] = res.trim().split(',').map(v => v === '1');
-        if (!inOk) {
-            const ir = buildInputProxyRegisterCode();
-            if (ir) { _regHealLastSendMs = Date.now(); sc.executeCode(ir); console.log('[envil] ♥ (re)sent input proxy register'); }
+        const parts = res.trim().split(',');
+        const [psOk, srvOk, inLive, inArmed, midiOk, wdOk, knobOk, bbOk] = parts.map(v => v === '1');
+        const optIns = parseInt(parts[8], 10);
+        // server options: keep s.options in sync with settings so ANY boot path
+        // (user's s.boot, startup.scd waitForBoot, extension commands) picks them
+        // up. Options only apply at boot — if the server is already running with
+        // the wrong count, tell the user once instead of silently doing nothing.
+        if (Number.isFinite(optIns) && optIns !== cfgIns) {
+            sc.executeCode(buildServerOptionsSCCode());
+            if (srvOk && !_optsRebootWarned) {
+                _optsRebootWarned = true;
+                sc.executeCode(`"[envil] ⚠ server is RUNNING with ${optIns} input channel(s) but settings want ${cfgIns} — reboot the server to apply (inputs beyond the booted count are silent)".postln;`);
+            }
         }
-        if (!midiOk) {
+        // input proxies: heal when the server is up but ~i0 is dead in the
+        // user's ACTUAL space (outcome check) — or arm the ServerTree/boot-waiter
+        // if nothing is registered yet while the server is down. The register's
+        // immediate-fire leg uses the freshly captured \pspace, so it lands in
+        // the right space under any startup.scd.
+        const needInput = numInputs > 0 && ((psOk && srvOk && !inLive) || (!srvOk && !inArmed));
+        if (needInput) {
+            const ir = buildInputProxyRegisterCode();
+            if (ir) { _regHealLastSendMs = Date.now(); sc.executeCode(ir); console.log(`[envil] ♥ healing input proxies (live=${inLive} armed=${inArmed} srv=${srvOk})`); }
+        }
+        if (!midiOk || (wdSec > 0 && !wdOk)) {
+            // covers dead MIDIdefs (recompile, MIDIdef.freeAll) AND a stopped
+            // watchdog Routine — the MIDI code re-creates both idempotently
             const m = buildMidiProxySCCode();
-            if (m) { _regHealLastSendMs = Date.now(); sc.executeCode(m); console.log('[envil] ♥ (re)sent MIDI proxy code'); }
+            if (m) { _regHealLastSendMs = Date.now(); sc.executeCode(m); console.log(`[envil] ♥ healing MIDI (defs=${midiOk} watchdog=${wdOk})`); }
         }
         if (!knobOk) {
             const kr = buildKnobResyncRegisterCode();
             if (kr) { _regHealLastSendMs = Date.now(); sc.executeCode(kr); console.log('[envil] ♥ (re)sent knob resync register'); }
+        }
+        if (!bbOk) {
+            // dynbuf backbone register wiped (class-lib recompile) — without
+            // this the backbone only healed while the knobs panel was open
+            const bb = buildDynbufBackboneRegisterCode();
+            if (bb) { _regHealLastSendMs = Date.now(); sc.executeCode(bb); console.log('[envil] ♥ (re)sent dynbuf backbone register'); }
         }
     } catch (_) { /* heartbeat retries next tick */ }
     finally { _regHealBusy = false; }
@@ -1236,6 +1312,7 @@ async function ensureProxyRegisters(sc) {
 
 function startHeartbeat() {
     registerSclangExitCallback();
+    registerSclangStartCallback();   // retry if activation-time getSC() failed
     stopHeartbeat();
     console.log('[envil] ♥ heartbeat active');
 

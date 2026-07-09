@@ -429,7 +429,7 @@ function handleMessage(msg) {
             const noteNum = msg.midiNote || msg.id;
             const proxyName = `~${PROXY_PREFIX}_c${noteNum}`;
             const src = `{ |x=0, y=0, lagTime=${DEFAULT_LAG_TIME}| [Lag.kr(x, lagTime), Lag.kr(y, lagTime)] }`;
-            const code = `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil or: { ${proxyName}.numChannels != 2 }, { ${proxyName}.mold(2, \\control); ${proxyName} = ${src} }, { if(Server.default.serverRunning and: { ${proxyName}.isPlaying.not }, { ${proxyName}.send }) }); ${proxyName}.set(\\x, ${msg.x}, \\y, ${msg.y}) })`;
+            const code = `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil or: { ${proxyName}.numChannels != 2 }, { ${proxyName}.mold(2, \\control); ${proxyName}.fadeTime = 0; ${proxyName} = ${src} }, { if(Server.default.serverRunning and: { ${proxyName}.isPlaying.not }, { ${proxyName}.fadeTime = 0; ${proxyName}.source = ${proxyName}.source }) }); ${proxyName}.set(\\x, ${msg.x}, \\y, ${msg.y}) })`;
             sendSC(code, true);
             sendHydra('knob-update', { note: noteNum, x: msg.x, y: msg.y });
             break;
@@ -456,7 +456,7 @@ function handleMessage(msg) {
             const lastNote = `~${PROXY_PREFIX}_n`;
             const lastVal  = `~${PROXY_PREFIX}_n_val`;
             const src = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
-            const ensureSrc = (p) => `if(${p}.source.isNil, { ${p} = ${src} }, { if(Server.default.serverRunning and: { ${p}.isPlaying.not }, { ${p}.send }) })`;
+            const ensureSrc = (p) => `if(${p}.source.isNil, { ${p}.fadeTime = 0; ${p} = ${src} }, { if(Server.default.serverRunning and: { ${p}.isPlaying.not }, { ${p}.fadeTime = 0; ${p}.source = ${p}.source }) })`;
             const code = [
                 `if(currentEnvironment.isKindOf(ProxySpace), {`,
                 ` ${ensureSrc(perNote)};`,
@@ -486,7 +486,7 @@ function handleMessage(msg) {
             const lastNote = `~${PROXY_PREFIX}_n`;
             const lastVal  = `~${PROXY_PREFIX}_n_val`;
             const src = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
-            const ensureSrc = (p) => `if(${p}.source.isNil, { ${p} = ${src} }, { if(Server.default.serverRunning and: { ${p}.isPlaying.not }, { ${p}.send }) })`;
+            const ensureSrc = (p) => `if(${p}.source.isNil, { ${p}.fadeTime = 0; ${p} = ${src} }, { if(Server.default.serverRunning and: { ${p}.isPlaying.not }, { ${p}.fadeTime = 0; ${p}.source = ${p}.source }) })`;
             const code = [
                 `if(currentEnvironment.isKindOf(ProxySpace), {`,
                 ` ${ensureSrc(perNote)};`,
@@ -550,8 +550,8 @@ function handleMessage(msg) {
             const hydraData = {};
 
             const ensureProxy = (name) =>
-                `if(~mp_${name}.source.isNil, { ~mp_${name}.mold(2, \\control); ~mp_${name} = ${MP_PROXY_SRC} }, ` +
-                `{ if(Server.default.serverRunning and: { ~mp_${name}.isPlaying.not }, { ~mp_${name}.send }) })`;
+                `if(~mp_${name}.source.isNil, { ~mp_${name}.mold(2, \\control); ~mp_${name}.fadeTime = 0; ~mp_${name} = ${MP_PROXY_SRC} }, ` +
+                `{ if(Server.default.serverRunning and: { ~mp_${name}.isPlaying.not }, { ~mp_${name}.fadeTime = 0; ~mp_${name}.source = ~mp_${name}.source }) })`;
 
             const setProxy = (name, x, y) => {
                 if (x == null || y == null) return;
@@ -599,8 +599,8 @@ function handleMessage(msg) {
                     const f = handData[fingerNames[i]];
                     return `\\${argPfx}${a}_x, ${f ? f.x : 0}, \\${argPfx}${a}_y, ${f ? f.y : 0}`;
                 }).join(', ');
-                const ensure = `if(~mp_${proxyName}.source.isNil, { ~mp_${proxyName}.mold(${nCh}, \\control); ~mp_${proxyName} = ${src} }, ` +
-                    `{ if(Server.default.serverRunning and: { ~mp_${proxyName}.isPlaying.not }, { ~mp_${proxyName}.send }) })`;
+                const ensure = `if(~mp_${proxyName}.source.isNil, { ~mp_${proxyName}.mold(${nCh}, \\control); ~mp_${proxyName}.fadeTime = 0; ~mp_${proxyName} = ${src} }, ` +
+                    `{ if(Server.default.serverRunning and: { ~mp_${proxyName}.isPlaying.not }, { ~mp_${proxyName}.fadeTime = 0; ~mp_${proxyName}.source = ~mp_${proxyName}.source }) })`;
                 parts.push(`${ensure}; ~mp_${proxyName}.set(${args})`);
             };
 
@@ -619,8 +619,8 @@ function handleMessage(msg) {
                     const f = allFingers[i];
                     return `\\${p}_x, ${f ? f.x : 0}, \\${p}_y, ${f ? f.y : 0}`;
                 }).join(', ');
-                const ensure20 = `if(~mp_fingers.source.isNil, { ~mp_fingers.mold(20, \\control); ~mp_fingers = ${MP_FINGERS10_SRC} }, ` +
-                    `{ if(Server.default.serverRunning and: { ~mp_fingers.isPlaying.not }, { ~mp_fingers.send }) })`;
+                const ensure20 = `if(~mp_fingers.source.isNil, { ~mp_fingers.mold(20, \\control); ~mp_fingers.fadeTime = 0; ~mp_fingers = ${MP_FINGERS10_SRC} }, ` +
+                    `{ if(Server.default.serverRunning and: { ~mp_fingers.isPlaying.not }, { ~mp_fingers.fadeTime = 0; ~mp_fingers.source = ~mp_fingers.source }) })`;
                 parts.push(`${ensure20}; ~mp_fingers.set(${args20})`);
             }
 
@@ -1196,7 +1196,11 @@ function seqTick() {
 function seqSCCode(s, val) {
     const proxyName = `~seq_${s.name}`;
     const v = val != null ? val : 0;
-    return `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil, { ${proxyName}.mold(1, \\control); ${proxyName} = ${SEQ_SRC} }, { if(Server.default.serverRunning and: { ${proxyName}.isPlaying.not }, { ${proxyName}.send; ">>> envil: auto-resent ${proxyName}".postln }) }); ${proxyName}.set(\\val, ${v}) })`;
+    // NOTE: heal via source-reassign, NEVER .send — .send layers a NEW synth
+    // on top of the old one (kr buses SUM → doubled values). Reassigning the
+    // source frees the old synth first; with fadeTime=0 there's no crossfade
+    // summing window, so a false-positive heal (isPlaying race) is harmless.
+    return `if(currentEnvironment.isKindOf(ProxySpace), { if(${proxyName}.source.isNil, { ${proxyName}.mold(1, \\control); ${proxyName}.fadeTime = 0; ${proxyName} = ${SEQ_SRC} }, { if(Server.default.serverRunning and: { ${proxyName}.isPlaying.not }, { ${proxyName}.fadeTime = 0; ${proxyName}.source = ${proxyName}.source; ">>> envil: healed ${proxyName}".postln }) }); ${proxyName}.set(\\val, ${v}) })`;
 }
 
 function seqSetSCValue(s, val) {
@@ -1393,8 +1397,8 @@ function pushTempoProxy(tempo) {
     const t = Math.max(0.001, tempo);
     sendSC(
         `if(currentEnvironment.isKindOf(ProxySpace), {` +
-        ` if(~t.source.isNil, { ~t = ${TEMPO_PROXY_SRC} });` +
-        ` if(Server.default.serverRunning and: { ~t.isPlaying.not }, { ~t.send });` +
+        ` if(~t.source.isNil, { ~t.fadeTime = 0; ~t = ${TEMPO_PROXY_SRC} }, {` +
+        ` if(Server.default.serverRunning and: { ~t.isPlaying.not }, { ~t.fadeTime = 0; ~t.source = ~t.source }) });` +
         ` ~t.set(\\val, ${t})` +
         ` })`,
         true
@@ -1737,7 +1741,10 @@ function sanitizeName(name) {
 }
 
 function macroEnsureSCCode(proxyName) {
-    return `if(${proxyName}.source.isNil, { ${proxyName} = ${MACRO_SRC} }, { if(Server.default.serverRunning and: { ${proxyName}.isPlaying.not }, { ${proxyName}.send; ">>> envil: auto-resent ${proxyName}".postln }) }); ${proxyName}.mold(1, \\control)`;
+    // Heal via source-reassign (frees old synth), NEVER .send (stacks a 2nd
+    // synth → kr bus sums → macro reads 1..2 instead of 0..1). fadeTime=0
+    // kills the crossfade-summing window; smoothing comes from Lag.kr anyway.
+    return `if(${proxyName}.source.isNil, { ${proxyName}.mold(1, \\control); ${proxyName}.fadeTime = 0; ${proxyName} = ${MACRO_SRC} }, { if(Server.default.serverRunning and: { ${proxyName}.isPlaying.not }, { ${proxyName}.fadeTime = 0; ${proxyName}.source = ${proxyName}.source; ">>> envil: healed ${proxyName}".postln }) })`;
 }
 
 function macroProxyName(m) {
@@ -1773,14 +1780,14 @@ function knobResyncAll(reason) {
         const x = clamp01(Number(k.nx) || 0);
         const y = clamp01(Number(k.ny) || 0);
         const pn = `~${PROXY_PREFIX}_c${noteNum}`;
-        parts.push(`if(${pn}.source.isNil or: { ${pn}.numChannels != 2 }, { ${pn}.mold(2, \\control); ${pn} = ${knobSrc} }, { if(Server.default.serverRunning and: { ${pn}.isPlaying.not }, { ${pn}.send }) }); ${pn}.set(\\x, ${x}, \\y, ${y})`);
+        parts.push(`if(${pn}.source.isNil or: { ${pn}.numChannels != 2 }, { ${pn}.mold(2, \\control); ${pn}.fadeTime = 0; ${pn} = ${knobSrc} }, { if(Server.default.serverRunning and: { ${pn}.isPlaying.not }, { ${pn}.fadeTime = 0; ${pn}.source = ${pn}.source }) }); ${pn}.set(\\x, ${x}, \\y, ${y})`);
     }
 
     // ── shared tap/note proxies: ~v_n / ~v_n_val (idle = 0) ──
     if (knobs.length > 0) {
         const noteSrc = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
         for (const pn of [`~${PROXY_PREFIX}_n`, `~${PROXY_PREFIX}_n_val`]) {
-            parts.push(`if(${pn}.source.isNil, { ${pn} = ${noteSrc} }, { if(Server.default.serverRunning and: { ${pn}.isPlaying.not }, { ${pn}.send }) })`);
+            parts.push(`if(${pn}.source.isNil, { ${pn}.fadeTime = 0; ${pn} = ${noteSrc} }, { if(Server.default.serverRunning and: { ${pn}.isPlaying.not }, { ${pn}.fadeTime = 0; ${pn}.source = ${pn}.source }) })`);
         }
     }
 
@@ -1794,7 +1801,18 @@ function knobResyncAll(reason) {
         parts.push(`${macroEnsureSCCode(macroProxyName(m))}; ${macroProxyName(m)}.set(\\val, ${val})`);
     }
 
-    if (parts.length === 0) return;
+    // ── sequencers: ~seq_<name> (idle = current step value; playing ones
+    //    heal themselves every tick via seqSCCode, idle ones need this) ──
+    const seqs = _seqs.length > 0 ? _seqs : (Array.isArray(state.seqs) ? state.seqs : []);
+    for (const s of seqs) {
+        if (!s || !s.name) continue;
+        const pn = `~seq_${s.name}`;
+        const v = (Array.isArray(s.steps) && s.steps.length > 0)
+            ? (Number(s.steps[(s.currentStep || 0) % s.steps.length]) || 0) : 0;
+        parts.push(`if(${pn}.source.isNil, { ${pn}.mold(1, \\control); ${pn}.fadeTime = 0; ${pn} = ${SEQ_SRC} }, { if(Server.default.serverRunning and: { ${pn}.isPlaying.not }, { ${pn}.fadeTime = 0; ${pn}.source = ${pn}.source }) }); ${pn}.set(\\val, ${v})`);
+    }
+
+    if (parts.length === 0 && _dynbufs.size === 0) return;
 
     // Chunked sends: ~5 proxies per write, each wrapped in the ProxySpace guard
     const CHUNK = 5;
@@ -1802,6 +1820,39 @@ function knobResyncAll(reason) {
         const body = parts.slice(i, i + CHUNK).join('; ');
         sendSC(`if(currentEnvironment.isKindOf(ProxySpace), { ${body} })`, true);
     }
+
+    // ── dynbuf slots: reload persisted WAVs ──
+    // A reboot wipes ALL server buffers; player proxy SOURCES survive in the
+    // ProxySpace, so the "exposed" heal-check passes while the synth reads a
+    // dead bufnum ("Buffer UGen: no buffer data"). This ping fires on every
+    // boot (ServerTree) — re-read each slot's WAV from disk. The reload code
+    // is throttled SC-side (3s/slot) so overlapping paths collapse to one.
+    try {
+        const dynSlots = new Map(_dynbufs);
+        if (dynSlots.size === 0 && state && Array.isArray(state.dynbufs)) {
+            for (const sd of state.dynbufs) {
+                const si = Math.max(0, Number(sd.slot) | 0);
+                dynSlots.set(si, {
+                    slot: si,
+                    start:   clamp01(sd.start   != null ? sd.start   : 0),
+                    end:     clamp01(sd.end     != null ? sd.end     : 1),
+                    rateMul: clamp01(sd.rateMul != null ? sd.rateMul : 0.5),
+                    chan:    clamp01(sd.chan    != null ? sd.chan    : 0),
+                    quant:   clamp01(sd.quant   != null ? sd.quant   : 0),
+                    loop:    clamp01(sd.loop    != null ? sd.loop    : 1),
+                    lastWavPath: typeof sd.lastWavPath === 'string' ? sd.lastWavPath : null,
+                });
+            }
+        }
+        for (const d of dynSlots.values()) {
+            if (d.lastWavPath && fs.existsSync(d.lastWavPath)) {
+                sendSC(dynbufBuildReloadFromDisk(d), true);
+            }
+        }
+    } catch (e) {
+        console.warn('[touch-knobs] dynbuf boot reload failed:', e.message);
+    }
+
     log(`  ♻ knob/macro proxies resynced (${knobs.length} knobs, ${macros.length} macros) — ${reason}`);
 }
 
@@ -1967,7 +2018,9 @@ function dynbufBuildCtrlsForSlot(d) {
     // Helper closure: takes proxy + value + lagTime; reinstalls the control
     // synth if the user replaced .source with a constant (no \val arg) and
     // pushes the value via .set(\val, v).
-    const helperDef = `var fn = { |p, v, lag| if(p.source.isNil or: { p.controlNames.isNil or: { p.controlNames.any({|cn| cn.name == \\val }).not } }, { p.kr(1); p.source = { |val=0, lagTime=0| Lag.kr(val, lagTime) }; p.set(\\lagTime, lag) }, { if(Server.default.serverRunning and: { p.isPlaying.not }, { p.send }) }); p.set(\\val, v) };`;
+    // Heal via source-reassign, NEVER .send (.send stacks a 2nd synth → kr
+    // bus sums → e.g. rateMul doubles → bufplay races/goes silent).
+    const helperDef = `var fn = { |p, v, lag| if(p.source.isNil or: { p.controlNames.isNil or: { p.controlNames.any({|cn| cn.name == \\val }).not } }, { p.kr(1); p.fadeTime = 0; p.source = { |val=0, lagTime=0| Lag.kr(val, lagTime) }; p.set(\\lagTime, lag) }, { if(Server.default.serverRunning and: { p.isPlaying.not }, { p.fadeTime = 0; p.source = p.source }) }); p.set(\\val, v) };`;
     const calls = items.map(([p, v, lag]) => `fn.value(${p}, ${Number(v).toFixed(6)}, ${Number(lag).toFixed(3)});`).join(' ');
     return `if(currentEnvironment.isKindOf(ProxySpace), { ${helperDef} ${calls} })`;
 }
@@ -2193,14 +2246,34 @@ function dynbufBuildReloadFromDisk(d) {
         `}`,
     ].join(' ');
     return [
-        ctrls,
-        `; if(currentEnvironment.isKindOf(ProxySpace), {`,
-        ` Buffer.read(Server.default, "${wavPath}", action: { |snap|`,
-        `  ~bufPlay_${slot}.ar(1);`,
-        `  ~bufPlay_${slot} = ${playerFunc};`,
-        `  ~bufPlay_${slot}.set(\\bufNum, snap.bufnum);`,
-        `  ~bufPlay_${slot}_idx.set(\\val, snap.bufnum);`,
-        `  (">>> envil dynbuf reloaded -> ~bufPlay_${slot}  buf=" ++ snap.bufnum).postln;`,
+        `if(currentEnvironment.isKindOf(ProxySpace), {`,
+        // Wait for serverRunning instead of firing blind: it only flips true
+        // AFTER the boot notify handshake (which resets ALL allocators). A
+        // Buffer.read landing in the boot window would get a bufnum the ring
+        // buffer then reuses. The boot ping can arrive moments before
+        // notified flips — so wait (max ~10s) rather than silently no-op.
+        // SC-side per-slot throttle (3s): several paths can race at boot;
+        // without it each fire allocates a NEW buffer and re-assigns the player.
+        ` if((Main.elapsedTime - (Library.at(\\envil, \\dynbufReloadLast${slot}) ? -10)) > 3, {`,
+        `  Library.put(\\envil, \\dynbufReloadLast${slot}, Main.elapsedTime);`,
+        `  Routine({`,
+        `   var n = 0;`,
+        `   while({ Server.default.serverRunning.not and: { n < 100 } }, { 0.1.wait; n = n + 1 });`,
+        `   if(Server.default.serverRunning, {`,
+        // ctrls MUST run here (post-serverRunning), not at send time: their
+        // heal helper is serverRunning-gated, so firing it during the boot
+        // window silently skips reinstalling the control synths → all ctrl
+        // buses read 0 → end=start=0 → player silent (reboot bug 2026-07).
+        `    ${ctrls};`,
+        `    Buffer.read(Server.default, "${wavPath}", action: { |snap|`,
+        `     ~bufPlay_${slot}.ar(1);`,
+        `     ~bufPlay_${slot} = ${playerFunc};`,
+        `     ~bufPlay_${slot}.set(\\bufNum, snap.bufnum);`,
+        `     ~bufPlay_${slot}_idx.set(\\val, snap.bufnum);`,
+        `     (">>> envil dynbuf reloaded -> ~bufPlay_${slot}  buf=" ++ snap.bufnum).postln;`,
+        `    });`,
+        `   });`,
+        `  }).play(AppClock);`,
         ` });`,
         `})`,
     ].join('');
