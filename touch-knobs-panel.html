@@ -213,6 +213,18 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     line-height: 1.5; opacity: 0.85; user-select: none;
 }
 .dynbuf-row .dynbuf-name:hover { opacity: 1; }
+.dynbuf-row .dynbuf-name-text {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
+.dynbuf-row .dynbuf-pat {
+    flex-shrink: 0; margin-left: auto; cursor: grab;
+    font-size: 8px; font-weight: 700; line-height: 1;
+    padding: 1px 3px; border: 1px solid #7a5ec7; border-radius: 3px;
+    color: #b49aff; background: rgba(122,94,199,0.15);
+}
+.dynbuf-row .dynbuf-pat:hover { color: #fff; background: rgba(122,94,199,0.5); }
+.dynbuf-row .dynbuf-pat.flash { color: #000; background: #b49aff; }
+.inserted-flash { outline: 1px solid #b49aff; background: rgba(122,94,199,0.35) !important; }
 .dynbuf-row .dynbuf-btn {
     height: 18px; font-size: 9px; line-height: 16px;
     text-align: center; cursor: pointer;
@@ -252,7 +264,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 .dynbuf-row .dynbuf-slot-dot.ok  { background: #2c2; box-shadow: 0 0 3px #2c2; }
 .dynbuf-row .dynbuf-slot-dot.err { background: #f44; box-shadow: 0 0 3px #f44; }
 .dynbuf-row .dynbuf-range {
-    position: absolute; left: 0; right: 0; bottom: 0; height: 10px;
+    position: absolute; left: 0; right: 0; bottom: 0; height: 12px;
     background: rgba(20,20,20,0.7); border-top: 1px solid #444;
     touch-action: none; cursor: ew-resize; overflow: hidden;
 }
@@ -261,21 +273,36 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     background: linear-gradient(to right, rgba(255,212,121,0.45), rgba(255,212,121,0.18));
     pointer-events: none;
 }
+.dynbuf-row .dynbuf-range-fill.reverse {
+    background: linear-gradient(to left, rgba(121,180,255,0.45), rgba(121,180,255,0.18));
+}
 .dynbuf-row .dynbuf-range-handle {
-    position: absolute; top: -2px; bottom: -2px; width: 4px;
+    position: absolute; top: -1px; bottom: -1px; width: 9px; margin-left: -4px;
     background: #ffd479; border-radius: 2px;
     pointer-events: none;
     box-shadow: 0 0 4px rgba(255,212,121,0.5);
+    color: #000; font-size: 8px; font-weight: 700; line-height: 14px;
+    text-align: center; user-select: none;
 }
+.dynbuf-row .dynbuf-range-handle.end { background: #d4a94e; }
 .dynbuf-row .dynbuf-range-label {
     position: absolute; left: 0; right: 0; font-size: 7px;
     color: #fff; text-align: center; pointer-events: none;
     opacity: 0.6; line-height: 1;
 }
 .dynbuf-row .dynbuf-ctrls {
-    display: grid; grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(2, 1fr);
+    display: grid; grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(3, 1fr);
     gap: 2px; flex-shrink: 0; width: 80px;
 }
+.dynbuf-row .dynbuf-tbtn {
+    background: #2a2a2a; border: 1px solid #555; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; cursor: pointer; user-select: none;
+    color: var(--vscode-editor-foreground, #ccc);
+}
+.dynbuf-row .dynbuf-tbtn:hover { border-color: #aaa; }
+.dynbuf-row .dynbuf-tbtn.play.playing { background: #0a4; border-color: #0a4; color: #fff; }
+.dynbuf-row .dynbuf-tbtn.loop.on { background: #37c; border-color: #37c; color: #fff; }
 .dynbuf-row .dynbuf-num {
     position: relative; background: rgba(40,40,40,0.6);
     border: 1px solid var(--vscode-input-border, #555);
@@ -976,6 +1003,17 @@ function flashKnob(knob) {
     requestAnimationFrame(step);
 }
 
+// ── Click/drag proxy names → insert into the editor ────────────────────────
+// Click inserts at the cursor via the extension host (reliable in a jam);
+// drag & drop still works for precise placement.
+function insertCodeAtCursor(text, el) {
+    vscode.postMessage({ type: 'insert-code', code: text });
+    if (el) {
+        el.classList.add('inserted-flash');
+        setTimeout(() => el.classList.remove('inserted-flash'), 250);
+    }
+}
+
 // Mouse events
 canvas.addEventListener('mousedown', onPointerDown);
 
@@ -1010,6 +1048,14 @@ canvas.addEventListener('dragstart', (e) => {
 canvas.addEventListener('dragend', () => {
     _knobDragName = null;
     canvas.draggable = false;
+});
+// Plain click on a knob name label (no drag) → insert the proxy name
+canvas.addEventListener('click', () => {
+    if (_knobDragName) {
+        insertCodeAtCursor(_knobDragName);
+        _knobDragName = null;
+        canvas.draggable = false;
+    }
 });
 window.addEventListener('mousemove', onPointerMove);
 window.addEventListener('mouseup', onPointerUp);
@@ -1153,10 +1199,10 @@ function buildPersistedState() {
             playing: d.playing,
             start: d.start,
             end: d.end,
-            tempoMul: d.tempoMul,
             rateMul: d.rateMul,
             chan: d.chan,
-            pulseDivide: d.pulseDivide,
+            quant: d.quant,
+            loop: d.loop,
             hasSnapshot: !!d.hasSnapshot,
             lastWavPath: d.lastWavPath || null,
         })),
@@ -1355,7 +1401,7 @@ let seqSubdiv = 4;       // steps per beat: 4 = 16th notes
 
 // dynbuf state — declared early so updateStatus()/buildPersistedState()
 // can safely reference these during restore (avoid TDZ on let/const).
-let dynbufs = [];                 // [{ slot, source, playing, start, end, tempoMul, rateMul, chan, pulseDivide, hasSnapshot }]
+let dynbufs = [];                 // [{ slot, source, playing, start, end, rateMul, chan, quant, loop, hasSnapshot }]
 const DYNBUF_DEFAULT_ROWS = 2;
 let dynbufGrid = null;            // assigned after DOM is parsed (see below)
 
@@ -1609,12 +1655,13 @@ function renderMacroRow(m) {
     label.id = 'macro-label-' + m.id;
     label.textContent = '~mcr_' + m.macroNum;
     label.style.color = m.color;
-    label.title = 'Drag into the editor to insert ~mcr_' + m.macroNum;
+    label.title = 'Click to insert ~mcr_' + m.macroNum + ' at the cursor · drag into the editor';
     label.draggable = true;
     label.addEventListener('dragstart', (e) => {
         e.dataTransfer.setData('text/plain', '~mcr_' + m.macroNum);
         e.dataTransfer.effectAllowed = 'copy';
     });
+    label.addEventListener('click', () => insertCodeAtCursor('~mcr_' + m.macroNum, label));
     // label is appended to canvasWrap later (overlaid on canvas)
 
     const durationInput = document.createElement('input');
@@ -2282,20 +2329,27 @@ function renderSeqRow(s) {
     const label = document.createElement('span');
     label.className = 'seq-label';
     label.textContent = '~seq_' + s.name;
-    label.title = 'Click to rename · drag into the editor to insert ~seq_' + s.name;
+    label.title = 'Click to insert ~seq_' + s.name + ' · double-click to rename · drag into the editor';
     label.style.color = s.color;
     label.draggable = true;
     label.addEventListener('dragstart', (e) => {
         e.dataTransfer.setData('text/plain', '~seq_' + s.name);
         e.dataTransfer.effectAllowed = 'copy';
     });
+    let labelClickTimer = null;
     label.addEventListener('click', () => {
+        // Delay so a double-click (rename) can cancel the insert
+        clearTimeout(labelClickTimer);
+        labelClickTimer = setTimeout(() => insertCodeAtCursor('~seq_' + s.name, label), 250);
+    });
+    label.addEventListener('dblclick', () => {
+        clearTimeout(labelClickTimer);
         const newName = prompt('Rename sequencer:', s.name);
         if (newName && newName.trim()) {
             const old = s.name;
             s.name = newName.trim().replace(/[^a-zA-Z0-9_]/g, '');
             label.textContent = '~seq_' + s.name;
-            label.title = 'Click to rename · drag into the editor to insert ~seq_' + s.name;
+            label.title = 'Click to insert ~seq_' + s.name + ' · double-click to rename · drag into the editor';
             vscode.postMessage({ type: 'seq-rename', oldName: old, newName: s.name });
             persistState();
         }
@@ -2558,7 +2612,7 @@ if (seqs.length === 0) {
 // Port of e[\setupBufferSys] from my_footcontroller.sc.
 // Each row = one snapshot slot mapped to a SC NodeProxy ~bufPlay_<slot>.
 // SNAP captures the last N seconds from the always-running ring buffer.
-// Controls (start, end, tempoMul, rateMul, chan, pulseDivide) are exposed
+// Controls (start, end, rateMul, chan, quant, loop) are exposed
 // as separate 1-ch NodeProxies (~bufPlay_<slot>_<arg>) which the panel
 // drives — these can also be MIDI-mapped externally.
 
@@ -2568,6 +2622,35 @@ dynbufGrid = document.getElementById('dynbuf-grid');
 function dynbufProxyName(d)        { return '~bufPlay_' + d.slot; }
 function dynbufRowId(d)            { return 'dynbuf-row-' + d.slot; }
 function dynbufClamp01(v)          { return Math.max(0, Math.min(1, Number(v) || 0)); }
+function dynbufUpdateTransportUI(d) { if (d._updateTransport) d._updateTransport(); }
+
+// Ready-to-play Pdef template for pattern-steering a dynbuf slot.
+// Each event = rewind to start + play once (loop 0); stops after \dur beats
+// or at the end. Rest() = silent beat. Any UI touch resets back to UI mode.
+function dynbufPatternTemplate(d) {
+    const p = dynbufProxyName(d);
+    return [
+        `(`,
+        `Pdef(\\buf${d.slot},`,
+        `    Pbind(`,
+        `        \\type, \\set,`,
+        `        \\id, Pfunc { ${p}.group.nodeID },`,
+        `        \\args, #[\\t_play, \\dStart, \\dEnd, \\loop, \\chan, \\rateMul, \\amp, \\dur],`,
+        `        \\t_play, 1,`,
+        `        \\loop, 0,`,
+        `        \\dStart, Pseq([0, 0.125, Rest(), 0.25], inf),`,
+        `        \\dEnd, Pkey(\\dStart),`,
+        `        \\chan, ${(d.chan || 0).toFixed(3)},`,
+        `        \\rateMul, 0.5,`,
+        `        \\amp, 1,`,
+        `        \\dur, 0.5,`,
+        `    )`,
+        `).play;`,
+        `)`,
+        `// back to UI`,
+        `Pdef(\\buf${d.slot}).stop; ${p}.set(\\dur, 0, \\start, -1, \\end, -1, \\dStart, 0, \\dEnd, 0, \\loop, -1, \\chan, -1, \\rateMul, -1, \\amp, 1);`,
+    ].join('\n');
+}
 
 function addDynbuf(slot, opts) {
     // Auto-pick next free slot if not given
@@ -2584,10 +2667,10 @@ function addDynbuf(slot, opts) {
         playing: o.playing !== false,
         start:       o.start       != null ? dynbufClamp01(o.start)       : 0,
         end:         o.end         != null ? dynbufClamp01(o.end)         : 1,
-        tempoMul:    o.tempoMul    != null ? dynbufClamp01(o.tempoMul)    : 0.5,
         rateMul:     o.rateMul     != null ? dynbufClamp01(o.rateMul)     : 0.5,
         chan:        o.chan        != null ? dynbufClamp01(o.chan)        : Math.min(1, slot / 7),  // default: slot N → channel cN (of c0-c7)
-        pulseDivide: o.pulseDivide != null ? dynbufClamp01(o.pulseDivide) : 0.5,
+        quant:       o.quant       != null ? dynbufClamp01(o.quant)       : 0,   // 0 = off, else N/8 → loop every N beats
+        loop:        o.loop        != null ? dynbufClamp01(o.loop)        : 1,   // 1 = looping (default), 0 = one-shot
         hasSnapshot: !!o.hasSnapshot,
         lastWavPath: typeof o.lastWavPath === 'string' ? o.lastWavPath : null,
         _peaks: null,  // populated when WAV decoded (Float32Array [min,max,min,max,...])
@@ -2602,8 +2685,8 @@ function addDynbuf(slot, opts) {
         slot: d.slot,
         playing: d.playing,
         start: d.start, end: d.end,
-        tempoMul: d.tempoMul, rateMul: d.rateMul,
-        chan: d.chan, pulseDivide: d.pulseDivide,
+        rateMul: d.rateMul, chan: d.chan,
+        quant: d.quant, loop: d.loop,
         lastWavPath: d.lastWavPath,
     });
     return d;
@@ -2705,13 +2788,36 @@ function renderDynbufRow(d) {
     dot.className = 'dynbuf-slot-dot';
     dot.title = 'Slot proxy health (green = ~bufPlay_N exposed in current ProxySpace)';
     nameEl.appendChild(dot);
-    nameEl.appendChild(document.createTextNode(dynbufProxyName(d)));
-    nameEl.title = 'Drag into the editor to insert ' + dynbufProxyName(d);
+    const nameTxt = document.createElement('span');
+    nameTxt.className = 'dynbuf-name-text';
+    nameTxt.textContent = dynbufProxyName(d);
+    nameEl.appendChild(nameTxt);
+    nameEl.title = 'Click to insert ' + dynbufProxyName(d) + ' at the cursor · drag into the editor';
     nameEl.draggable = true;
     nameEl.addEventListener('dragstart', (e) => {
         e.dataTransfer.setData('text/plain', dynbufProxyName(d));
         e.dataTransfer.effectAllowed = 'copy';
     });
+    nameEl.addEventListener('click', () => insertCodeAtCursor(dynbufProxyName(d), nameEl));
+    // Pattern template: drag the P symbol into the editor to drop a ready
+    // Pdef that steers this slot (one-shot per event, Rest-capable).
+    const patEl = document.createElement('span');
+    patEl.className = 'dynbuf-pat';
+    patEl.textContent = 'P';
+    patEl.title = 'Pdef template for ' + dynbufProxyName(d) + ': click = insert at cursor, or drag into the editor';
+    patEl.draggable = true;
+    patEl.addEventListener('dragstart', (e) => {
+        e.stopPropagation();
+        e.dataTransfer.setData('text/plain', dynbufPatternTemplate(d));
+        e.dataTransfer.effectAllowed = 'copy';
+    });
+    patEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ type: 'insert-code', code: dynbufPatternTemplate(d) });
+        patEl.classList.add('flash');
+        setTimeout(() => patEl.classList.remove('flash'), 250);
+    });
+    nameEl.appendChild(patEl);
     stack.appendChild(nameEl);
 
     const snapBtn = document.createElement('div');
@@ -2720,28 +2826,6 @@ function renderDynbufRow(d) {
     snapBtn.title = 'Capture the last N seconds from the ring buffer';
     snapBtn.addEventListener('click', () => dynbufSnapshot(d, snapBtn));
     stack.appendChild(snapBtn);
-
-    // Manual reload — re-arm the ring recorder + ctrls, and re-Buffer.read
-    // the WAV from disk. Useful when boot-init didn't run (manual server
-    // boot, or after a reboot).
-    const reloadBtn = document.createElement('div');
-    reloadBtn.className = 'dynbuf-btn reload';
-    reloadBtn.innerHTML = '&#x21bb;'; // ↻
-    reloadBtn.title = 'Reload buffer from disk + re-arm SC proxies';
-    reloadBtn.addEventListener('click', () => {
-        vscode.postMessage({
-            type: 'dynbuf-reload',
-            slot: d.slot,
-            playing: d.playing,
-            start: d.start, end: d.end,
-            tempoMul: d.tempoMul, rateMul: d.rateMul,
-            chan: d.chan, pulseDivide: d.pulseDivide,
-            lastWavPath: d.lastWavPath || null,
-        });
-        reloadBtn.classList.add('flash');
-        setTimeout(() => reloadBtn.classList.remove('flash'), 350);
-    });
-    stack.appendChild(reloadBtn);
 
     const rmBtn = document.createElement('div');
     rmBtn.className = 'dynbuf-btn remove';
@@ -2785,12 +2869,7 @@ function renderDynbufRow(d) {
         return wrap;
     };
 
-    // tempoMul: 0..1 → multiplier 2^(round(x*8-4)) → 1/16 .. 16
-    const fmtTempoMul = v => {
-        const exp = Math.round(v * 8 - 4);
-        return '×' + (Math.pow(2, exp)).toFixed(exp < 0 ? 3 : 0).replace(/\.?0+$/, '');
-    };
-    // rateMul: same formula but actualRate = 2^(round(rateMul*8-4))
+    // rateMul: actualRate = 2^(round(rateMul*8-4)) → 1/16 .. 16
     const fmtRateMul = v => {
         const exp = Math.round(v * 8 - 4);
         const r = Math.pow(2, exp);
@@ -2798,17 +2877,56 @@ function renderDynbufRow(d) {
     };
     // chan: 0..1 → channel index 0..7 (8 channels)
     const fmtChan = v => 'c' + Math.round(v * 7);
-    // pulseDivide: 0..1 → 2^(round(x*7)) divider on the 128-pulses-per-beat clock
-    const fmtDivide = v => {
-        const exp = Math.round(v * 7);
-        return '÷' + Math.pow(2, exp);
+    // quant: 0..1 → 11 steps [off, ¼, ½, 1..8 beats].
+    // off = free loop / one-shot; else retrigger from start every N beats
+    // (only while loop is on). Sub-beat steps allow glitch repetitions.
+    const fmtQuant = v => {
+        const n = Math.round(v * 10);
+        return ['off', '¼b', '½b', '1b', '2b', '3b', '4b', '5b', '6b', '7b', '8b'][n] || 'off';
     };
 
-    ctrls.appendChild(makeNum('tempoMul',    'tempo', fmtTempoMul));
-    ctrls.appendChild(makeNum('rateMul',     'rate',  fmtRateMul));
-    ctrls.appendChild(makeNum('chan',        'chan',  fmtChan));
-    ctrls.appendChild(makeNum('pulseDivide', 'div',   fmtDivide));
+    // Transport: play (one-shot trigger) + loop toggle, macro-style.
+    const playBtn = document.createElement('div');
+    playBtn.className = 'dynbuf-tbtn play';
+    playBtn.textContent = '▶';
+    playBtn.title = 'Play from start. Loop off: plays once start→end, then pauses.';
+    playBtn.addEventListener('click', () => {
+        vscode.postMessage({ type: 'dynbuf-play', slot: d.slot });
+        if (d.loop < 0.5) {
+            const rate = Math.pow(2, Math.round(d.rateMul * 8 - 4));
+            const durSec = (d._durationSec || 8) * Math.abs(d.end - d.start) / rate;
+            clearTimeout(d._oneShotTimer);
+            d._oneShotUntil = Date.now() + durSec * 1000;
+            d._oneShotTimer = setTimeout(() => dynbufUpdateTransportUI(d), durSec * 1000 + 30);
+        }
+        dynbufUpdateTransportUI(d);
+    });
+
+    const loopBtn = document.createElement('div');
+    loopBtn.className = 'dynbuf-tbtn loop';
+    loopBtn.textContent = 'loop';
+    loopBtn.title = 'Loop toggle. Off = one-shot: play once, then pause.';
+    loopBtn.addEventListener('click', () => {
+        d.loop = d.loop >= 0.5 ? 0 : 1;
+        dynbufSendCtrl(d, 'loop', d.loop);
+        dynbufUpdateTransportUI(d);
+        persistState();
+    });
+
+    ctrls.appendChild(playBtn);
+    ctrls.appendChild(loopBtn);
+    ctrls.appendChild(makeNum('rateMul', 'rate',  fmtRateMul));
+    ctrls.appendChild(makeNum('chan',    'chan',  fmtChan));
+    const quantNum = makeNum('quant', 'quant', fmtQuant);
+    quantNum.style.gridColumn = '1 / -1';
+    ctrls.appendChild(quantNum);
     row.appendChild(ctrls);
+    d._updateTransport = () => {
+        loopBtn.classList.toggle('on', d.loop >= 0.5);
+        playBtn.classList.toggle('playing',
+            d.loop >= 0.5 || (d._oneShotUntil != null && d._oneShotUntil > Date.now()));
+    };
+    d._updateTransport();
 
     // ── Canvas (waveform) with horizontal start/end range strip below ──
     const canvasWrap = document.createElement('div');
@@ -2830,7 +2948,7 @@ function renderDynbufRow(d) {
     // Horizontal start/end range strip below the waveform.
     const range = document.createElement('div');
     range.className = 'dynbuf-range';
-    range.title = 'Drag handles: start (left) / end (right). Range played back from the snapshot.';
+    range.title = 'Drag handles: S = start, E = end. Drag E left of S (or S right of E) for reverse playback.';
 
     const rangeFill = document.createElement('div');
     rangeFill.className = 'dynbuf-range-fill';
@@ -2838,19 +2956,24 @@ function renderDynbufRow(d) {
 
     const startHandle = document.createElement('div');
     startHandle.className = 'dynbuf-range-handle start';
+    startHandle.textContent = 'S';
     range.appendChild(startHandle);
 
     const endHandle = document.createElement('div');
     endHandle.className = 'dynbuf-range-handle end';
+    endHandle.textContent = 'E';
     range.appendChild(endHandle);
 
     const updateRangeUI = () => {
         const startLeft = d.start * 100;
         const endLeft   = d.end   * 100;
-        startHandle.style.left = `calc(${startLeft}% - 2px)`;
-        endHandle.style.left   = `calc(${endLeft}% - 2px)`;
-        rangeFill.style.left   = `${startLeft}%`;
-        rangeFill.style.width  = `${Math.max(0, endLeft - startLeft)}%`;
+        const lo = Math.min(startLeft, endLeft);
+        const hi = Math.max(startLeft, endLeft);
+        startHandle.style.left = `calc(${startLeft}% )`;
+        endHandle.style.left   = `calc(${endLeft}% )`;
+        rangeFill.style.left   = `${lo}%`;
+        rangeFill.style.width  = `${Math.max(0, hi - lo)}%`;
+        rangeFill.classList.toggle('reverse', d.end < d.start);
     };
     updateRangeUI();
     d._updateRange = updateRangeUI;
@@ -2884,11 +3007,12 @@ function drawDynbufWave(d) {
 
     if (!d.hasSnapshot) return;
 
-    // Playback window highlight (start..end)
+    // Playback window highlight (start..end); blue tint = reverse (end < start)
     const x1 = Math.max(0, Math.min(w, d.start * w));
     const x2 = Math.max(0, Math.min(w, d.end * w));
-    g.fillStyle = 'rgba(255,212,121,0.12)';
-    g.fillRect(x1, 0, Math.max(1, x2 - x1), h);
+    const xLo = Math.min(x1, x2), xHi = Math.max(x1, x2);
+    g.fillStyle = d.end < d.start ? 'rgba(121,180,255,0.12)' : 'rgba(255,212,121,0.12)';
+    g.fillRect(xLo, 0, Math.max(1, xHi - xLo), h);
 
     // Real waveform peaks if we have them, otherwise a faint placeholder.
     g.strokeStyle = d._peaks ? 'rgba(255,212,121,0.85)' : 'rgba(255,212,121,0.35)';
@@ -2993,6 +3117,7 @@ async function dynbufLoadWavPeaks(d, uri, targetBuckets) {
         d._peaksBuckets = targetBuckets;
         d._peaksNch = nch;
         d._peaksFromChan = pickCh;
+        d._durationSec = samplesPerCh / fmt.sampleRate;
         drawDynbufWave(d);
     } catch (e) {
         console.warn('[dynbuf] wav load failed:', e.message || e);
@@ -3038,9 +3163,9 @@ function wireDynbufRange(rangeEl, d, updateUI) {
 
     function applyPos(pos) {
         if (active === 'start') {
-            d.start = Math.min(pos, d.end - 0.001);
+            d.start = pos;
         } else if (active === 'end') {
-            d.end = Math.max(pos, d.start + 0.001);
+            d.end = pos;
         }
         updateUI();
         dynbufSendCtrl(d, active, d[active]);
@@ -3064,8 +3189,7 @@ function wireDynbufCanvasStartEnd(canvasEl, d) {
         canvasEl.setPointerCapture(e.pointerId);
         pointerId = e.pointerId;
         const pos = posFromEvent(e);
-        d.start = Math.min(pos, 0.999);
-        d.end = Math.max(d.start + 0.001, d.end);  // keep end >= start+ε
+        d.start = pos;
         if (d._updateRange) d._updateRange();
         drawDynbufWave(d);
         dynbufSendCtrl(d, 'start', d.start);
@@ -3074,7 +3198,7 @@ function wireDynbufCanvasStartEnd(canvasEl, d) {
     canvasEl.addEventListener('pointermove', (e) => {
         if (pointerId !== e.pointerId) return;
         const pos = posFromEvent(e);
-        d.end = Math.max(pos, d.start + 0.001);
+        d.end = pos;
         if (d._updateRange) d._updateRange();
         drawDynbufWave(d);
         dynbufSendCtrl(d, 'end', d.end);
@@ -3083,7 +3207,7 @@ function wireDynbufCanvasStartEnd(canvasEl, d) {
     const stop = (e) => {
         if (pointerId !== e.pointerId) return;
         const pos = posFromEvent(e);
-        d.end = Math.max(pos, d.start + 0.001);
+        d.end = pos;
         if (d._updateRange) d._updateRange();
         drawDynbufWave(d);
         dynbufSendCtrl(d, 'end', d.end);
@@ -3133,7 +3257,7 @@ function wireDynbufNumDrag(el, d, key, valSpan, formatter) {
     el.addEventListener('pointercancel', stop);
     // Double-click to reset to default (0.5 for most, 0/1 for start/end)
     el.addEventListener('dblclick', () => {
-        const defaults = { tempoMul: 0.5, rateMul: 0.5, chan: 0, pulseDivide: 0.5 };
+        const defaults = { rateMul: 0.5, chan: 0, quant: 0 };
         d[key] = defaults[key] != null ? defaults[key] : 0.5;
         valSpan.textContent = formatter(d[key]);
         dynbufSendCtrl(d, key, d[key]);

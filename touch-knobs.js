@@ -63,7 +63,7 @@ let _macroTimer = null;
 let _macroLastTickMs = 0;
 
 // ── Host-side dynamic-buffer (live looper) state ─────────────────────────
-let _dynbufs = new Map();    // slot (int) → { slot, source, playing, start, end, tempoMul, rateMul, chan, pulseDivide, hasSnapshot }
+let _dynbufs = new Map();    // slot (int) → { slot, source, playing, start, end, rateMul, chan, quant, loop, hasSnapshot }
 let _dynbufSysSent = false;  // SC setup code emitted? (re-emit on demand; sclang side is idempotent)
 let _dynbufNumChannels = 8;
 let _dynbufRingSeconds = 32;
@@ -210,10 +210,55 @@ function registerTouchKnobs(context, { getSC, getIO, hydraOutput, extensionPath,
         vscode.commands.registerCommand('envil.initWorkspace', () => initWorkspace(context)),
     );
 
+    registerProxyRecHover(context);
+
     // Auto-open on startup (small delay so editors have time to settle)
     if (autoOpen) {
         setTimeout(() => openPanel(context), 600);
     }
+}
+
+// ── Proxy → ring-channel assignment hover ─────────────────────────────
+// Hovering ~someProxy in a .sc file shows "rec → c0 … cN" links. Clicking one
+// repoints that dynbuf ring-recorder channel to the proxy's bus, so any audio
+// proxy can be captured by SNAP (same technique as the number hover-slider).
+const CMD_DYNBUF_REC_PROXY = 'envil.dynbuf.recProxy';
+
+class ProxyRecHoverProvider {
+    provideHover(document, position) {
+        const range = document.getWordRangeAtPosition(position, /~[a-zA-Z_]\w*/);
+        if (!range) return null;
+        const name = document.getText(range);
+        // Skip the per-slot control proxies — recording those makes no sense.
+        if (/^~bufPlay_\d+_/.test(name)) return null;
+        const md = new vscode.MarkdownString();
+        md.isTrusted = { enabledCommands: [CMD_DYNBUF_REC_PROXY] };
+        const links = [];
+        for (let i = 0; i < _dynbufNumChannels; i++) {
+            const args = encodeURIComponent(JSON.stringify({ chan: i, proxy: name }));
+            links.push(`[**c${i}**](command:${CMD_DYNBUF_REC_PROXY}?${args} "record ${name} on ring channel c${i}")`);
+        }
+        md.appendMarkdown(`🔴 rec \`${name}\` → ${links.join(' ')}\n\n`);
+        md.appendMarkdown(`*points the dynbuf ring-recorder channel at ${name}'s bus (default: c0-c3 hw ins, c4/c5 ~out)*`);
+        return new vscode.Hover(md, range);
+    }
+}
+
+function registerProxyRecHover(context) {
+    context.subscriptions.push(
+        vscode.languages.registerHoverProvider(
+            { language: 'supercollider', scheme: 'file' },
+            new ProxyRecHoverProvider(),
+        ),
+        vscode.commands.registerCommand(CMD_DYNBUF_REC_PROXY, (args) => {
+            if (!args || !args.proxy) return;
+            const chan = Math.max(0, Number(args.chan) | 0);
+            const name = String(args.proxy).replace(/[^~\w]/g, '');
+            const code = `if(currentEnvironment.isKindOf(ProxySpace), { var pr = ${name}; if(pr.isNil or: { pr.bus.isNil }, { "[envil dynbuf] ${name} has no bus yet (define it with .ar first)".warn }, { Library.at(\\envil, \\setRecBus).value(${chan}, pr.bus.index) }) }, { "[envil dynbuf] not in a ProxySpace".warn })`;
+            sendSC(code, true);
+            vscode.window.setStatusBarMessage(`🔴 rec ${name} → c${chan}`, 2500);
+        }),
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -860,6 +905,27 @@ function handleMessage(msg) {
 
         // ── Dynamic buffer (live looper) messages ──────────────────────
 
+        case 'insert-code': {
+            // Insert a multiline code snippet at the cursor of the active
+            // (or last-active visible) text editor. Used by the P badge —
+            // more reliable than HTML5 drag/drop for multiline payloads.
+            const code = typeof msg.code === 'string' ? msg.code : '';
+            if (!code) break;
+            let editor = vscode.window.activeTextEditor;
+            if (!editor || editor.document.uri.scheme !== 'file') {
+                editor = vscode.window.visibleTextEditors.find(e => e.document.uri.scheme === 'file');
+            }
+            if (!editor) {
+                vscode.window.setStatusBarMessage('envil: no editor to insert into', 2000);
+                break;
+            }
+            const pos = editor.selection.active;
+            editor.edit(eb => eb.insert(pos, code)).then(() => {
+                vscode.window.showTextDocument(editor.document, { viewColumn: editor.viewColumn, preserveFocus: false });
+            });
+            break;
+        }
+
         case 'dynbuf-register': {
             // Panel created (or restored) a dynbuf slot. Cache state + ensure
             // the SC control proxies exist with the panel's current values.
@@ -870,10 +936,10 @@ function handleMessage(msg) {
                 playing: msg.playing !== false,
                 start:       clamp01(msg.start       != null ? msg.start       : 0),
                 end:         clamp01(msg.end         != null ? msg.end         : 1),
-                tempoMul:    clamp01(msg.tempoMul    != null ? msg.tempoMul    : 0.5),
-                rateMul:     clamp01(msg.rateMul     != null ? msg.rateMul     : 0.5),
-                chan:        clamp01(msg.chan        != null ? msg.chan        : 0),
-                pulseDivide: clamp01(msg.pulseDivide != null ? msg.pulseDivide : 0.5),
+                rateMul: clamp01(msg.rateMul != null ? msg.rateMul : 0.5),
+                chan:    clamp01(msg.chan    != null ? msg.chan    : 0),
+                quant:   clamp01(msg.quant   != null ? msg.quant   : 0),
+                loop:    clamp01(msg.loop    != null ? msg.loop    : 1),
                 hasSnapshot: false,
                 lastWavPath: typeof msg.lastWavPath === 'string' ? msg.lastWavPath : null,
             };
@@ -934,10 +1000,10 @@ function handleMessage(msg) {
                     playing: msg.playing !== false,
                     start:       clamp01(msg.start       != null ? msg.start       : 0),
                     end:         clamp01(msg.end         != null ? msg.end         : 1),
-                    tempoMul:    clamp01(msg.tempoMul    != null ? msg.tempoMul    : 0.5),
-                    rateMul:     clamp01(msg.rateMul     != null ? msg.rateMul     : 0.5),
-                    chan:        clamp01(msg.chan        != null ? msg.chan        : 0),
-                    pulseDivide: clamp01(msg.pulseDivide != null ? msg.pulseDivide : 0.5),
+                    rateMul: clamp01(msg.rateMul != null ? msg.rateMul : 0.5),
+                    chan:    clamp01(msg.chan    != null ? msg.chan    : 0),
+                    quant:   clamp01(msg.quant   != null ? msg.quant   : 0),
+                    loop:    clamp01(msg.loop    != null ? msg.loop    : 1),
                     hasSnapshot: false,
                     lastWavPath: typeof msg.lastWavPath === 'string' ? msg.lastWavPath : null,
                 };
@@ -977,10 +1043,21 @@ function handleMessage(msg) {
             const d = _dynbufs.get(slotIdx);
             if (!d) break;
             const key = String(msg.key || '');
-            if (!['start', 'end', 'tempoMul', 'rateMul', 'chan', 'pulseDivide'].includes(key)) break;
+            if (!['start', 'end', 'rateMul', 'chan', 'quant', 'loop'].includes(key)) break;
             const val = clamp01(msg.value);
             d[key] = val;
             sendSC(dynbufBuildSetCtrl(slotIdx, key, val), true);
+            break;
+        }
+
+        case 'dynbuf-play': {
+            // Transport play button: resets to UI workflow, then fires a
+            // one-shot play trigger (rewind to start + play). With the loop
+            // toggle off this plays start→end once and pauses.
+            const slotIdx = Math.max(0, Number(msg.slot) | 0);
+            if (!_dynbufs.get(slotIdx)) break;
+            sendSC(dynbufBuildPlay(slotIdx), true);
+            log(`  ▶ dynbuf play slot=${slotIdx}`);
             break;
         }
 
@@ -1000,7 +1077,7 @@ function handleMessage(msg) {
             if (!d) {
                 // Slot wasn't registered yet — create a minimal stub
                 d = { slot: slotIdx, playing: true, start: 0, end: 1,
-                      tempoMul: 0.5, rateMul: 0.5, chan: 0, pulseDivide: 0.5, hasSnapshot: false };
+                      rateMul: 0.5, chan: 0, quant: 0, loop: 1, hasSnapshot: false };
                 _dynbufs.set(slotIdx, d);
             }
             d.hasSnapshot = true;
@@ -1695,8 +1772,8 @@ function macroProxyName(m) {
 //      Per slot N:
 //        ~bufPlay_N            — player NodeProxy (audio, mono)
 //        ~bufPlay_N_idx        — control proxy holding current bufnum (\val)
-//        ~bufPlay_N_<arg>      — control proxies for start, end, tempoMul,
-//                                rateMul, chan, pulseDivide
+//        ~bufPlay_N_<arg>      — control proxies for start, end, rateMul,
+//                                chan, quant, loop
 
 // Backbone: register the ServerTree closure that builds / repairs the ring
 // recorder on every server (re)boot. Also fires immediately if server is up.
@@ -1784,13 +1861,13 @@ function dynbufBuildCtrlsForSlot(d) {
     const slot = d.slot;
     // [proxy, val, lagTime]
     const items = [
-        [`~bufPlay_${slot}_idx`,         0,                       0],
-        [`~bufPlay_${slot}_start`,       d.start,                 0.02],
-        [`~bufPlay_${slot}_end`,         d.end,                   0.02],
-        [`~bufPlay_${slot}_tempoMul`,    d.tempoMul,              0.02],
-        [`~bufPlay_${slot}_rateMul`,     d.rateMul,               0.02],
-        [`~bufPlay_${slot}_chan`,        d.chan,                  0.02],
-        [`~bufPlay_${slot}_pulseDivide`, d.pulseDivide,           0.02],
+        [`~bufPlay_${slot}_idx`,     0,                              0],
+        [`~bufPlay_${slot}_start`,   d.start,                        0.02],
+        [`~bufPlay_${slot}_end`,     d.end,                          0.02],
+        [`~bufPlay_${slot}_rateMul`, d.rateMul,                      0.02],
+        [`~bufPlay_${slot}_chan`,    d.chan,                         0.02],
+        [`~bufPlay_${slot}_quant`,   d.quant != null ? d.quant : 0,  0],
+        [`~bufPlay_${slot}_loop`,    d.loop  != null ? d.loop  : 1,  0],
     ];
     // Helper closure: takes proxy + value + lagTime; reinstalls the control
     // synth if the user replaced .source with a constant (no \val arg) and
@@ -1819,7 +1896,20 @@ function dynbufBuildSetCtrl(slot, key, val) {
     // it no longer has a \val arg — reinstall our control synth so the UI
     // knob regains control.
     const needsCtrl = `(${p}.source.isNil or: { ${p}.controlNames.isNil or: { ${p}.controlNames.any({|cn| cn.name == \\val }).not } })`;
-    return `if(currentEnvironment.isKindOf(ProxySpace), { if(${needsCtrl}, { ${p}.kr(1); ${p} = ${ctrlSrc} }); ${p}.set(\\val, ${Number(val).toFixed(6)}) })`;
+    // Any UI interaction (except SNAP) fully resets the player to UI workflow:
+    // clears all direct-arg overrides (-1 = follow UI proxies), restores amp,
+    // and clears dur (dur=0 releases pattern gating -> sound resumes).
+    const uiReset = `~bufPlay_${slot}.set(\\start, -1, \\end, -1, \\rateMul, -1, \\chan, -1, \\quant, -1, \\loop, -1, \\amp, 1, \\dur, 0, \\dStart, 0, \\dEnd, 0)`;
+    return `if(currentEnvironment.isKindOf(ProxySpace), { if(${needsCtrl}, { ${p}.kr(1); ${p} = ${ctrlSrc} }); ${p}.set(\\val, ${Number(val).toFixed(6)}); ${uiReset} })`;
+}
+
+// Transport play: reset to UI workflow (like any other UI interaction),
+// then fire the one-shot play trigger. With the loop toggle off this plays
+// start→end once and pauses; with loop on it restarts the loop from start.
+function dynbufBuildPlay(slot) {
+    const p = `~bufPlay_${slot}`;
+    const uiReset = `${p}.set(\\start, -1, \\end, -1, \\rateMul, -1, \\chan, -1, \\quant, -1, \\loop, -1, \\amp, 1, \\dur, 0, \\dStart, 0, \\dEnd, 0)`;
+    return `if(currentEnvironment.isKindOf(ProxySpace), { ${uiReset}; ${p}.set(\\t_play, 1) })`;
 }
 
 function dynbufBuildMute(slot, muted) {
@@ -1837,10 +1927,10 @@ function dynbufBuildRemove(slot) {
         `~bufPlay_${slot}_idx`,
         `~bufPlay_${slot}_start`,
         `~bufPlay_${slot}_end`,
-        `~bufPlay_${slot}_tempoMul`,
         `~bufPlay_${slot}_rateMul`,
         `~bufPlay_${slot}_chan`,
-        `~bufPlay_${slot}_pulseDivide`,
+        `~bufPlay_${slot}_quant`,
+        `~bufPlay_${slot}_loop`,
     ];
     return `if(currentEnvironment.isKindOf(ProxySpace), { ${proxies.map(p => `${p}.clear`).join('; ')} })`;
 }
@@ -1867,34 +1957,56 @@ function dynbufBuildSnapshot(d) {
 
     // The player proxy synth. Channel count baked in.
     // ~t is envil's tempo proxy (beats per second). Defaults to 1 if absent.
+    // All essential params are REAL synth args (pattern-settable via
+    // ~bufPlay_N.set(\start, x) or Pbind \type \set). Default -1 means
+    // "follow the UI control proxy" (~bufPlay_N_start etc.); any value >= 0
+    // overrides the UI. Set back to -1 to hand control back to the panel.
     // NOTE: Mix() unwraps the 1-elem array returned by NodeProxy.kr — without
-    // it, Select.ar multichannel-expands to nch chans and the mono proxy mixes
-    // ALL channels together (chan knob would be inaudible).
+    // it, Select.ar multichannel-expands and the mono proxy mixes ALL chans.
+    //
+    // Transport model (macro-like):
+    //   t_play      — trigger: rewind to start and play once (start→end)
+    //   loop        — 0 = one-shot (auto-pause at end), 1 = looping
+    //   quant       — 0..1 → 11 steps [off, ¼, ½, 1..8 beats]. off = free
+    //                 loop (wrap at end); N = retrigger from start every N
+    //                 beats (forces restart even if the end wasn't reached;
+    //                 pauses early if shorter). Sub-beat steps = glitch repeats.
+    //   rateMul     — 0..1 → 2^(round(x*8)-4); PitchShift auto-corrects pitch
+    //                 (correction clamps at 4x — the PitchShift UGen limit —
+    //                 so rates below 1/4 can't be fully corrected)
+    //   dur/legato  — pattern gating: t_play with dur > 0 (beats) cuts the
+    //                 sound after dur*legato beats. dur=0 disables the cut.
+    //                 Rest() sends no trigger → silent beat. Reverse: end < start.
+    //   dStart/dEnd — additive offsets (default 0) on top of the resolved
+    //                 start/end — lets patterns shift the UI-set window.
     // NOTE: this array is .join(' ')ed — NO // comments inside!
     const playerFunc = [
-        `{ |bufNum=0, origTempo=1|`,
+        `{ |bufNum=0, start= -1, end= -1, rateMul= -1, chan= -1, quant= -1, loop= -1, amp=1, t_play=0, dur=0, legato=1, dStart=0, dEnd=0|`,
         `  var t = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
-        `  var start       = Mix(~bufPlay_${slot}_start.kr);`,
-        `  var endC        = Mix(~bufPlay_${slot}_end.kr);`,
-        `  var tempoMul    = Mix(~bufPlay_${slot}_tempoMul.kr);`,
-        `  var rateMul     = Mix(~bufPlay_${slot}_rateMul.kr);`,
-        `  var chan        = Mix(~bufPlay_${slot}_chan.kr);`,
-        `  var pulseDivide = Mix(~bufPlay_${slot}_pulseDivide.kr);`,
-        `  var tempoFac    = 2.0 ** (((tempoMul * 8) - 4).round);`,
-        `  var pulse       = Impulse.kr(t * 128 * tempoFac);`,
-        `  var divFactor   = 2 ** ((pulseDivide * 7).round);`,
-        `  var trigger     = PulseDivider.kr(pulse, (128 * 32) / divFactor);`,
-        `  var actualRate  = 2.0 ** (((rateMul * 8) - 4).round);`,
-        `  var rate        = Latch.kr(actualRate, trigger);`,
-        `  var startFrame  = Latch.kr(BufFrames.kr(bufNum) * start, trigger);`,
-        `  var endFrame    = Latch.kr(BufFrames.kr(bufNum) * endC,  trigger).max(startFrame + 1);`,
-        `  var durLocal    = endFrame - startFrame;`,
-        `  var speed       = t / origTempo;`,
-        `  var phaseR      = Sweep.ar(trigger, SampleRate.ir / durLocal * rate * speed).linlin(0, 1, startFrame, endFrame);`,
-        `  var bp          = BufRd.ar(${nch}, bufNum, phaseR, interpolation: 1, loop: 0);`,
-        `  var chanIdx     = K2A.ar(chan.linlin(0, 1, 0, ${nch - 1}).round);`,
-        `  var bpC         = Select.ar(chanIdx, bp);`,
-        `  PitchShift.ar(bpC, pitchRatio: rate.reciprocal / speed);`,
+        `  var startV   = (Select.kr(start >= 0,   [Mix(~bufPlay_${slot}_start.kr),   start]) + dStart).clip(0, 1);`,
+        `  var endV     = (Select.kr(end >= 0,     [Mix(~bufPlay_${slot}_end.kr),     end]) + dEnd).clip(0, 1);`,
+        `  var rateMulV = Select.kr(rateMul >= 0, [Mix(~bufPlay_${slot}_rateMul.kr), rateMul]);`,
+        `  var chanV    = Select.kr(chan >= 0,    [Mix(~bufPlay_${slot}_chan.kr),    chan]);`,
+        `  var quantV   = Select.kr(quant >= 0,   [Mix(~bufPlay_${slot}_quant.kr),   quant]);`,
+        `  var loopV    = Select.kr(loop >= 0,    [Mix(~bufPlay_${slot}_loop.kr),    loop]);`,
+        `  var quantB   = Select.kr((quantV * 10).round, [0, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8]);`,
+        `  var loopOn   = loopV > 0.5;`,
+        `  var rate     = Lag.kr(2.0 ** (((rateMulV * 8) - 4).round), 0.05);`,
+        `  var trig     = t_play + Impulse.kr(t / quantB.max(0.25) * ((quantB > 0.1) * loopOn));`,
+        `  var startFrame = BufFrames.kr(bufNum) * startV;`,
+        `  var endFrame   = BufFrames.kr(bufNum) * endV;`,
+        `  var durFrames  = (endFrame - startFrame).abs.max(1);`,
+        `  var prog       = Sweep.ar(trig, SampleRate.ir / durFrames * rate);`,
+        `  var freeLoop   = K2A.ar(loopOn * (quantB < 0.1));`,
+        `  var pos        = Select.ar(freeLoop, [prog.clip(0, 1), prog.wrap(0, 1)]);`,
+        `  var playGate   = (prog < 1).max(freeLoop);`,
+        `  var sustain    = (dur * legato / t.max(0.001)).max(0.02);`,
+        `  var cutEnv     = Select.kr(dur > 0, [DC.kr(1), Trig.kr(t_play, sustain)]).lag(0.01);`,
+        `  var phaseR     = pos.linlin(0, 1, startFrame, endFrame);`,
+        `  var bp         = BufRd.ar(${nch}, bufNum, phaseR, interpolation: 1, loop: 0);`,
+        `  var chanIdx    = K2A.ar(chanV.linlin(0, 1, 0, ${nch - 1}).round);`,
+        `  var bpC        = Select.ar(chanIdx, bp);`,
+        `  PitchShift.ar(bpC, pitchRatio: rate.reciprocal.clip(0.25, 4)) * amp.lag(0.05) * playGate.lag(0.005) * cutEnv;`,
         `}`,
     ].join(' ');
 
@@ -1905,7 +2017,7 @@ function dynbufBuildSnapshot(d) {
     const body = [
         `if(currentEnvironment.isKindOf(ProxySpace), {`,
         ` Routine({`,
-        `  var bufRing, phase, snap, dur, readFrom, origTempo, attempts;`,
+        `  var bufRing, phase, snap, dur, readFrom, attempts;`,
         `  // Wait for backbone (max ~3s) — should already be up via ServerTree, but be safe.`,
         `  attempts = 0;`,
         `  while({ Library.at(\\envil, \\bufRecReady) != true and: { attempts < 30 } }, { 0.1.wait; attempts = attempts + 1 });`,
@@ -1918,7 +2030,6 @@ function dynbufBuildSnapshot(d) {
         `   Server.default.sync;`,
         `   dur = snap.numFrames;`,
         `   readFrom = phase - dur;`,
-        `   origTempo = TempoClock.default.tempo;`,
         `   if(bufRing.isNil, {`,
         `    "[envil dynbuf] ring buffer missing in Library — backbone repair needed.".warn;`,
         `    snap.free;`,
@@ -1937,9 +2048,9 @@ function dynbufBuildSnapshot(d) {
         writeBlock,
         `    ~bufPlay_${slot}.ar(1);`,
         `    ~bufPlay_${slot} = ${playerFunc};`,
-        `    ~bufPlay_${slot}.set(\\bufNum, snap.bufnum, \\origTempo, origTempo);`,
+        `    ~bufPlay_${slot}.set(\\bufNum, snap.bufnum);`,
         `    ~bufPlay_${slot}_idx.set(\\val, snap.bufnum);`,
-        `    (">>> envil dynbuf snapshot -> ~bufPlay_${slot}  buf=" ++ snap.bufnum ++ "  origTempo=" ++ origTempo).postln;`,
+        `    (">>> envil dynbuf snapshot -> ~bufPlay_${slot}  buf=" ++ snap.bufnum).postln;`,
         `   });`,
         `  });`,
         ` }).play;`,
@@ -1958,29 +2069,32 @@ function dynbufBuildReloadFromDisk(d) {
     const wavPath = d.lastWavPath.replace(/\\/g, '/').replace(/"/g, '\\"');
     const ctrls = dynbufBuildCtrlsForSlot(d);
     const playerFunc = [
-        `{ |bufNum=0, origTempo=1|`,
+        `{ |bufNum=0, start= -1, end= -1, rateMul= -1, chan= -1, quant= -1, loop= -1, amp=1, t_play=0, dur=0, legato=1, dStart=0, dEnd=0|`,
         `  var t = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
-        `  var start       = Mix(~bufPlay_${slot}_start.kr);`,
-        `  var endC        = Mix(~bufPlay_${slot}_end.kr);`,
-        `  var tempoMul    = Mix(~bufPlay_${slot}_tempoMul.kr);`,
-        `  var rateMul     = Mix(~bufPlay_${slot}_rateMul.kr);`,
-        `  var chan        = Mix(~bufPlay_${slot}_chan.kr);`,
-        `  var pulseDivide = Mix(~bufPlay_${slot}_pulseDivide.kr);`,
-        `  var tempoFac    = 2.0 ** (((tempoMul * 8) - 4).round);`,
-        `  var pulse       = Impulse.kr(t * 128 * tempoFac);`,
-        `  var divFactor   = 2 ** ((pulseDivide * 7).round);`,
-        `  var trigger     = PulseDivider.kr(pulse, (128 * 32) / divFactor);`,
-        `  var actualRate  = 2.0 ** (((rateMul * 8) - 4).round);`,
-        `  var rate        = Latch.kr(actualRate, trigger);`,
-        `  var startFrame  = Latch.kr(BufFrames.kr(bufNum) * start, trigger);`,
-        `  var endFrame    = Latch.kr(BufFrames.kr(bufNum) * endC,  trigger).max(startFrame + 1);`,
-        `  var durLocal    = endFrame - startFrame;`,
-        `  var speed       = t / origTempo;`,
-        `  var phaseR      = Sweep.ar(trigger, SampleRate.ir / durLocal * rate * speed).linlin(0, 1, startFrame, endFrame);`,
-        `  var bp          = BufRd.ar(${nch}, bufNum, phaseR, interpolation: 1, loop: 0);`,
-        `  var chanIdx     = K2A.ar(chan.linlin(0, 1, 0, ${nch - 1}).round);`,
-        `  var bpC         = Select.ar(chanIdx, bp);`,
-        `  PitchShift.ar(bpC, pitchRatio: rate.reciprocal / speed);`,
+        `  var startV   = (Select.kr(start >= 0,   [Mix(~bufPlay_${slot}_start.kr),   start]) + dStart).clip(0, 1);`,
+        `  var endV     = (Select.kr(end >= 0,     [Mix(~bufPlay_${slot}_end.kr),     end]) + dEnd).clip(0, 1);`,
+        `  var rateMulV = Select.kr(rateMul >= 0, [Mix(~bufPlay_${slot}_rateMul.kr), rateMul]);`,
+        `  var chanV    = Select.kr(chan >= 0,    [Mix(~bufPlay_${slot}_chan.kr),    chan]);`,
+        `  var quantV   = Select.kr(quant >= 0,   [Mix(~bufPlay_${slot}_quant.kr),   quant]);`,
+        `  var loopV    = Select.kr(loop >= 0,    [Mix(~bufPlay_${slot}_loop.kr),    loop]);`,
+        `  var quantB   = Select.kr((quantV * 10).round, [0, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8]);`,
+        `  var loopOn   = loopV > 0.5;`,
+        `  var rate     = Lag.kr(2.0 ** (((rateMulV * 8) - 4).round), 0.05);`,
+        `  var trig     = t_play + Impulse.kr(t / quantB.max(0.25) * ((quantB > 0.1) * loopOn));`,
+        `  var startFrame = BufFrames.kr(bufNum) * startV;`,
+        `  var endFrame   = BufFrames.kr(bufNum) * endV;`,
+        `  var durFrames  = (endFrame - startFrame).abs.max(1);`,
+        `  var prog       = Sweep.ar(trig, SampleRate.ir / durFrames * rate);`,
+        `  var freeLoop   = K2A.ar(loopOn * (quantB < 0.1));`,
+        `  var pos        = Select.ar(freeLoop, [prog.clip(0, 1), prog.wrap(0, 1)]);`,
+        `  var playGate   = (prog < 1).max(freeLoop);`,
+        `  var sustain    = (dur * legato / t.max(0.001)).max(0.02);`,
+        `  var cutEnv     = Select.kr(dur > 0, [DC.kr(1), Trig.kr(t_play, sustain)]).lag(0.01);`,
+        `  var phaseR     = pos.linlin(0, 1, startFrame, endFrame);`,
+        `  var bp         = BufRd.ar(${nch}, bufNum, phaseR, interpolation: 1, loop: 0);`,
+        `  var chanIdx    = K2A.ar(chanV.linlin(0, 1, 0, ${nch - 1}).round);`,
+        `  var bpC        = Select.ar(chanIdx, bp);`,
+        `  PitchShift.ar(bpC, pitchRatio: rate.reciprocal.clip(0.25, 4)) * amp.lag(0.05) * playGate.lag(0.005) * cutEnv;`,
         `}`,
     ].join(' ');
     return [
@@ -1989,7 +2103,7 @@ function dynbufBuildReloadFromDisk(d) {
         ` Buffer.read(Server.default, "${wavPath}", action: { |snap|`,
         `  ~bufPlay_${slot}.ar(1);`,
         `  ~bufPlay_${slot} = ${playerFunc};`,
-        `  ~bufPlay_${slot}.set(\\bufNum, snap.bufnum, \\origTempo, TempoClock.default.tempo);`,
+        `  ~bufPlay_${slot}.set(\\bufNum, snap.bufnum);`,
         `  ~bufPlay_${slot}_idx.set(\\val, snap.bufnum);`,
         `  (">>> envil dynbuf reloaded -> ~bufPlay_${slot}  buf=" ++ snap.bufnum).postln;`,
         ` });`,
@@ -2155,12 +2269,12 @@ function buildDynbufBootInitSCCode() {
         for (const s of savedDynbufs) {
             allSlots.push({
                 slot: Math.max(0, Number(s.slot) | 0),
-                start:       clamp01(s.start       != null ? s.start       : 0),
-                end:         clamp01(s.end         != null ? s.end         : 1),
-                tempoMul:    clamp01(s.tempoMul    != null ? s.tempoMul    : 0.5),
-                rateMul:     clamp01(s.rateMul     != null ? s.rateMul     : 0.5),
-                chan:        clamp01(s.chan        != null ? s.chan        : 0),
-                pulseDivide: clamp01(s.pulseDivide != null ? s.pulseDivide : 0.5),
+                start:   clamp01(s.start   != null ? s.start   : 0),
+                end:     clamp01(s.end     != null ? s.end     : 1),
+                rateMul: clamp01(s.rateMul != null ? s.rateMul : 0.5),
+                chan:    clamp01(s.chan    != null ? s.chan    : 0),
+                quant:   clamp01(s.quant   != null ? s.quant   : 0),
+                loop:    clamp01(s.loop    != null ? s.loop    : 1),
                 lastWavPath: typeof s.lastWavPath === 'string' ? s.lastWavPath : null,
             });
         }
