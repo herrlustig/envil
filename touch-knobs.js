@@ -2115,7 +2115,7 @@ function dynbufBuildSnapshot(d) {
     // Transport model (macro-like):
     //   t_play      — trigger: rewind to start and play once (start→end)
     //   loop        — 0 = one-shot (auto-pause at end), 1 = looping
-    //   quant       — 0..1 → 11 steps [off, ¼, ½, 1..8 beats]. off = free
+    //   quant       — 0..1 → 13 steps [off, 1/16, ⅛, ¼, ½, 1..8 beats]. off = free
     //                 loop (wrap at end); N = retrigger from start every N
     //                 beats (forces restart even if the end wasn't reached;
     //                 pauses early if shorter). Sub-beat steps = glitch repeats.
@@ -2137,15 +2137,15 @@ function dynbufBuildSnapshot(d) {
         `  var chanV    = Select.kr(chan >= 0,    [Mix(~bufPlay_${slot}_chan.kr),    chan]);`,
         `  var quantV   = Select.kr(quant >= 0,   [Mix(~bufPlay_${slot}_quant.kr),   quant]);`,
         `  var loopV    = Select.kr(loop >= 0,    [Mix(~bufPlay_${slot}_loop.kr),    loop]);`,
-        `  var quantB   = Select.kr((quantV * 10).round, [0, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8]);`,
+        `  var quantB   = Select.kr((quantV * 12).round, [0, 0.0625, 0.125, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8]);`,
         `  var loopOn   = loopV > 0.5;`,
         `  var rate     = Lag.kr(2.0 ** (((rateMulV * 8) - 4).round), 0.05);`,
-        `  var trig     = t_play + Impulse.kr(t / quantB.max(0.25) * ((quantB > 0.1) * loopOn));`,
+        `  var trig     = t_play + Impulse.kr(t / quantB.max(0.0625) * ((quantB > 0.05) * loopOn));`,
         `  var startFrame = BufFrames.kr(bufNum) * startV;`,
         `  var endFrame   = BufFrames.kr(bufNum) * endV;`,
         `  var durFrames  = (endFrame - startFrame).abs.max(1);`,
         `  var prog       = Sweep.ar(trig, SampleRate.ir / durFrames * rate);`,
-        `  var freeLoop   = K2A.ar(loopOn * (quantB < 0.1));`,
+        `  var freeLoop   = K2A.ar(loopOn * (quantB < 0.05));`,
         `  var pos        = Select.ar(freeLoop, [prog.clip(0, 1), prog.wrap(0, 1)]);`,
         `  var playGate   = (prog < 1).max(freeLoop);`,
         `  var sustain    = (dur * legato / t.max(0.001)).max(0.02);`,
@@ -2225,15 +2225,15 @@ function dynbufBuildReloadFromDisk(d) {
         `  var chanV    = Select.kr(chan >= 0,    [Mix(~bufPlay_${slot}_chan.kr),    chan]);`,
         `  var quantV   = Select.kr(quant >= 0,   [Mix(~bufPlay_${slot}_quant.kr),   quant]);`,
         `  var loopV    = Select.kr(loop >= 0,    [Mix(~bufPlay_${slot}_loop.kr),    loop]);`,
-        `  var quantB   = Select.kr((quantV * 10).round, [0, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8]);`,
+        `  var quantB   = Select.kr((quantV * 12).round, [0, 0.0625, 0.125, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 7, 8]);`,
         `  var loopOn   = loopV > 0.5;`,
         `  var rate     = Lag.kr(2.0 ** (((rateMulV * 8) - 4).round), 0.05);`,
-        `  var trig     = t_play + Impulse.kr(t / quantB.max(0.25) * ((quantB > 0.1) * loopOn));`,
+        `  var trig     = t_play + Impulse.kr(t / quantB.max(0.0625) * ((quantB > 0.05) * loopOn));`,
         `  var startFrame = BufFrames.kr(bufNum) * startV;`,
         `  var endFrame   = BufFrames.kr(bufNum) * endV;`,
         `  var durFrames  = (endFrame - startFrame).abs.max(1);`,
         `  var prog       = Sweep.ar(trig, SampleRate.ir / durFrames * rate);`,
-        `  var freeLoop   = K2A.ar(loopOn * (quantB < 0.1));`,
+        `  var freeLoop   = K2A.ar(loopOn * (quantB < 0.05));`,
         `  var pos        = Select.ar(freeLoop, [prog.clip(0, 1), prog.wrap(0, 1)]);`,
         `  var playGate   = (prog < 1).max(freeLoop);`,
         `  var sustain    = (dur * legato / t.max(0.001)).max(0.02);`,

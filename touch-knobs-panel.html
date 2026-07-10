@@ -217,10 +217,12 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
 }
 .dynbuf-row .dynbuf-pat {
-    flex-shrink: 0; margin-left: auto; cursor: grab;
-    font-size: 11px; font-weight: 700; line-height: 1;
-    padding: 2px 5px; border: 1px solid #7a5ec7; border-radius: 3px;
+    flex: 1; cursor: grab; text-align: center;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700; line-height: 1;
+    border: 1px solid #7a5ec7; border-radius: 3px;
     color: #b49aff; background: rgba(122,94,199,0.15);
+    user-select: none;
 }
 .dynbuf-row .dynbuf-pat:hover { color: #fff; background: rgba(122,94,199,0.5); }
 .dynbuf-row .dynbuf-pat.flash { color: #000; background: #b49aff; }
@@ -233,7 +235,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     padding: 0;
 }
 .dynbuf-row .dynbuf-btn:hover { border-color: #aaa; }
-.dynbuf-row .dynbuf-btn.snap { background: #6a3; color: #fff; border-color: #6a3; font-weight: 600; flex: 1; }
+.dynbuf-row .dynbuf-btn.snap { background: #6a3; color: #fff; border-color: #6a3; font-weight: 600; flex: 2; height: auto; line-height: normal; display: flex; align-items: center; justify-content: center; }
 .dynbuf-row .dynbuf-btn.snap:hover { background: #8c5; border-color: #8c5; }
 .dynbuf-row .dynbuf-btn.snap.flash { background: #fff; color: #000; }
 .dynbuf-row .dynbuf-btn.play.playing { background: #0a4; color: #fff; border-color: #0a4; }
@@ -2830,8 +2832,10 @@ function renderDynbufRow(d) {
         patEl.classList.add('flash');
         setTimeout(() => patEl.classList.remove('flash'), 250);
     });
-    nameEl.appendChild(patEl);
     stack.appendChild(nameEl);
+    // P sits above SNAP, full stack width; flex 1 vs snap's flex 2 → snap
+    // keeps 2/3 of the shared height, P gets the remaining 1/3.
+    stack.appendChild(patEl);
 
     const snapBtn = document.createElement('div');
     snapBtn.className = 'dynbuf-btn snap';
@@ -2890,12 +2894,12 @@ function renderDynbufRow(d) {
     };
     // chan: 0..1 → channel index 0..7 (8 channels)
     const fmtChan = v => 'c' + Math.round(v * 7);
-    // quant: 0..1 → 11 steps [off, ¼, ½, 1..8 beats].
+    // quant: 0..1 → 13 steps [off, 1/16, ⅛, ¼, ½, 1..8 beats].
     // off = free loop / one-shot; else retrigger from start every N beats
     // (only while loop is on). Sub-beat steps allow glitch repetitions.
     const fmtQuant = v => {
-        const n = Math.round(v * 10);
-        return ['off', '¼b', '½b', '1b', '2b', '3b', '4b', '5b', '6b', '7b', '8b'][n] || 'off';
+        const n = Math.round(v * 12);
+        return ['off', '1/16', '⅛b', '¼b', '½b', '1b', '2b', '3b', '4b', '5b', '6b', '7b', '8b'][n] || 'off';
     };
 
     // Transport: play (one-shot trigger) + loop toggle, macro-style.
