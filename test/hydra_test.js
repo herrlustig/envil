@@ -36,13 +36,13 @@ a.setScale(1);
   //asdsd
   .color(.2, .1, 0.1).shift(() => a.fft[2] * -0 + 20, 0.1, 1, 0, 0)
   //.brightness(() => 0.1 + a.fft[0] * 0.1)
-  .pixelate(() => 100 + Math.sin(time)*a.fft[0]%200, () => 2000 + time%100)
+  .pixelate( () => 2000 + time%100)
   
   )
   
 
 
-//.kaleid(1)
+.kaleid(1)
   
 .pixelate(() => 100 + Math.sin(time)*a.fft[0]%20, () => 2000 + time%100)
   

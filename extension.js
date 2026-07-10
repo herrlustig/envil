@@ -4,6 +4,7 @@ const express = require('express');
 const { Server } = require('socket.io');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const jsonc = require('jsonc-parser');
 const { isEnvironmentActive, envilEnvironmentContextKey } = require('./supercollider/util');
 const { registerHydraProviders } = require('./hydra-language-support');
@@ -243,6 +244,74 @@ function buildInputProxyRegisterCode() {
     ].join('\n');
 }
 
+// ── Default SynthDef loader (self-init + self-heal) ─────────────────────────
+//
+// Default synths live as plain .scd files (each holding `SynthDef(..).add;`
+// code) in three conventional folders, later layers shadow same-named files:
+//   bundled:   <extension>/supercollider/synthdefs/  — shipped with the plugin
+//   global:    ~/.config/envil/synthdefs/            — shared across workspaces
+//   workspace: <workspace>/.envil/synthdefs/         — workspace wins
+// SC loads them via executeFile (no stdin size limit!) from a Library fn
+// registered on ServerTree — SynthDefs die with the server, so they must be
+// re-sent on EVERY (re)boot, same as buffers. The fn Routine-waits for
+// serverRunning (SynthDef.add only sends to booted servers) and is throttled
+// so racing boot paths collapse to one load.
+
+function collectSynthDefFiles() {
+    const workspaceFolder = vscode.workspace.workspaceFolders
+        ? vscode.workspace.workspaceFolders[0].uri.fsPath : null;
+    const dirs = [
+        path.join(__dirname, 'supercollider', 'synthdefs'),
+        path.join(os.homedir(), '.config', 'envil', 'synthdefs'),
+        workspaceFolder ? path.join(workspaceFolder, '.envil', 'synthdefs') : null,
+    ].filter(Boolean);
+    const byName = new Map();   // later dirs (workspace) shadow same-named files
+    for (const dir of dirs) {
+        try {
+            for (const f of fs.readdirSync(dir)) {
+                if (f.endsWith('.scd') || f.endsWith('.sc')) byName.set(f, path.join(dir, f));
+            }
+        } catch (_) { /* dir missing — fine */ }
+    }
+    return Array.from(byName.keys()).sort().map(k => byName.get(k));
+}
+
+function buildSynthDefLoaderCode() {
+    const enabled = vscode.workspace.getConfiguration('envil.supercollider.synthDefs').get('autoLoad', true);
+    if (!enabled) return '';
+    const files = collectSynthDefFiles();
+    if (files.length === 0) return '';
+    const list = files
+        .map(f => `"${f.replace(/\\/g, '/').replace(/"/g, '\\"')}"`)
+        .join(', ');
+    return [
+        `(`,
+        `// ── envil default SynthDefs: (re)loaded from disk on every boot ──`,
+        `Library.put(\\envil, \\synthDefFiles, [ ${list} ]);`,
+        `Library.put(\\envil, \\synthDefsFn, {`,
+        `  var last = Library.at(\\envil, \\synthDefsLastFire) ? -10;`,
+        `  if((Main.elapsedTime - last) > 3, {`,
+        `    Library.put(\\envil, \\synthDefsLastFire, Main.elapsedTime);`,
+        `    Routine({`,
+        `      var n = 0;`,
+        `      while({ Server.default.serverRunning.not and: { n < 100 } }, { 0.1.wait; n = n + 1 });`,
+        `      if(Server.default.serverRunning, {`,
+        `        var files = Library.at(\\envil, \\synthDefFiles) ? [];`,
+        `        var okCount = 0;`,
+        `        files.do { |f| var r; try { r = thisProcess.interpreter.executeFile(f); if(r.isNil, { ("[envil] synthdef file SKIPPED (syntax error? see post window above): " ++ f).warn }, { okCount = okCount + 1 }) } { |err| ("[envil] synthdef file FAILED: " ++ f ++ " — " ++ err.errorString).warn } };`,
+        `        ("[envil] " ++ okCount ++ "/" ++ files.size ++ " synthdef file(s) loaded").postln;`,
+        `      });`,
+        `    }).play(AppClock);`,
+        `  });`,
+        `});`,
+        `(Library.at(\\envil, \\synthDefsTreeFn)) !? { |fn| ServerTree.remove(fn, Server.default) };`,
+        `Library.put(\\envil, \\synthDefsTreeFn, { Library.at(\\envil, \\synthDefsFn).value });`,
+        `ServerTree.add(Library.at(\\envil, \\synthDefsTreeFn), Server.default);`,
+        `Library.at(\\envil, \\synthDefsFn).value;`,
+        `);`,
+    ].join('\n');
+}
+
 // ── Auto MIDI proxy SC code builder ──────────────────────────────────────────
 //
 // Ported from my_footcontroller.sc  e[\initMidi] + e[\createProxyPresets],
@@ -347,6 +416,26 @@ async function activate(context) {
 
     const workspaceFolder = vscode.workspace.workspaceFolders
         ? vscode.workspace.workspaceFolders[0].uri.fsPath : null;
+
+    // One-time hint: workspace synthdef folder convention
+    if (workspaceFolder && !context.workspaceState.get('envil.synthDefHintShown')) {
+        const sdDir = path.join(workspaceFolder, '.envil', 'synthdefs');
+        if (!fs.existsSync(sdDir)) {
+            vscode.window.showInformationMessage(
+                '[envil] Tip: put SynthDef files (.scd/.sc ending in SynthDef(..).add) into ' +
+                '.envil/synthdefs/ in your workspace — they auto-load on every server boot.',
+                'Create folder', 'Got it'
+            ).then(choice => {
+                context.workspaceState.update('envil.synthDefHintShown', true);
+                if (choice === 'Create folder') {
+                    fs.mkdirSync(sdDir, { recursive: true });
+                    vscode.window.showInformationMessage('[envil] created ' + sdDir);
+                }
+            });
+        } else {
+            context.workspaceState.update('envil.synthDefHintShown', true);
+        }
+    }
 
     // Status bar — all left-aligned, high priority so they stay visible on narrow windows
     //   Order (left→right): health bar (10000) → sclang (9999) → scsynth (9998)
@@ -454,6 +543,8 @@ async function activate(context) {
                 { const m = buildMidiProxySCCode(); if (m) await sc.executeCode(m); }
                 // knob/macro proxies — ServerTree ping → host resyncs with fresh values
                 { const kr = buildKnobResyncRegisterCode(); if (kr) await sc.executeCode(kr); }
+                // default SynthDefs — ServerTree-registered, re-loaded on every boot
+                { const sd = buildSynthDefLoaderCode(); if (sd) await sc.executeCode(sd); }
             } else {
                 await sc.executeCode(buildServerOptionsSCCode() + '\ns.boot;');
             }
@@ -508,6 +599,8 @@ async function activate(context) {
                 { const m = buildMidiProxySCCode(); if (m) await sc.executeCode(m); }
                 // knob/macro proxies — ServerTree ping → host resyncs with fresh values
                 { const kr = buildKnobResyncRegisterCode(); if (kr) await sc.executeCode(kr); }
+                // default SynthDefs — ServerTree-registered, re-loaded on every boot
+                { const sd = buildSynthDefLoaderCode(); if (sd) await sc.executeCode(sd); }
             } else {
                 await sc.executeCode(buildServerOptionsSCCode() + '\ns.reboot;');
             }
@@ -516,6 +609,17 @@ async function activate(context) {
         vscode.commands.registerCommand('envil.supercollider.hush', async () => {
             const sc = getSC(); if (!sc) return;
             await sc.stopAllSounds();
+        }),
+
+        vscode.commands.registerCommand('envil.supercollider.reloadSynthDefs', async () => {
+            const sc = getSC(); if (!sc) return;
+            const sd = buildSynthDefLoaderCode();
+            if (sd) {
+                await sc.executeCode(sd);
+                vscode.window.setStatusBarMessage(`[envil] synthdefs reloading (${collectSynthDefFiles().length} file(s))`, 3000);
+            } else {
+                vscode.window.showInformationMessage('[envil] no synthdef files found (~/.config/envil/synthdefs/ or <workspace>/.envil/synthdefs/)');
+            }
         }),
 
         vscode.commands.registerTextEditorCommand('envil.supercollider.openHelpFor', async (editor) => {
@@ -1142,6 +1246,7 @@ function registerSclangStartCallback() {
                 const ir = buildInputProxyRegisterCode(); if (ir) sc.executeCode(ir);
                 const m = buildMidiProxySCCode(); if (m) sc.executeCode(m);
                 const kr = buildKnobResyncRegisterCode(); if (kr) sc.executeCode(kr);
+                const sd = buildSynthDefLoaderCode(); if (sd) sc.executeCode(sd);
             }
         }).catch(() => { /* heartbeat heal covers any missed init */ });
     });
@@ -1251,7 +1356,7 @@ async function ensureProxyRegisters(sc) {
         const wdSec = Math.max(0, Math.min(3600, Number(vscode.workspace.getConfiguration('envil.supercollider.midi').get('watchdogSeconds', 60)) || 0));
         const marker = '<<E_REG>>';
         sc.addSuppressMarker(marker);
-        const q = `{ var ps, srv, e, inLive, inArmed, midiOk, wdOk, knobOk, bbOk, optIns; `
+        const q = `{ var ps, srv, e, inLive, inArmed, midiOk, wdOk, knobOk, bbOk, sdOk, optIns; `
             + `ps = currentEnvironment.isKindOf(ProxySpace); `
             + `if(ps, { Library.put(\\envil, \\pspace, currentEnvironment) }); `
             + `srv = Server.default.serverRunning; `
@@ -1262,13 +1367,14 @@ async function ensureProxyRegisters(sc) {
             + `wdOk = (Library.at(\\envil, \\midiWatchdogBeat) ? -1e9) > (Main.elapsedTime - ${wdSec * 2 + 30}); `
             + `knobOk = Library.at(\\envil, \\knobResyncFn).notNil; `
             + `bbOk = Library.at(\\envil, \\backboneFn).notNil; `
+            + `sdOk = Library.at(\\envil, \\synthDefsFn).notNil; `
             + `optIns = Server.default.options.numInputBusChannels; `
-            + `("${marker}" ++ [ps, srv, inLive, inArmed, midiOk, wdOk, knobOk, bbOk].collect(_.binaryValue).join(",") ++ "," ++ optIns ++ "${marker}").postln; }.value;`;
+            + `("${marker}" ++ [ps, srv, inLive, inArmed, midiOk, wdOk, knobOk, bbOk, sdOk].collect(_.binaryValue).join(",") ++ "," ++ optIns ++ "${marker}").postln; }.value;`;
         const res = await sc.queryCode(q, marker, 2500);
         if (!res) return;  // interpreter still compiling/busy — retry next tick
         const parts = res.trim().split(',');
-        const [psOk, srvOk, inLive, inArmed, midiOk, wdOk, knobOk, bbOk] = parts.map(v => v === '1');
-        const optIns = parseInt(parts[8], 10);
+        const [psOk, srvOk, inLive, inArmed, midiOk, wdOk, knobOk, bbOk, sdOk] = parts.map(v => v === '1');
+        const optIns = parseInt(parts[9], 10);
         // server options: keep s.options in sync with settings so ANY boot path
         // (user's s.boot, startup.scd waitForBoot, extension commands) picks them
         // up. Options only apply at boot — if the server is already running with
@@ -1305,6 +1411,10 @@ async function ensureProxyRegisters(sc) {
             // this the backbone only healed while the knobs panel was open
             const bb = buildDynbufBackboneRegisterCode();
             if (bb) { _regHealLastSendMs = Date.now(); sc.executeCode(bb); console.log('[envil] ♥ (re)sent dynbuf backbone register'); }
+        }
+        if (!sdOk) {
+            const sd = buildSynthDefLoaderCode();
+            if (sd) { _regHealLastSendMs = Date.now(); sc.executeCode(sd); console.log('[envil] ♥ (re)sent synthdef loader'); }
         }
     } catch (_) { /* heartbeat retries next tick */ }
     finally { _regHealBusy = false; }
@@ -1401,6 +1511,7 @@ async function probeAndReconnect() {
         const ir = buildInputProxyRegisterCode(); if (ir) sc.executeCode(ir);
         const m = buildMidiProxySCCode(); if (m) sc.executeCode(m);
         const kr = buildKnobResyncRegisterCode(); if (kr) sc.executeCode(kr);
+        const sd = buildSynthDefLoaderCode(); if (sd) sc.executeCode(sd);
     }
 }
 

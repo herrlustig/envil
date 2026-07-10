@@ -122,6 +122,10 @@
         "title": "Envil: Hush / Stop All Sounds"
       },
       {
+        "command": "envil.supercollider.reloadSynthDefs",
+        "title": "Envil: Reload Default SynthDefs – SuperCollider"
+      },
+      {
         "command": "envil.supercollider.openHelpFor",
         "title": "Envil: Open Help for Word Under Cursor"
       },
@@ -386,6 +390,11 @@
             "minimum": 0,
             "maximum": 3600,
             "description": "MIDI watchdog interval in seconds: periodically reconnects all MIDI sources (hot-plug resilience, like e[\\startMidiWatchdog] in the old rig) and posts a check line to the console. 0 disables the watchdog."
+          },
+          "envil.supercollider.synthDefs.autoLoad": {
+            "type": "boolean",
+            "default": true,
+            "description": "Load default SynthDefs from ~/.config/envil/synthdefs/*.scd (global) and <workspace>/.envil/synthdefs/*.scd (overlays global on same filename) on every server boot. Re-sent automatically after reboots; edit files and run 'Envil: Reload Default SynthDefs' to apply live."
           },
           "envil.supercollider.sclang.sclang_conf": {
             "type": [
