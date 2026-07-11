@@ -2180,9 +2180,16 @@ function dynbufBuildSnapshot(d) {
     //                 Rest() sends no trigger → silent beat. Reverse: end < start.
     //   dStart/dEnd — additive offsets (default 0) on top of the resolved
     //                 start/end — lets patterns shift the UI-set window.
+    //   freq/baseFreq — pattern pitch-bend: baseFreq (default C4 261.63) is the
+    //                 sample's assumed root; freq > 0 bends via PitchShift by
+    //                 freq/baseFreq (timing unchanged). freq = -1 (default) =
+    //                 no bend — UI mode. \degree/\note in a \set Pbind resolve
+    //                 to \freq via the Event pitch chain, so melodies work.
+    //                 Total PitchShift ratio (incl. rateMul correction) clips
+    //                 at 0.25..4 — extreme combos saturate.
     // NOTE: this array is .join(' ')ed — NO // comments inside!
     const playerFunc = [
-        `{ |bufNum=0, start= -1, end= -1, rateMul= -1, chan= -1, quant= -1, loop= -1, amp=1, t_play=0, dur=0, legato=1, dStart=0, dEnd=0|`,
+        `{ |bufNum=0, start= -1, end= -1, rateMul= -1, chan= -1, quant= -1, loop= -1, amp=1, t_play=0, dur=0, legato=1, dStart=0, dEnd=0, freq= -1, baseFreq=261.6256|`,
         `  var tRaw = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
         `  var t = Select.kr(tRaw > 0.001, [DC.kr(1), tRaw]);`,
         `  var startV   = (Select.kr(start >= 0,   [Mix(~bufPlay_${slot}_start.kr),   start]) + dStart).clip(0, 1);`,
@@ -2208,7 +2215,8 @@ function dynbufBuildSnapshot(d) {
         `  var bp         = BufRd.ar(${nch}, bufNum, phaseR, interpolation: 1, loop: 0);`,
         `  var chanIdx    = K2A.ar(chanV.linlin(0, 1, 0, ${nch - 1}).round);`,
         `  var bpC        = Select.ar(chanIdx, bp);`,
-        `  PitchShift.ar(bpC, pitchRatio: rate.reciprocal.clip(0.25, 4)) * amp.lag(0.05) * playGate.lag(0.005) * cutEnv;`,
+        `  var bendR      = Select.kr(freq > 0, [DC.kr(1), freq / baseFreq.max(0.001)]);`,
+        `  PitchShift.ar(bpC, pitchRatio: (rate.reciprocal * bendR).clip(0.25, 4)) * amp.lag(0.05) * playGate.lag(0.005) * cutEnv;`,
         `}`,
     ].join(' ');
 
@@ -2271,7 +2279,7 @@ function dynbufBuildReloadFromDisk(d) {
     const wavPath = d.lastWavPath.replace(/\\/g, '/').replace(/"/g, '\\"');
     const ctrls = dynbufBuildCtrlsForSlot(d);
     const playerFunc = [
-        `{ |bufNum=0, start= -1, end= -1, rateMul= -1, chan= -1, quant= -1, loop= -1, amp=1, t_play=0, dur=0, legato=1, dStart=0, dEnd=0|`,
+        `{ |bufNum=0, start= -1, end= -1, rateMul= -1, chan= -1, quant= -1, loop= -1, amp=1, t_play=0, dur=0, legato=1, dStart=0, dEnd=0, freq= -1, baseFreq=261.6256|`,
         `  var tRaw = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
         `  var t = Select.kr(tRaw > 0.001, [DC.kr(1), tRaw]);`,
         `  var startV   = (Select.kr(start >= 0,   [Mix(~bufPlay_${slot}_start.kr),   start]) + dStart).clip(0, 1);`,
@@ -2297,7 +2305,8 @@ function dynbufBuildReloadFromDisk(d) {
         `  var bp         = BufRd.ar(${nch}, bufNum, phaseR, interpolation: 1, loop: 0);`,
         `  var chanIdx    = K2A.ar(chanV.linlin(0, 1, 0, ${nch - 1}).round);`,
         `  var bpC        = Select.ar(chanIdx, bp);`,
-        `  PitchShift.ar(bpC, pitchRatio: rate.reciprocal.clip(0.25, 4)) * amp.lag(0.05) * playGate.lag(0.005) * cutEnv;`,
+        `  var bendR      = Select.kr(freq > 0, [DC.kr(1), freq / baseFreq.max(0.001)]);`,
+        `  PitchShift.ar(bpC, pitchRatio: (rate.reciprocal * bendR).clip(0.25, 4)) * amp.lag(0.05) * playGate.lag(0.005) * cutEnv;`,
         `}`,
     ].join(' ');
     return [
