@@ -338,6 +338,7 @@ function openPanel(context) {
             // shown in the panel are live in the ProxySpace from the start
             const kr = buildKnobResyncRegisterCode();
             if (kr) sendSC(kr, true);
+            sendSC(buildTempoProxyRegisterCode(), true);
             knobResyncAll('panel open');
         }
     } catch (_) {}
@@ -1396,11 +1397,12 @@ const TEMPO_PROXY_SRC = `{ |val=1, lagTime=0.1| Lag.kr(val, lagTime) }`;
 function pushTempoProxy(tempo) {
     const t = Math.max(0.001, tempo);
     sendSC(
-        `if(currentEnvironment.isKindOf(ProxySpace), {` +
+        `{ var ps = Library.at(\\envil, \\pspace) ? currentEnvironment;` +
+        ` if(ps.isKindOf(ProxySpace), { ps.use({` +
         ` if(~t.source.isNil, { ~t.fadeTime = 0; ~t = ${TEMPO_PROXY_SRC} }, {` +
         ` if(Server.default.serverRunning and: { ~t.isPlaying.not }, { ~t.fadeTime = 0; ~t.source = ~t.source }) });` +
         ` ~t.set(\\val, ${t})` +
-        ` })`,
+        ` }) }) }.value`,
         true
     );
 }
@@ -1878,6 +1880,57 @@ function buildKnobResyncRegisterCode() {
     ].join('\n');
 }
 
+// ~t tempo proxy — first-class self-healed register (same pattern as input
+// proxies / synthdef loader). An SC-side watcher Routine mirrors
+// TempoClock.default.tempo into ~t every 250ms, so ANY tempo source (panel
+// tap, footpedal e[\timeSyncInput] hook, manual `TempoClock.default.tempo=`)
+// reaches ~t — previously only the panel's own tap/BPM field pushed it.
+// ServerTree refires it on every boot AND Cmd-Period (which kills AppClock
+// routines — the stale \tempoWatchBeat stamp lets the heartbeat heal too).
+// The ~t reassign (fadeTime=0, source=source) revives a dead synth after
+// reboot — idempotent, never .send.
+function buildTempoProxyRegisterCode() {
+    return [
+        `(`,
+        `Library.put(\\envil, \\tempoProxyFn, {`,
+        `  var last = Library.at(\\envil, \\tempoProxyLastFire) ? -10;`,
+        `  if((Main.elapsedTime - last) > 3, {`,
+        `    Library.put(\\envil, \\tempoProxyLastFire, Main.elapsedTime);`,
+        `    Routine({`,
+        `      var n = 0, ps;`,
+        `      while({ Server.default.serverRunning.not and: { n < 100 } }, { 0.1.wait; n = n + 1 });`,
+        `      ps = Library.at(\\envil, \\pspace) ? currentEnvironment;`,
+        `      if(Server.default.serverRunning and: { ps.isKindOf(ProxySpace) }, {`,
+        `        ps.use({`,
+        `          if(~t.source.isNil, { ~t.fadeTime = 0; ~t = { |val=1, lagTime=0.1| Lag.kr(val, lagTime) } }, { ~t.fadeTime = 0; ~t.source = ~t.source });`,
+        `          ~t.set(\\val, TempoClock.default.tempo);`,
+        `        });`,
+        `        (Library.at(\\envil, \\tempoWatch)) !? { |r| r.stop };`,
+        `        Library.put(\\envil, \\tempoWatch, Routine({`,
+        `          var lastT = -1;`,
+        `          loop({`,
+        `            var tt = TempoClock.default.tempo;`,
+        `            Library.put(\\envil, \\tempoWatchBeat, Main.elapsedTime);`,
+        `            if(tt != lastT, {`,
+        `              var sp = Library.at(\\envil, \\pspace) ? currentEnvironment;`,
+        `              lastT = tt;`,
+        `              if(sp.isKindOf(ProxySpace), { sp.use({ if(~t.source.notNil, { ~t.set(\\val, tt) }) }) });`,
+        `            });`,
+        `            0.25.wait;`,
+        `          });`,
+        `        }).play(AppClock));`,
+        `      });`,
+        `    }).play(AppClock);`,
+        `  });`,
+        `});`,
+        `(Library.at(\\envil, \\tempoProxyTreeFn)) !? { |fn| ServerTree.remove(fn, Server.default) };`,
+        `Library.put(\\envil, \\tempoProxyTreeFn, { Library.at(\\envil, \\tempoProxyFn).value });`,
+        `ServerTree.add(Library.at(\\envil, \\tempoProxyTreeFn), Server.default);`,
+        `Library.at(\\envil, \\tempoProxyFn).value;`,
+        `);`,
+    ].join('\n');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DYNAMIC BUFFER (live looper) — SC code emitters
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2130,7 +2183,8 @@ function dynbufBuildSnapshot(d) {
     // NOTE: this array is .join(' ')ed — NO // comments inside!
     const playerFunc = [
         `{ |bufNum=0, start= -1, end= -1, rateMul= -1, chan= -1, quant= -1, loop= -1, amp=1, t_play=0, dur=0, legato=1, dStart=0, dEnd=0|`,
-        `  var t = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
+        `  var tRaw = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
+        `  var t = Select.kr(tRaw > 0.001, [DC.kr(1), tRaw]);`,
         `  var startV   = (Select.kr(start >= 0,   [Mix(~bufPlay_${slot}_start.kr),   start]) + dStart).clip(0, 1);`,
         `  var endV     = (Select.kr(end >= 0,     [Mix(~bufPlay_${slot}_end.kr),     end]) + dEnd).clip(0, 1);`,
         `  var rateMulV = Select.kr(rateMul >= 0, [Mix(~bufPlay_${slot}_rateMul.kr), rateMul]);`,
@@ -2218,7 +2272,8 @@ function dynbufBuildReloadFromDisk(d) {
     const ctrls = dynbufBuildCtrlsForSlot(d);
     const playerFunc = [
         `{ |bufNum=0, start= -1, end= -1, rateMul= -1, chan= -1, quant= -1, loop= -1, amp=1, t_play=0, dur=0, legato=1, dStart=0, dEnd=0|`,
-        `  var t = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
+        `  var tRaw = if(~t.source.notNil, { Mix(~t.kr) }, { DC.kr(1) });`,
+        `  var t = Select.kr(tRaw > 0.001, [DC.kr(1), tRaw]);`,
         `  var startV   = (Select.kr(start >= 0,   [Mix(~bufPlay_${slot}_start.kr),   start]) + dStart).clip(0, 1);`,
         `  var endV     = (Select.kr(end >= 0,     [Mix(~bufPlay_${slot}_end.kr),     end]) + dEnd).clip(0, 1);`,
         `  var rateMulV = Select.kr(rateMul >= 0, [Mix(~bufPlay_${slot}_rateMul.kr), rateMul]);`,
@@ -2517,4 +2572,4 @@ function buildDynbufStatusQueryCode(slots) {
     ].join(' ');
 }
 
-module.exports = { registerTouchKnobs, hasEnvilDir, handleMediaPipeLandmarks, handleMediaPipeStatus, getMediaPipeConfig, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode, buildKnobResyncRegisterCode };
+module.exports = { registerTouchKnobs, hasEnvilDir, handleMediaPipeLandmarks, handleMediaPipeStatus, getMediaPipeConfig, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode, buildKnobResyncRegisterCode, buildTempoProxyRegisterCode };

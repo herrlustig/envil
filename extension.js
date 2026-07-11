@@ -11,7 +11,7 @@ const { registerHydraProviders } = require('./hydra-language-support');
 const { registerHoverSlider } = require('./hover-slider');
 const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
 const { extractExpressions } = require('./peek-expressions');
-const { registerTouchKnobs, hasEnvilDir, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode, buildKnobResyncRegisterCode } = require('./touch-knobs');
+const { registerTouchKnobs, hasEnvilDir, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode, buildKnobResyncRegisterCode, buildTempoProxyRegisterCode } = require('./touch-knobs');
 const { registerProxyCompletions } = require('./proxy-completions');
 const { registerEnvCompletions, clearEnvKeyCache } = require('./env-completions');
 const { registerPbindCompletions } = require('./pbind-completions');
@@ -545,6 +545,8 @@ async function activate(context) {
                 { const kr = buildKnobResyncRegisterCode(); if (kr) await sc.executeCode(kr); }
                 // default SynthDefs — ServerTree-registered, re-loaded on every boot
                 { const sd = buildSynthDefLoaderCode(); if (sd) await sc.executeCode(sd); }
+                // ~t tempo proxy + TempoClock mirror — ServerTree-registered
+                { const tp = buildTempoProxyRegisterCode(); if (tp) await sc.executeCode(tp); }
             } else {
                 await sc.executeCode(buildServerOptionsSCCode() + '\ns.boot;');
             }
@@ -601,6 +603,8 @@ async function activate(context) {
                 { const kr = buildKnobResyncRegisterCode(); if (kr) await sc.executeCode(kr); }
                 // default SynthDefs — ServerTree-registered, re-loaded on every boot
                 { const sd = buildSynthDefLoaderCode(); if (sd) await sc.executeCode(sd); }
+                // ~t tempo proxy + TempoClock mirror — ServerTree-registered
+                { const tp = buildTempoProxyRegisterCode(); if (tp) await sc.executeCode(tp); }
             } else {
                 await sc.executeCode(buildServerOptionsSCCode() + '\ns.reboot;');
             }
@@ -1247,6 +1251,7 @@ function registerSclangStartCallback() {
                 const m = buildMidiProxySCCode(); if (m) sc.executeCode(m);
                 const kr = buildKnobResyncRegisterCode(); if (kr) sc.executeCode(kr);
                 const sd = buildSynthDefLoaderCode(); if (sd) sc.executeCode(sd);
+                const tp = buildTempoProxyRegisterCode(); if (tp) sc.executeCode(tp);
             }
         }).catch(() => { /* heartbeat heal covers any missed init */ });
     });
@@ -1356,7 +1361,7 @@ async function ensureProxyRegisters(sc) {
         const wdSec = Math.max(0, Math.min(3600, Number(vscode.workspace.getConfiguration('envil.supercollider.midi').get('watchdogSeconds', 60)) || 0));
         const marker = '<<E_REG>>';
         sc.addSuppressMarker(marker);
-        const q = `{ var ps, srv, e, inLive, inArmed, midiOk, wdOk, knobOk, bbOk, sdOk, optIns; `
+        const q = `{ var ps, srv, e, inLive, inArmed, midiOk, wdOk, knobOk, bbOk, sdOk, tpOk, optIns; `
             + `ps = currentEnvironment.isKindOf(ProxySpace); `
             + `if(ps, { Library.put(\\envil, \\pspace, currentEnvironment) }); `
             + `srv = Server.default.serverRunning; `
@@ -1368,13 +1373,14 @@ async function ensureProxyRegisters(sc) {
             + `knobOk = Library.at(\\envil, \\knobResyncFn).notNil; `
             + `bbOk = Library.at(\\envil, \\backboneFn).notNil; `
             + `sdOk = Library.at(\\envil, \\synthDefsFn).notNil; `
+            + `tpOk = Library.at(\\envil, \\tempoProxyFn).notNil and: { srv.not or: { (Library.at(\\envil, \\tempoWatchBeat) ? -1e9) > (Main.elapsedTime - 15) } }; `
             + `optIns = Server.default.options.numInputBusChannels; `
-            + `("${marker}" ++ [ps, srv, inLive, inArmed, midiOk, wdOk, knobOk, bbOk, sdOk].collect(_.binaryValue).join(",") ++ "," ++ optIns ++ "${marker}").postln; }.value;`;
+            + `("${marker}" ++ [ps, srv, inLive, inArmed, midiOk, wdOk, knobOk, bbOk, sdOk, tpOk].collect(_.binaryValue).join(",") ++ "," ++ optIns ++ "${marker}").postln; }.value;`;
         const res = await sc.queryCode(q, marker, 2500);
         if (!res) return;  // interpreter still compiling/busy — retry next tick
         const parts = res.trim().split(',');
-        const [psOk, srvOk, inLive, inArmed, midiOk, wdOk, knobOk, bbOk, sdOk] = parts.map(v => v === '1');
-        const optIns = parseInt(parts[9], 10);
+        const [psOk, srvOk, inLive, inArmed, midiOk, wdOk, knobOk, bbOk, sdOk, tpOk] = parts.map(v => v === '1');
+        const optIns = parseInt(parts[10], 10);
         // server options: keep s.options in sync with settings so ANY boot path
         // (user's s.boot, startup.scd waitForBoot, extension commands) picks them
         // up. Options only apply at boot — if the server is already running with
@@ -1415,6 +1421,12 @@ async function ensureProxyRegisters(sc) {
         if (!sdOk) {
             const sd = buildSynthDefLoaderCode();
             if (sd) { _regHealLastSendMs = Date.now(); sc.executeCode(sd); console.log('[envil] ♥ (re)sent synthdef loader'); }
+        }
+        if (!tpOk) {
+            // ~t register missing OR its watcher Routine died (Cmd-Period kills
+            // AppClock routines; stamp goes stale) — re-send, idempotent
+            const tp = buildTempoProxyRegisterCode();
+            if (tp) { _regHealLastSendMs = Date.now(); sc.executeCode(tp); console.log('[envil] ♥ (re)sent ~t tempo proxy register'); }
         }
     } catch (_) { /* heartbeat retries next tick */ }
     finally { _regHealBusy = false; }
@@ -1512,6 +1524,7 @@ async function probeAndReconnect() {
         const m = buildMidiProxySCCode(); if (m) sc.executeCode(m);
         const kr = buildKnobResyncRegisterCode(); if (kr) sc.executeCode(kr);
         const sd = buildSynthDefLoaderCode(); if (sd) sc.executeCode(sd);
+        const tp = buildTempoProxyRegisterCode(); if (tp) sc.executeCode(tp);
     }
 }
 
