@@ -972,6 +972,62 @@ iframe{width:100%;height:100%;border:none}</style></head>
     // SC class/method completions — dynamic from sclang, static fallback
     registerSCCompletions(context, { getSC });
 
+    // Re-trigger the completion dropdown when the cursor ENDS UP right after a
+    // trigger char without typing it — VS Code only auto-fires completion when
+    // a trigger character is TYPED. Covered: deleting "instrument" from
+    // "\instrument", and cursor movement (arrows/mouse) onto such a spot.
+    // Cases: '\' (Pbind/env keys), '~' (proxies), 'ident[' (dict/env lookup
+    // like e[ ). DWELL: fires only after the cursor RESTS there for 250ms —
+    // sliding through code with arrow keys (or holding backspace) must not
+    // trap the user in a dropdown. The timer re-checks the CURRENT cursor at
+    // expiry, so any further move/edit cancels or re-schedules.
+    const cursorAtTrigger = (doc, pos) => {
+        if (pos.character === 0) return false;
+        const before = doc.getText(new vscode.Range(pos.line, Math.max(0, pos.character - 2), pos.line, pos.character));
+        const last = before[before.length - 1];
+        return last === '\\' || last === '~'
+            || (last === '[' && /\w/.test(before[before.length - 2] || ''));
+    };
+    let _cursorTriggerTimer = null;
+    const scheduleTriggerCheck = () => {
+        if (_cursorTriggerTimer) clearTimeout(_cursorTriggerTimer);
+        _cursorTriggerTimer = setTimeout(() => {
+            _cursorTriggerTimer = null;
+            const ed = vscode.window.activeTextEditor;
+            if (!ed || ed.document.languageId !== 'supercollider') return;
+            if (!ed.selection.isEmpty) return;
+            if (cursorAtTrigger(ed.document, ed.selection.active)) {
+                vscode.commands.executeCommand('editor.action.triggerSuggest');
+            }
+        }, 250);
+    };
+    let _lastScDocChangeMs = 0;
+    context.subscriptions.push(vscode.workspace.onDidChangeTextDocument((ev) => {
+        if (ev.document.languageId !== 'supercollider' || ev.contentChanges.length === 0) return;
+        _lastScDocChangeMs = Date.now();
+        // deletions only — typed trigger chars already work natively
+        if (!ev.contentChanges.every(c => c.text === '' && c.rangeLength > 0)) {
+            if (_cursorTriggerTimer) { clearTimeout(_cursorTriggerTimer); _cursorTriggerTimer = null; }
+            return;
+        }
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document !== ev.document) return;
+        scheduleTriggerCheck();
+    }));
+    context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection((ev) => {
+        if (ev.textEditor.document.languageId !== 'supercollider') return;
+        // pure cursor moves only (mouse click / arrow keys) — selection events
+        // caused by edits arrive right after a doc change; those are handled
+        // above (deletes) or natively (typed trigger chars)
+        if (Date.now() - _lastScDocChangeMs < 100) return;
+        if (ev.kind !== vscode.TextEditorSelectionChangeKind.Keyboard
+            && ev.kind !== vscode.TextEditorSelectionChangeKind.Mouse) {
+            if (_cursorTriggerTimer) { clearTimeout(_cursorTriggerTimer); _cursorTriggerTimer = null; }
+            return;
+        }
+        scheduleTriggerCheck();
+    }));
+
     // SC→Hydra proxy bridge — polls scsynth buses, forwards to browser
     scBridge.initBridge({
         getSC,

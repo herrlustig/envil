@@ -101,8 +101,31 @@ class EnvKeyCompletionProvider {
         const skipVars = new Set(['i', 'j', 'k', 'n', 'x', 'y', 'z']);
         if (varName.length === 1 && skipVars.has(varName)) return null;
 
+        // Cold cache = a live sclang round-trip (up to ~2.5s). VS Code often
+        // gives up on the suggest widget before that resolves and silently
+        // DISCARDS our late result — "typing e[ shows nothing". So when the
+        // fetch was slow (not served from cache), re-open the dropdown once:
+        // the second provider call hits the fresh cache instantly.
+        const wasCached = (() => {
+            const c = _keyCache.get(varName);
+            return !!c && (Date.now() - c.ts) < CACHE_TTL_MS;
+        })();
+
         const keys = await getKeys(varName);
         if (!keys || keys.length === 0) return null;
+
+        if (!wasCached) {
+            setTimeout(() => {
+                const ed = vscode.window.activeTextEditor;
+                if (!ed || ed.document !== document || !ed.selection.isEmpty) return;
+                const line = ed.document.lineAt(ed.selection.active).text
+                    .substring(0, ed.selection.active.character);
+                const m = line.match(/\b([a-zA-Z_]\w*)\[\\?(\w*)$/);
+                if (m && m[1] === varName) {
+                    vscode.commands.executeCommand('editor.action.triggerSuggest');
+                }
+            }, 50);
+        }
 
         // Determine insert range — replace everything after [
         const bracketPos = lineUpToCursor.lastIndexOf('[');
