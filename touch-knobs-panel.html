@@ -88,7 +88,9 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
 #seq-grid {
     padding: 4px 8px 8px;
     width: max-content;
-    margin: 0 auto;
+    /* left-aligned (not centered): +/- step changes grow rows to the RIGHT
+       without re-centering (= horizontally shifting) every other row */
+    margin: 0;
 }
 .macro-grid {
     padding: 6px 8px 2px;
@@ -349,6 +351,7 @@ html, body { width: 100%; height: 100vh; overflow: hidden; background: var(--vsc
     width: 22px; height: 22px; border: 1px solid #555; border-radius: 3px;
     background: #2a2a2a; cursor: pointer; flex-shrink: 0;
     transition: background 0.08s;
+    touch-action: none; /* allow drag-painting on touch without scrolling */
 }
 .seq-step.on { background: #0af; border-color: #0af; }
 .seq-step.current { box-shadow: 0 0 4px 1px #ff0; }
@@ -2316,6 +2319,12 @@ function removeSeq(s) {
     persistState();
 }
 
+// Drag-paint state: on pointerdown the first step's NEW value (0/1) becomes
+// the paint value; dragging over other steps applies it until pointerup.
+let seqPaintVal = null;
+window.addEventListener('pointerup', () => { seqPaintVal = null; });
+window.addEventListener('pointercancel', () => { seqPaintVal = null; });
+
 function renderSeqRow(s) {
     const existing = document.getElementById('seq-row-' + s.id);
     const nextSibling = existing ? existing.nextSibling : null;
@@ -2402,12 +2411,23 @@ function renderSeqRow(s) {
         btn.className = 'seq-step' + (val ? ' on' : '');
         btn.dataset.step = i;
         if (val) btn.style.background = s.color;
-        btn.addEventListener('click', () => {
-            s.steps[i] = s.steps[i] ? 0 : 1;
-            btn.classList.toggle('on', !!s.steps[i]);
-            btn.style.background = s.steps[i] ? s.color : '';
-            vscode.postMessage({ type: 'seq-toggle-step', name: s.name, step: i, val: s.steps[i], steps: s.steps });
+        const applyPaint = (pv) => {
+            if (s.steps[i] === pv) return;
+            s.steps[i] = pv;
+            btn.classList.toggle('on', !!pv);
+            btn.style.background = pv ? s.color : '';
+            vscode.postMessage({ type: 'seq-toggle-step', name: s.name, step: i, val: pv, steps: s.steps });
             persistState();
+        };
+        btn.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            // Release implicit touch capture so pointerenter fires on other steps
+            try { btn.releasePointerCapture(e.pointerId); } catch (_) {}
+            seqPaintVal = s.steps[i] ? 0 : 1;
+            applyPaint(seqPaintVal);
+        });
+        btn.addEventListener('pointerenter', () => {
+            if (seqPaintVal !== null) applyPaint(seqPaintVal);
         });
         row.appendChild(btn);
     });
