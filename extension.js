@@ -11,6 +11,32 @@ const { registerHydraProviders } = require('./hydra-language-support');
 const { registerHoverSlider } = require('./hover-slider');
 const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
 const { extractExpressions } = require('./peek-expressions');
+
+const ENVIL_BUILD_STAMP = '20260713-132813';   // rewritten by rebuild-install.sh
+
+// Auto-watch SC proxies referenced as _s.<name> in evaluated Hydra code.
+// Knob/macro/seq aliases (v_c*, v_n*, mcr_*, seq_*) are served by their own
+// pipelines — anything else is an SC bus that needs the sc-bridge poller.
+const _autoWatched = new Set();
+function autoWatchScAliases(text) {
+    const scBridgeMod = require('./sc-bridge');
+    const re = /_s\.([A-Za-z_]\w*)/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        const name = m[1];
+        if (/^(v_c\d+|v_n\d*|v_n_val|mcr_\d+|seq_\w+)$/.test(name)) continue;
+        if (_autoWatched.has(name) || scBridgeMod.getWatchedNames().includes(name)) continue;
+        _autoWatched.add(name);
+        scBridgeMod.watchProxy(name).then(ok => {
+            if (!ok) _autoWatched.delete(name);   // retry on next eval
+            if (hydraOutput) {
+                hydraOutput.appendLine(ok
+                    ? `  \u{1F517} sc-bridge: auto-watching ~${name} (used as _s.${name})`
+                    : `  \u26A0 sc-bridge: could not resolve ~${name} — is the proxy playing?`);
+            }
+        }).catch(() => _autoWatched.delete(name));
+    }
+}
 const { registerTouchKnobs, hasEnvilDir, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode, buildKnobResyncRegisterCode, buildTempoProxyRegisterCode } = require('./touch-knobs');
 const { registerProxyCompletions } = require('./proxy-completions');
 const { registerEnvCompletions, clearEnvKeyCache } = require('./env-completions');
@@ -412,7 +438,11 @@ function buildMidiProxySCCode() {
 // ── Activate ─────────────────────────────────────────────────────────────────
 
 async function activate(context) {
-    console.log('[envil] Activating...');
+    // BUILD STAMP — updated by rebuild-install.sh; verifies which build is live
+    console.log(`[envil] Activating... build ${ENVIL_BUILD_STAMP}`);
+    try {
+        vscode.window.setStatusBarMessage(`envil build ${ENVIL_BUILD_STAMP}`, 8000);
+    } catch (_) {}
 
     const workspaceFolder = vscode.workspace.workspaceFolders
         ? vscode.workspace.workspaceFolders[0].uri.fsPath : null;
@@ -889,6 +919,7 @@ iframe{width:100%;height:100%;border:none}</style></head>
         if (hydraOutput) {
             if (sentCount > 0) {
                 hydraOutput.appendLine(`  ✓ sent ${sentCount} statement${sentCount > 1 ? 's' : ''} to Hydra`);
+                autoWatchScAliases(text);
                 // ── Peek: extract arrow-function expressions and send to browser ──
                 try {
                     const exprs = extractExpressions(text);
@@ -1106,6 +1137,7 @@ iframe{width:100%;height:100%;border:none}</style></head>
             if (hydraOutput) {
                 if (sentCount > 0) {
                     hydraOutput.appendLine(`  ✓ sent ${sentCount} statement${sentCount > 1 ? 's' : ''} to Hydra (CodeLens)`);
+                    autoWatchScAliases(blockCode);
                     // ── Peek: extract arrow-function expressions and send to browser ──
                     try {
                         const exprs = extractExpressions(blockCode);
@@ -1604,6 +1636,11 @@ function startServersAndSockets(workspaceFolder) {
     io.on('connection', (socket) => {
         console.log('[envil] Socket.io: client connected');
         if (hydraOutput) hydraOutput.appendLine('── Hydra browser connected ──');
+        // Browser signals readiness (all proxy scripts loaded) → push current
+        // macro/seq/knob state so idle values resolve immediately.
+        socket.on('hydra-ready', () => {
+            try { require('./touch-knobs').emitHydraStateSnapshot(); } catch (_) {}
+        });
         socket.on('disconnect', () => {
             console.log('[envil] Socket.io: client disconnected');
             if (hydraOutput) hydraOutput.appendLine('── Hydra browser disconnected ──');

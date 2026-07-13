@@ -1146,8 +1146,13 @@ document.getElementById('btn-add').addEventListener('click', () => {
 });
 
 function addKnob(name, nx, ny) {
-    const id = nextId++;
-    const midiNote = MIDI_BASE_NOTE + (id - 1);  // C3, C#3, D3, ...
+    // Lowest free MIDI note from MIDI_BASE_NOTE (60) upward — deleted
+    // numbers are reused: e.g. only 61 exists → next is 60, then 62.
+    const used = new Set(knobs.map(k => knobMidiNote(k)));
+    let midiNote = MIDI_BASE_NOTE;
+    while (used.has(midiNote)) midiNote++;
+    const id = midiNote - MIDI_BASE_NOTE + 1;   // stable 1-based index
+    nextId = Math.max(nextId, id + 1);
     const knob = {
         id,
         note: id,        // stable index (1-based)

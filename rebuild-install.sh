@@ -4,6 +4,11 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Stamp the build so the running extension can be identified unambiguously
+STAMP=$(date +%Y%m%d-%H%M%S)
+sed -i "s/^const ENVIL_BUILD_STAMP = .*/const ENVIL_BUILD_STAMP = '$STAMP';   \/\/ rewritten by rebuild-install.sh/" extension.js
+echo "==> Build stamp: $STAMP"
+
 echo "==> Installing root dependencies..."
 npm install
 

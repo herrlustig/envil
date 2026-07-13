@@ -57,13 +57,30 @@ async function watchProxy(name, numChannels) {
     }
 
     const marker = `<<SCB_${name}>>`;
-    // Ask sclang for the bus index and channel count
+    if (sc.addSuppressMarker) sc.addSuppressMarker(marker);
+    // Ask sclang for a POLLABLE control bus for this proxy.
+    // /c_getn only reads CONTROL buses — an audio-rate proxy's bus index
+    // points into audio bus space and would read garbage. For audio proxies
+    // we auto-create a companion control-rate amplitude follower
+    // (~<name>_scb) and poll that instead.
+    // NOTE: queryCode uses SILENT interpret — the marker MUST be .postln'd,
+    // a bare expression result is never printed and the query times out.
     const scCode = [
-        `var p = ~${name};`,
-        `if(p.notNil and: { p.bus.notNil }, {`,
-        `  "${marker}" ++ p.bus.index ++ "," ++ p.numChannels ++ "${marker}"`,
+        `var p;`,
+        `if(currentEnvironment.isKindOf(ProxySpace), {`,
+        `  p = ~${name};`,
+        `  if(p.notNil and: { p.bus.notNil }, {`,
+        `    if(p.rate == \\audio, {`,
+        `      if(~${name}_scb.source.isNil, { ~${name}_scb = { Amplitude.kr(~${name}.ar, 0.01, 0.1) } });`,
+        `      ("${marker}" ++ ~${name}_scb.bus.index ++ "," ++ ~${name}_scb.numChannels ++ "${marker}").postln;`,
+        `    }, {`,
+        `      ("${marker}" ++ p.bus.index ++ "," ++ p.numChannels ++ "${marker}").postln;`,
+        `    });`,
+        `  }, {`,
+        `    "${marker}nil${marker}".postln;`,
+        `  });`,
         `}, {`,
-        `  "${marker}nil${marker}"`,
+        `  "${marker}nil${marker}".postln;`,
         `})`,
     ].join(' ');
 

@@ -1315,6 +1315,7 @@ function macroSCCode(m, val) {
 function macroHydraPayload(m, val, includePoints = false) {
     return {
         name: m.name,
+        macroNum: positiveInteger(m && m.macroNum, 1),
         pos: clamp01(m.position),
         val: clamp01(val != null ? val : 0),
         length: Array.isArray(m.points) ? m.points.length : 0,
@@ -1674,6 +1675,28 @@ function sendHydra(event, data) {
     io.sockets.emit(event, data);
 }
 
+/**
+ * Push the full current state (macros, seqs, knobs) to the Hydra page.
+ * Called when a browser connects, so idle macros/seqs are known immediately
+ * instead of only appearing after their next tick.
+ */
+function emitHydraStateSnapshot() {
+    for (const m of _macros) {
+        const val = macroSampleValue(m, m.position);
+        sendHydra('macro-update', macroHydraPayload(m, val, true));
+    }
+    for (const s of _seqs) {
+        const step = (s.currentStep >= 0 && s.currentStep < s.steps.length) ? s.currentStep : 0;
+        const val = s.steps.length > 0 ? (Number(s.steps[step]) || 0) : 0;
+        sendHydra('seq-step', { name: s.name, step, val: s.playing ? val : 0, steps: s.steps });
+    }
+    const state = loadLayout() || {};
+    for (const k of (Array.isArray(state.knobs) ? state.knobs : [])) {
+        const noteNum = Number(k.midiNote != null ? k.midiNote : k.id) | 0;
+        sendHydra('knob-update', { note: noteNum, x: clamp01(Number(k.nx) || 0), y: clamp01(Number(k.ny) || 0) });
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // LAYOUT PERSISTENCE
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1742,11 +1765,17 @@ function sanitizeName(name) {
     return (name || 'k0').replace(/[^a-zA-Z0-9_]/g, '');
 }
 
-function macroEnsureSCCode(proxyName) {
+function macroEnsureSCCode(proxyName, force) {
     // Heal via source-reassign (frees old synth), NEVER .send (stacks a 2nd
     // synth → kr bus sums → macro reads 1..2 instead of 0..1). fadeTime=0
     // kills the crossfade-summing window; smoothing comes from Lag.kr anyway.
-    return `if(${proxyName}.source.isNil, { ${proxyName}.mold(1, \\control); ${proxyName}.fadeTime = 0; ${proxyName} = ${MACRO_SRC} }, { if(Server.default.serverRunning and: { ${proxyName}.isPlaying.not }, { ${proxyName}.fadeTime = 0; ${proxyName}.source = ${proxyName}.source; ">>> envil: healed ${proxyName}".postln }) })`;
+    // force=true: reassign unconditionally — used by the boot resync, where
+    // .isPlaying is unreliable (stays true after a server reboot the client
+    // didn't fully track, so the conditional heal would wrongly skip).
+    const healCond = force
+        ? 'Server.default.serverRunning'
+        : `Server.default.serverRunning and: { ${proxyName}.isPlaying.not }`;
+    return `if(${proxyName}.source.isNil, { ${proxyName}.mold(1, \\control); ${proxyName}.fadeTime = 0; ${proxyName} = ${MACRO_SRC} }, { if(${healCond}, { ${proxyName}.fadeTime = 0; ${proxyName}.source = ${proxyName}.source }) })`;
 }
 
 function macroProxyName(m) {
@@ -1782,14 +1811,17 @@ function knobResyncAll(reason) {
         const x = clamp01(Number(k.nx) || 0);
         const y = clamp01(Number(k.ny) || 0);
         const pn = `~${PROXY_PREFIX}_c${noteNum}`;
-        parts.push(`if(${pn}.source.isNil or: { ${pn}.numChannels != 2 }, { ${pn}.mold(2, \\control); ${pn}.fadeTime = 0; ${pn} = ${knobSrc} }, { if(Server.default.serverRunning and: { ${pn}.isPlaying.not }, { ${pn}.fadeTime = 0; ${pn}.source = ${pn}.source }) }); ${pn}.set(\\x, ${x}, \\y, ${y})`);
+        // Heal is UNCONDITIONAL here: after a server reboot .isPlaying can
+        // stay true (stale client bookkeeping) while the synth is dead — a
+        // conditional heal would wrongly skip. Reassign is harmless (fadeTime=0).
+        parts.push(`if(${pn}.source.isNil or: { ${pn}.numChannels != 2 }, { ${pn}.mold(2, \\control); ${pn}.fadeTime = 0; ${pn} = ${knobSrc} }, { if(Server.default.serverRunning, { ${pn}.fadeTime = 0; ${pn}.source = ${pn}.source }) }); ${pn}.set(\\x, ${x}, \\y, ${y})`);
     }
 
     // ── shared tap/note proxies: ~v_n / ~v_n_val (idle = 0) ──
     if (knobs.length > 0) {
         const noteSrc = `{ |val=0, lagTime=0| Lag.kr(val, lagTime) }`;
         for (const pn of [`~${PROXY_PREFIX}_n`, `~${PROXY_PREFIX}_n_val`]) {
-            parts.push(`if(${pn}.source.isNil, { ${pn}.fadeTime = 0; ${pn} = ${noteSrc} }, { if(Server.default.serverRunning and: { ${pn}.isPlaying.not }, { ${pn}.fadeTime = 0; ${pn}.source = ${pn}.source }) })`);
+            parts.push(`if(${pn}.source.isNil, { ${pn}.fadeTime = 0; ${pn} = ${noteSrc} }, { if(Server.default.serverRunning, { ${pn}.fadeTime = 0; ${pn}.source = ${pn}.source }) })`);
         }
     }
 
@@ -1800,7 +1832,7 @@ function knobResyncAll(reason) {
     for (const m of macros) {
         const pos = clamp01(Number(m.position != null ? m.position : m.currentPos) || 0);
         const val = macroSampleValue(m, pos);
-        parts.push(`${macroEnsureSCCode(macroProxyName(m))}; ${macroProxyName(m)}.set(\\val, ${val})`);
+        parts.push(`${macroEnsureSCCode(macroProxyName(m), true)}; ${macroProxyName(m)}.set(\\val, ${val})`);
     }
 
     // ── sequencers: ~seq_<name> (idle = current step value; playing ones
@@ -1811,7 +1843,7 @@ function knobResyncAll(reason) {
         const pn = `~seq_${s.name}`;
         const v = (Array.isArray(s.steps) && s.steps.length > 0)
             ? (Number(s.steps[(s.currentStep || 0) % s.steps.length]) || 0) : 0;
-        parts.push(`if(${pn}.source.isNil, { ${pn}.mold(1, \\control); ${pn}.fadeTime = 0; ${pn} = ${SEQ_SRC} }, { if(Server.default.serverRunning and: { ${pn}.isPlaying.not }, { ${pn}.fadeTime = 0; ${pn}.source = ${pn}.source }) }); ${pn}.set(\\val, ${v})`);
+        parts.push(`if(${pn}.source.isNil, { ${pn}.mold(1, \\control); ${pn}.fadeTime = 0; ${pn} = ${SEQ_SRC} }, { if(Server.default.serverRunning, { ${pn}.fadeTime = 0; ${pn}.source = ${pn}.source }) }); ${pn}.set(\\val, ${v})`);
     }
 
     if (parts.length === 0 && _dynbufs.size === 0) return;
@@ -2581,4 +2613,47 @@ function buildDynbufStatusQueryCode(slots) {
     ].join(' ');
 }
 
-module.exports = { registerTouchKnobs, hasEnvilDir, handleMediaPipeLandmarks, handleMediaPipeStatus, getMediaPipeConfig, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode, buildKnobResyncRegisterCode, buildTempoProxyRegisterCode };
+/**
+ * Returns a snapshot of all live ENVIL alias names for IDE completion.
+ * Called synchronously — safe to call from any context.
+ */
+function getEnvilLiveState() {
+    let state = loadLayout();
+    if (!state) {
+        // Fallback: _layoutPath may not be set yet (or points elsewhere) —
+        // scan all workspace folders for .envil/state.json directly.
+        try {
+            const folders = vscode.workspace.workspaceFolders || [];
+            for (const f of folders) {
+                const p = path.join(f.uri.fsPath, ENVIL_DIR, STATE_FILE);
+                if (fs.existsSync(p)) {
+                    state = JSON.parse(fs.readFileSync(p, 'utf-8'));
+                    break;
+                }
+            }
+        } catch (_) { /* fall through to empty */ }
+    }
+    state = state || {};
+
+    // Knobs — live in state.json (knob panel data)
+    const knobs = (Array.isArray(state.knobs) ? state.knobs : []).map(k => {
+        const num = Number(k.midiNote != null ? k.midiNote : k.id) | 0;
+        return { num, label: k.name || String(num) };
+    });
+
+    // Macros — host-side live array, fall back to persisted state
+    const macroSrc = _macros.length > 0 ? _macros : (Array.isArray(state.macros) ? state.macros : []);
+    const macros = macroSrc.map(m => ({ num: positiveInteger(m.macroNum, 1), name: m.name }));
+
+    // Sequencers — host-side live array, fall back to persisted state
+    const seqSrc = _seqs.length > 0 ? _seqs : (Array.isArray(state.seqs) ? state.seqs : []);
+    const seqs = seqSrc.map(s => ({ name: s.name }));
+
+    // SC bridge watched proxy names
+    let scNames = [];
+    try { scNames = require('./sc-bridge').getWatchedNames(); } catch (_) {}
+
+    return { knobs, macros, seqs, scNames };
+}
+
+module.exports = { registerTouchKnobs, hasEnvilDir, handleMediaPipeLandmarks, handleMediaPipeStatus, getMediaPipeConfig, getEnvilLiveState, emitHydraStateSnapshot, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode, buildKnobResyncRegisterCode, buildTempoProxyRegisterCode };

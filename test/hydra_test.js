@@ -22,29 +22,29 @@ a.setScale(1);
 (src(s1)
 //src(o0)                            
   //.blend(src(s1)), 1)                          // blend with feedback
-  .colorama(() => feedbackIntensity*100 + a.fft[3] * 0.1)
+  //.colorama(() => feedbackIntensity*100 + a.fft[3] * 0.1)
 
 
   //.rotate(() => a.fft[0] * 0.1)
-  .scale(() => 0.9 + a.fft[1] * 0.05)
-  .rotate(() => a.fft[2] * 0.00 + Math.sin(time)*0.1)
+  //.scale(() => 0.9 + a.fft[1] * 0.05)
+  //.rotate(() => a.fft[2] * 0.00 + Math.sin(time)*0.1)
   //.layer(noise().luma(() => 0.1 + a.fft[1] * 0.2))
   //.scrollX( 1, () => 0.01 + 0.00001*Math.abs(a.fft[1]))
   
-  .scrollY(1, () => -0.00001*time + 0.00001*Math.abs(a.fft[2]))
+  //.scrollY(1, () => -0.00001*time + 0.00001*Math.abs(a.fft[2]))
   //.asdasd()
   //asdsd
-  .color(.2, .1, 0.1).shift(() => a.fft[2] * -0 + 20, 0.1, 1, 0, 0)
+  //.color(.2, .1, 0.1).shift(() => a.fft[2] * -0 + 20, 0.1, 1, 0, 0)
   //.brightness(() => 0.1 + a.fft[0] * 0.1)
-  .pixelate( () => 2000 + time%100)
+  //.pixelate( () => time % 2 * 100 + 0 , 1000 * _s.mcr_1)
+  .pixelate( () => 1000 , () => 200 - 100 * _s.out )
   
   )
-  
 
 
-.kaleid(1)
+//.kaleid(1)
   
-.pixelate(() => 100 + Math.sin(time)*a.fft[0]%20, () => 2000 + time%100)
+//.pixelate(() => 100 + Math.sin(time)*a.fft[0]%20, () => 2000 + time%100)
   
   .out();
 

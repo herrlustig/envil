@@ -971,6 +971,15 @@ function md(text) {
     return ms;
 }
 
+// Visible debug log (Output panel → "Envil Debug") — console.log only goes
+// to the Extension Host devtools console, which is easy to miss.
+let _dbgChannel = null;
+function dbg(msg) {
+    if (!_dbgChannel) _dbgChannel = vscode.window.createOutputChannel('Envil Debug');
+    _dbgChannel.appendLine(`[${new Date().toLocaleTimeString()}] ${msg}`);
+    console.log('[envil] ' + msg);
+}
+
 /**
  * Build a SnippetString from a param list like ['freq = 60', 'sync = 0.1'].
  * Produces `name(${1:60}, ${2:0.1})` so tab-stops land on each default value.
@@ -1019,7 +1028,7 @@ function makeCompletionProvider() {
                 // Method completions (chained calls)
                 for (const [name, info] of Object.entries({ ...HYDRA_METHODS, ...HYDRA_AUDIO_METHODS })) {
                     if (typed.length > 0 && !name.toLowerCase().startsWith(typed)) continue;
-                    const item = new vscode.CompletionItem(hydraLabel(name, 'method'), vscode.CompletionItemKind.Method);
+                    const item = new vscode.CompletionItem(hydraLabel(name, 'method'), vscode.CompletionItemKind.User);
                     item.detail        = info.detail;
                     item.documentation = md(info.documentation);
                     item.insertText    = new vscode.SnippetString(buildSnippet(name, info.params));
@@ -1031,7 +1040,7 @@ function makeCompletionProvider() {
                 // Source / global completions (top of chain)
                 for (const [name, info] of Object.entries(HYDRA_SOURCES)) {
                     if (!name.toLowerCase().startsWith(typed)) continue;
-                    const item = new vscode.CompletionItem(hydraLabel(name, 'source'), vscode.CompletionItemKind.Function);
+                    const item = new vscode.CompletionItem(hydraLabel(name, 'source'), vscode.CompletionItemKind.User);
                     item.detail        = info.detail;
                     item.documentation = md(info.documentation);
                     item.insertText    = new vscode.SnippetString(buildSnippet(name, info.params));
@@ -1042,7 +1051,7 @@ function makeCompletionProvider() {
 
                 // render()
                 if ('render'.startsWith(typed)) {
-                    const renderItem = new vscode.CompletionItem(hydraLabel('render', 'global'), vscode.CompletionItemKind.Function);
+                    const renderItem = new vscode.CompletionItem(hydraLabel('render', 'global'), vscode.CompletionItemKind.User);
                     renderItem.detail        = HYDRA_RENDER.detail;
                     renderItem.documentation = md(HYDRA_RENDER.documentation);
                     renderItem.insertText    = new vscode.SnippetString(buildSnippet('render', HYDRA_RENDER.params));
@@ -1054,7 +1063,7 @@ function makeCompletionProvider() {
                 // Buffers and audio object
                 for (const [name, doc] of Object.entries(HYDRA_GLOBALS_DOCS)) {
                     if (!name.toLowerCase().startsWith(typed)) continue;
-                    const item = new vscode.CompletionItem(hydraLabel(name, 'buffer'), vscode.CompletionItemKind.Variable);
+                    const item = new vscode.CompletionItem(hydraLabel(name, 'buffer'), vscode.CompletionItemKind.User);
                     item.documentation = md(doc);
                     item.filterText    = name;
                     item.sortText      = '!' + name;
@@ -1160,6 +1169,112 @@ function makeSignatureProvider() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// _s.<name> COMPLETION PROVIDER
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build CompletionItems for all live ENVIL alias names typed after `_s.`.
+ * `range` = replace range covering the partial word after the dot — explicit,
+ * because VS Code's implicit word-range can mismatch around `_s.` and
+ * silently filter every item out.
+ */
+function buildEnvilItems(typed, range) {
+    let state;
+    try { state = require('./touch-knobs').getEnvilLiveState(); }
+    catch (_) { state = { knobs: [], macros: [], seqs: [], scNames: [] }; }
+
+    const items = [];
+    const low = typed.toLowerCase();
+
+    function add(name, scName, kindLabel, detail, doc) {
+        if (!name.toLowerCase().startsWith(low)) return;
+        // Kind "User" is emitted by no other provider (TS etc.), so with
+        // editor.suggest.showUsers=true and other kinds disabled for JS,
+        // the _s. dropdown shows ONLY these proxy items.
+        const item = new vscode.CompletionItem(
+            name,
+            vscode.CompletionItemKind.User
+        );
+        item.range         = range;
+        item.insertText    = name;
+        item.filterText    = name;
+        item.sortText      = '!' + name;
+        item.detail        = `⬡ ${kindLabel} — ${detail}`;
+        item.documentation = md(
+            `**\`_s.${name}\`** — ${doc}\n\n` +
+            `SC proxy: \`${scName}\`\n\n` +
+            (name.startsWith('v_c')
+                ? '- `_s.' + name + '` → x (default)\n- `_s.' + name + '[1]` → y'
+                : name.startsWith('seq_') || name.startsWith('mcr_')
+                    ? '- default value auto-coerces in arithmetic'
+                    : '- `_s.' + name + '` → ch 0\n- `_s.' + name + '[1]` → ch 1'
+            )
+        );
+        items.push(item);
+    }
+
+    // Knobs
+    for (const k of state.knobs) {
+        add(`v_c${k.num}`, `~v_c${k.num}`, 'knob XY',
+            `knob ${k.num} (${k.label}) — x default, [1]=y`,
+            `Touch-knob **${k.label}** (CC ${k.num}). 2D XY pad.`);
+        add(`v_n${k.num}`, `~v_n${k.num}`, 'knob tap',
+            `knob ${k.num} tap/hold — 1 on press, 0 on release`,
+            `Note gate for knob **${k.label}** (CC ${k.num}).`);
+    }
+
+    // Macros
+    for (const m of state.macros) {
+        add(`mcr_${m.num}`, `~mcr_${m.num}`, 'macro',
+            `macro ${m.num} "${m.name}" — curve value 0..1`,
+            `Macro curve **"${m.name}"** (macro ${m.num}).`);
+    }
+
+    // Sequencers
+    for (const s of state.seqs) {
+        add(`seq_${s.name}`, `~seq_${s.name}`, 'seq',
+            `sequencer "${s.name}" — step value`,
+            `Sequencer **"${s.name}"** step output.`);
+    }
+
+    // SC bridge watched proxies
+    for (const n of state.scNames) {
+        add(n, `~${n}`, 'SC bus',
+            `SC proxy ~${n} — ch 0 default, [1]=ch 1`,
+            `SC control bus **~${n}** streamed from scsynth.`);
+    }
+
+    return items;
+}
+
+function makeEnvilAliasProvider() {
+    return {
+        provideCompletionItems(document, position) {
+            try {
+                const line   = document.lineAt(position).text;
+                const prefix = line.slice(0, position.character);
+
+                // _s.partial  →  property completions
+                const dotMatch = prefix.match(/_s\.(\w*)$/);
+                if (dotMatch) {
+                    // Replace range: exactly the partial word after the dot
+                    const range = new vscode.Range(
+                        position.line, position.character - dotMatch[1].length,
+                        position.line, position.character
+                    );
+                    const items = buildEnvilItems(dotMatch[1], range);
+                    dbg(`_s. completion fired (lang=${document.languageId}, typed="${dotMatch[1]}") → ${items.length} items: ${items.map(i => i.label).join(', ')}`);
+                    return new vscode.CompletionList(items, false);
+                }
+            } catch (e) {
+                dbg(`_s. completion FAILED: ${e && e.stack || e}`);
+            }
+            return null;
+        },
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // REGISTRATION
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1167,6 +1282,13 @@ const JS_SELECTOR = [{ scheme: 'file', language: 'javascript' }];
 
 function registerHydraProviders(context) {
     context.subscriptions.push(
+        // _s.  completions — live ENVIL aliases
+        vscode.languages.registerCompletionItemProvider(
+            JS_SELECTOR,
+            makeEnvilAliasProvider(),
+            '.'
+        ),
+
         // Completions – triggered by '.' (methods) and normal word-start (sources)
         vscode.languages.registerCompletionItemProvider(
             JS_SELECTOR,
@@ -1187,7 +1309,7 @@ function registerHydraProviders(context) {
             '(', ','
         )
     );
-    console.log('[envil] Hydra language providers registered (hover + completion + signature help)');
+    dbg('Hydra language providers registered (hover + completion + signature help + _s. aliases)');
 }
 
 module.exports = { registerHydraProviders, findSignatureContext };

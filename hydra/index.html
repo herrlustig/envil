@@ -16,6 +16,7 @@
     <script src="./macro-proxy.js" defer></script>
     <script src="./sc-proxy.js" defer></script>
     <script src="./seq-proxy.js" defer></script>
+    <script src="./sc-like-alias.js" defer></script>
     <script src="./peek-overlay.js" defer></script>
     <script src="./hydra-startup-script.js" defer></script>
 
@@ -93,7 +94,7 @@
         // ── Macro proxy handlers ───────────────────────────────────────────
         socket.on('macro-update', function (msg) {
             if (typeof _macroUpdate === 'function') {
-                _macroUpdate(msg.name, msg.pos, msg.val, msg.playing, msg.length, msg.points, msg.loop);
+                _macroUpdate(msg.name, msg.pos, msg.val, msg.playing, msg.length, msg.points, msg.loop, msg.macroNum);
             }
         });
 
@@ -118,7 +119,15 @@
                 _seqStepUpdate(msg.name, msg.step, msg.val, msg.steps);
             }
         });
-
+        // ── State snapshot request ─────────────────────────────────────
+        // After all deferred proxy scripts have run, ask the extension to
+        // replay current macro/seq/knob state (fills in idle values).
+        // Fires on initial load AND on every socket reconnect.
+        function requestSnapshot() {
+            if (document.readyState === 'complete') socket.emit('hydra-ready');
+        }
+        window.addEventListener('load', requestSnapshot);
+        socket.on('connect', requestSnapshot);
         // ── Eval handler ─────────────────────────────────────────────────────
         let _lastEvalCode = '';  // keep track for runtime-error context
 

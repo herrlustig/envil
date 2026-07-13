@@ -18,6 +18,7 @@
 (function () {
 
     const _store = {};
+    const _numToName = {};
 
     function ensure(name) {
         const key = String(name);
@@ -38,7 +39,7 @@
         return ensure(name).val;
     };
 
-    window._macroUpdate = function (name, pos, val, playing, length, points, loop) {
+    window._macroUpdate = function (name, pos, val, playing, length, points, loop, macroNum) {
         const entry = ensure(name);
         entry.pos = typeof pos === 'number' ? pos : entry.pos;
         entry.val = typeof val === 'number' ? val : entry.val;
@@ -46,10 +47,25 @@
         entry.loop = typeof loop === 'boolean' ? loop : entry.loop;
         entry.length = typeof length === 'number' ? length : entry.length;
         if (Array.isArray(points)) entry.points = points.slice();
+        if (Number.isInteger(macroNum) && macroNum > 0) {
+            entry.macroNum = macroNum;
+            _numToName[String(macroNum)] = String(name);
+        }
     };
 
     window._macroRemove = function (name) {
+        const entry = _store[String(name)];
+        if (entry && Number.isInteger(entry.macroNum) && entry.macroNum > 0) {
+            delete _numToName[String(entry.macroNum)];
+        }
         delete _store[String(name)];
+    };
+
+    // Return macro entry by SC-style macro number (e.g. 1 for ~mcr_1).
+    window._macroByNum = function (num) {
+        const name = _numToName[String(num)];
+        if (!name) return null;
+        return _store[name] || null;
     };
 
     window.macrodump = function () {
