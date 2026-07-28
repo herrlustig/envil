@@ -72,6 +72,12 @@
         "path": "./supercollider/syntaxes/supercollider.tmLanguage.json"
       }
     ],
+    "snippets": [
+      {
+        "language": "supercollider",
+        "path": "./supercollider/snippets/supercollider.code-snippets"
+      }
+    ],
     "commands": [
       {
         "command": "envil.start",

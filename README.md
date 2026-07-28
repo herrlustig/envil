@@ -92,6 +92,12 @@ This setup provides every convenient feature of vscode, overlaying it on top of 
   3. Current line where the cursor is placed
 - Hush the server
 - The interpreter evaluated lines are highlighted
+- Built-in offline snippets (Tab-triggered) for common live-coding skeletons:
+  - `sdmin` / `sdefadsr` → minimal `SynthDef` with `EnvGen.ar(Env.adsr(...))` using `dur` + `gate`
+  - `pbmin` / `pbindmin` → minimal `Pbind` with `\\instrument`, `\\scale`, `\\degree`, `\\dur`
+  - `outmin` / `nout` → minimal `~out` NodeProxy template
+  - `pseqs` / `pseqmin` and `prands` / `prandmin` → small pattern templates
+  - `pbseq` and `pbrand` → tiny `Pbind` examples using `Pseq` / `Prand`
 - Sync hydra from supercollider code sending OSC messages
 ```javascript
 // Define an OSC sender

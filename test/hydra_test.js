@@ -31,13 +31,13 @@ a.setScale(1);
   //.layer(noise().luma(() => 0.1 + a.fft[1] * 0.2))
   //.scrollX( 1, () => 0.01 + 0.00001*Math.abs(a.fft[1]))
   
-  //.scrollY(1, () => -0.00001*time + 0.00001*Math.abs(a.fft[2]))
+  .scrollY(1, () => -0.00000*time + _s.testVar/1000 + 0.000000*Math.abs(a.fft[2]))
   //.asdasd()
   //asdsd
-  //.color(.2, .1, 0.1).shift(() => a.fft[2] * -0 + 20, 0.1, 1, 0, 0)
+  //.color(1, 1, 1).shift(() => 10 + _s.mcr_3 * 100, 0.1, () => 10 + _s.mcr_3, 0, 0)
   //.brightness(() => 0.1 + a.fft[0] * 0.1)
   //.pixelate( () => time % 2 * 100 + 0 , 1000 * _s.mcr_1)
-  .pixelate( () => 1000 , () => 200 - 100 * _s.out )
+  .pixelate( () => 10 + 100 * _s.mcr_1 , () => 10 +  100 * _s.mcr_2 )
   
   )
 

@@ -12,7 +12,7 @@ const { registerHoverSlider } = require('./hover-slider');
 const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
 const { extractExpressions } = require('./peek-expressions');
 
-const ENVIL_BUILD_STAMP = '20260713-132813';   // rewritten by rebuild-install.sh
+const ENVIL_BUILD_STAMP = '20260724-183535';   // rewritten by rebuild-install.sh
 
 // Auto-watch SC proxies referenced as _s.<name> in evaluated Hydra code.
 // Knob/macro/seq aliases (v_c*, v_n*, mcr_*, seq_*) are served by their own
@@ -1007,7 +1007,7 @@ iframe{width:100%;height:100%;border:none}</style></head>
     // trigger char without typing it — VS Code only auto-fires completion when
     // a trigger character is TYPED. Covered: deleting "instrument" from
     // "\instrument", and cursor movement (arrows/mouse) onto such a spot.
-    // Cases: '\' (Pbind/env keys), '~' (proxies), 'ident[' (dict/env lookup
+    // Cases: '\' (Pbind/env keys), '~' (proxies), '_' (snippet launcher), 'ident[' (dict/env lookup
     // like e[ ). DWELL: fires only after the cursor RESTS there for 250ms —
     // sliding through code with arrow keys (or holding backspace) must not
     // trap the user in a dropdown. The timer re-checks the CURRENT cursor at
@@ -1016,7 +1016,7 @@ iframe{width:100%;height:100%;border:none}</style></head>
         if (pos.character === 0) return false;
         const before = doc.getText(new vscode.Range(pos.line, Math.max(0, pos.character - 2), pos.line, pos.character));
         const last = before[before.length - 1];
-        return last === '\\' || last === '~'
+        return last === '\\' || last === '~' || last === '_'
             || (last === '[' && /\w/.test(before[before.length - 2] || ''));
     };
     let _cursorTriggerTimer = null;

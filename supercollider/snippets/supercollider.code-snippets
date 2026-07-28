@@ -1,0 +1,178 @@
+{
+  "SynthDef minimal ADSR dur gate": {
+    "prefix": [
+      "_",
+      "_s",
+      "_sd",
+      "sd",
+      "sdef",
+      "sdmin"
+    ],
+    "description": "Minimal SynthDef block with EnvGen.ar(Env.adsr(...)) using dur + gate",
+    "body": [
+      "(",
+      "    SynthDef(\\synth, { |out=0, freq=440, dur=0.25, gate=1, amp=0.15|",
+      "        var sig = DC.ar;",
+      "        sig = ${1:Saw}.ar(freq);",
+      "        sig = sig * EnvGen.ar(Env.adsr(decayTime: dur, sustainLevel: amp, releaseTime: ${2:0.01}), gate, doneAction: 2);",
+      "        Out.ar(out, sig);",
+      "    }).add;",
+      ")"
+    ]
+  },
+  "Pbind minimal": {
+    "prefix": [
+      "_",
+      "_p",
+      "_pb",
+      "_pbm",
+      "pb",
+      "pbm",
+      "pbmin"
+    ],
+    "description": "Minimal ~pat Pbind block with instrument, degree, dur, scale",
+    "body": [
+      "(",
+      "    ~pat = Pbind(",
+      "        \\instrument, \\\\${1:synth},",
+      "        \\scale, ${2:Scale.minor},",
+      "        \\degree, ${3:Pseq((0,1..7).scramble, inf).trace},",
+      "        \\dur, ${4:Prand([0.5, 1, 0.25, 0.25], inf)},",
+      "        \\legato, ${5:1.2},",
+      "    );",
+      ")"
+    ]
+  },
+  "Pbind with Pseq": {
+    "prefix": [
+      "_",
+      "_p",
+      "_pbs",
+      "pbs",
+      "pbseq"
+    ],
+    "description": "~pat Pbind block using Pseq for degree",
+    "body": [
+      "(",
+      "    ~pat = Pbind(",
+      "        \\instrument, \\\\${1:synth},",
+      "        \\degree, Pseq(${2:[0, 2, 4, 7]}, inf),",
+      "        \\dur, ${3:0.25},",
+      "        \\amp, ${4:0.12}",
+      "    );",
+      ")"
+    ]
+  },
+  "Pbind with Prand": {
+    "prefix": [
+      "_",
+      "_p",
+      "_pbr",
+      "pbr",
+      "pbrand"
+    ],
+    "description": "~pat Pbind block using Prand for degree",
+    "body": [
+      "(",
+      "    ~pat = Pbind(",
+      "        \\instrument, \\\\${1:synth},",
+      "        \\degree, Prand(${2:[0, 2, 4, 7, 9]}, inf),",
+      "        \\dur, ${3:0.25},",
+      "        \\amp, ${4:0.12}",
+      "    );",
+      ")"
+    ]
+  },
+  "~out minimal NodeProxy": {
+    "prefix": [
+      "_",
+      "_o",
+      "_out",
+      "out",
+      "nout",
+      "outmin"
+    ],
+    "description": "Minimal ~out block routing ~pat",
+    "body": [
+      "(",
+      "    ~out = {",
+      "        var sig = DC.ar;",
+      "        sig = ~pat.ar * ${1:1};",
+      "        sig = Mix(sig).tanh * ${2:0.9};",
+      "        sig.dup;",
+      "    }",
+      ")",
+      "",
+      "~out.play;"
+    ]
+  },
+  "Pseq small pattern": {
+    "prefix": [
+      "_",
+      "_p",
+      "_ps",
+      "_pseq",
+      "ps",
+      "pseq"
+    ],
+    "description": "Inline Pseq(list, repeats)",
+    "body": [
+      "Pseq(${1:[0, 2, 4, 7]}, ${2:inf})"
+    ]
+  },
+  "Prand small pattern": {
+    "prefix": [
+      "_",
+      "_p",
+      "_pr",
+      "_prand",
+      "pr",
+      "prand"
+    ],
+    "description": "Inline Prand(list, repeats)",
+    "body": [
+      "Prand(${1:[0, 2, 4, 7, 9]}, ${2:inf})"
+    ]
+  },
+  "Jam starter all-in-one": {
+    "prefix": [
+      "_",
+      "_j",
+      "_jam",
+      "jam",
+      "jamstart",
+      "jammin"
+    ],
+    "description": "Full jam starter: (SynthDef), (~pat=Pbind), (~out={...}), ~out.play",
+    "body": [
+      "(",
+      "    SynthDef(\\\\${1:jamVoice}, { |out=0, freq=220, dur=1, gate=1, amp=0.7|",
+      "        var sig = DC.ar;",
+      "        sig = Mix(${2:LFPulse}.ar(freq * [1, 1.01, 1.011, 2.03])) / 3;",
+      "        sig = sig * EnvGen.ar(Env.adsr(decayTime: dur, sustainLevel: amp, releaseTime: ${3:0.01}), gate, doneAction: 2);",
+      "        Out.ar(out, sig);",
+      "    }).add;",
+      ")",
+      "",
+      "(",
+      "    ~pat = Pbind(",
+      "        \\instrument, \\\\${4:jamVoice},",
+      "        \\degree, ${5:Pseq((0,1..7).scramble, inf).trace},",
+      "        \\dur, ${6:Prand([0.5, 1, 0.25, 0.25], inf)},",
+      "        \\legato, ${7:1.2},",
+      "    );",
+      ")",
+      "",
+      "(",
+      "    ~out = {",
+      "        var sig = DC.ar;",
+      "        sig = ~pat.ar * ${8:1};",
+      "        sig = Mix(sig).tanh * ${9:0.9};",
+      "        sig.dup;",
+      "    }",
+      ")",
+      "",
+      "~out.play;"
+    ]
+  }
+}
