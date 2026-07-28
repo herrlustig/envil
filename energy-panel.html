@@ -36,7 +36,7 @@ html, body {
 #statusDot.ok { background: #3c3; }
 #tokCount { font-size: 10px; opacity: 0.8; }
 #canvasWrap { flex: 1; position: relative; overflow: hidden; }
-svg { width: 100%; height: 100%; display: block; }
+svg { width: 100%; height: 100%; display: block; touch-action: none; }
 
 .edge { fill: none; stroke: #667; stroke-width: 2; }
 .edge.return { stroke: #554; stroke-dasharray: 5 4; }
@@ -77,6 +77,8 @@ svg { width: 100%; height: 100%; display: block; }
 
 .ovr-chip { font-size: 9px; fill: #9ab; cursor: pointer; }
 .ovr-chip:hover { fill: #cde; }
+.ovr-clone { font-size: 9px; fill: #5f6678; cursor: copy; }
+.ovr-clone:hover { fill: #9db; }
 .ovr-add { font-size: 9px; fill: #7a8; cursor: pointer; }
 .ovr-add:hover { fill: #ad9; }
 
@@ -86,8 +88,11 @@ svg { width: 100%; height: 100%; display: block; }
     background: #26282f; border-bottom: 1px solid var(--vscode-panel-border, #444);
 }
 #ovrBar .lbl { opacity: 0.6; }
-#ovrBar .gchip { background: #383d49; border: 1px solid #4a5060; border-radius: 3px; padding: 1px 6px; cursor: pointer; color: #cde; }
+#ovrBar.droptarget { outline: 1px dashed #7a8; outline-offset: -2px; }
+#ovrBar .gchip { background: #383d49; border: 1px solid #4a5060; border-radius: 3px; padding: 1px 6px; cursor: pointer; color: #cde; touch-action: none; user-select: none; }
 #ovrBar .gchip:hover { background: #444b5c; }
+#ovrBar .gchip .gclone { color: #5f6678; cursor: copy; margin-right: 4px; }
+#ovrBar .gchip .gclone:hover { color: #9db; }
 #ovrBar .gadd { color: #7a8; cursor: pointer; }
 #ovrBar .gadd:hover { color: #ad9; }
 
@@ -349,9 +354,9 @@ function render() {
             const lbl = el('text', { x: x0 + 5, y: by + 11, class: 'edge-label' }, edgeLayer);
             lbl.textContent = e.txt;
             const openPop = ev => { ev.stopPropagation(); ev.preventDefault(); openEdgePop(x0, by + 15, e.weight, e.onWeight, e.onDelete); };
-            badge.addEventListener('mousedown', openPop);
-            lbl.addEventListener('mousedown', openPop);
-            if (e.hit) e.hit.addEventListener('mousedown', openPop);
+            badge.addEventListener('pointerdown', openPop);
+            lbl.addEventListener('pointerdown', openPop);
+            if (e.hit) e.hit.addEventListener('pointerdown', openPop);
         });
     }
 
@@ -370,8 +375,8 @@ function renderSource(n) {
     const nm = el('text', { x: SRC_R, y: SRC_R * 2 + 14, 'text-anchor': 'middle', class: 'source-name' }, g);
     nm.textContent = 'source';
     const port = el('circle', { cx: SRC_R * 2, cy: SRC_R, r: 6, class: 'port' }, g);
-    c.addEventListener('mousedown', ev => startNodeDrag(ev, n));
-    port.addEventListener('mousedown', ev => startConnect(ev, n));
+    c.addEventListener('pointerdown', ev => startNodeDrag(ev, n));
+    port.addEventListener('pointerdown', ev => startConnect(ev, n));
 }
 
 function renderPool(n) {
@@ -386,11 +391,11 @@ function renderPool(n) {
     el('rect', { x: NODE_W - 78, y: 8, width: 0, height: 8, rx: 2, class: 'vu-bar', id: `vu_${n.id}` }, g);
     const inj = el('text', { x: NODE_W - 30, y: 16, class: 'node-inject' }, g);
     inj.textContent = '⚡';
-    inj.addEventListener('mousedown', ev => { ev.stopPropagation(); post('inject-token', { pool: n.id }); });
+    inj.addEventListener('pointerdown', ev => { ev.stopPropagation(); post('inject-token', { pool: n.id }); });
     const del = el('text', { x: NODE_W - 16, y: 16, class: 'node-del' }, g);
     del.textContent = '✕';
-    del.addEventListener('mousedown', ev => { ev.stopPropagation(); deletePool(n.id); });
-    hdr.addEventListener('mousedown', ev => startNodeDrag(ev, n));
+    del.addEventListener('pointerdown', ev => { ev.stopPropagation(); deletePool(n.id); });
+    hdr.addEventListener('pointerdown', ev => startNodeDrag(ev, n));
 
     n.patterns.forEach((pt, i) => {
         const cy = HEADER_H + 6 + i * CHIP_H;
@@ -405,14 +410,14 @@ function renderPool(n) {
         const clTip = document.createElementNS(SVGNS, 'title');
         clTip.textContent = 'drag to clone';
         cl.appendChild(clTip);
-        cl.addEventListener('mousedown', ev => startChipDrag(ev, n, pt, true));
+        cl.addEventListener('pointerdown', ev => startChipDrag(ev, n, pt, true));
         const lbl = el('text', { x: 24, y: cy + 14, class: 'chip-label' }, g);
         lbl.textContent = pt.name;
         const code = el('text', { x: 24, y: cy + 25, class: 'chip-code' }, g);
         code.textContent = (pt.text || '').replace(/\s+/g, ' ').trim().slice(0, 40);
         const wl = el('text', { x: NODE_W - 14, y: cy + 14, 'text-anchor': 'end', class: 'chip-w' }, g);
         wl.textContent = 'w' + pt.weight;
-        chip.addEventListener('mousedown', ev => startChipDrag(ev, n, pt));
+        chip.addEventListener('pointerdown', ev => startChipDrag(ev, n, pt));
     });
 
     // override row (between patterns and footer)
@@ -420,38 +425,41 @@ function renderPool(n) {
     let ox = 9;
     const oAdd = el('text', { x: ox, y: ovrY + 13, class: 'ovr-add' }, g);
     oAdd.textContent = '+ovr';
-    oAdd.addEventListener('mousedown', ev => { ev.stopPropagation(); n.overrides = n.overrides || []; openOvrEditor(n.overrides, null); });
+    oAdd.addEventListener('pointerdown', ev => { ev.stopPropagation(); n.overrides = n.overrides || []; openOvrEditor(n.overrides, null); });
     ox += 32;
     for (const o of (n.overrides || [])) {
         const short = o.value.length > 10 ? o.value.slice(0, 9) + '…' : o.value;
         const txt = '\\' + o.key + '=' + short;
-        const t = el('text', { x: ox, y: ovrY + 13, class: 'ovr-chip' }, g);
+        const cl = el('text', { x: ox, y: ovrY + 13, class: 'ovr-clone' }, g);
+        cl.textContent = '⧉';
+        cl.addEventListener('pointerdown', ev => { ev.stopPropagation(); startOvrDrag(ev, n.overrides, o, true); });
+        const t = el('text', { x: ox + 9, y: ovrY + 13, class: 'ovr-chip' }, g);
         t.textContent = txt;
-        t.addEventListener('mousedown', ev => { ev.stopPropagation(); openOvrEditor(n.overrides, o); });
-        ox += txt.length * 5.4 + 9;
+        t.addEventListener('pointerdown', ev => { ev.stopPropagation(); startOvrDrag(ev, n.overrides, o, false); });
+        ox += txt.length * 5.4 + 20;
     }
 
     const add = el('text', { x: 9, y: h - 8, class: 'chip-add' }, g);
     add.textContent = '+ pattern';
-    add.addEventListener('mousedown', ev => { ev.stopPropagation(); addPattern(n); });
+    add.addEventListener('pointerdown', ev => { ev.stopPropagation(); addPattern(n); });
 
     // quant + mode toggles (footer right)
     const qt = el('text', { x: NODE_W - 72, y: h - 8, class: 'node-toggle' }, g);
     qt.textContent = 'q:' + (n.quant || 0);
-    qt.addEventListener('mousedown', ev => {
+    qt.addEventListener('pointerdown', ev => {
         ev.stopPropagation();
         openEdgePop(n.x + NODE_W - 72, n.y + h, n.quant || 0, v => { n.quant = v; }, null);
     });
     const mt = el('text', { x: NODE_W - 34, y: h - 8, class: 'node-toggle' }, g);
     mt.textContent = n.mode === 'par' ? 'par' : 'seq';
-    mt.addEventListener('mousedown', ev => {
+    mt.addEventListener('pointerdown', ev => {
         ev.stopPropagation();
         n.mode = (n.mode === 'par') ? 'seq' : 'par';
         render(); pushState();
     });
 
     const port = el('circle', { cx: NODE_W, cy: h / 2, r: 6, class: 'port' }, g);
-    port.addEventListener('mousedown', ev => startConnect(ev, n));
+    port.addEventListener('pointerdown', ev => startConnect(ev, n));
 }
 
 // ── Edge popover: weight edit + delete ──────────────────────────────────
@@ -483,7 +491,7 @@ epW.addEventListener('keydown', ev => {
     if (ev.key === 'Enter') commitEdgeWeight();
     else if (ev.key === 'Escape') closeEdgePop();
 });
-svg.addEventListener('mousedown', () => closeEdgePop());
+svg.addEventListener('pointerdown', () => closeEdgePop());
 
 function svgToScreen(x, y) {
     const m = svg.getScreenCTM();
@@ -494,9 +502,33 @@ function screenToSvg(cx, cy) {
     return { x: m.a * cx + m.c * cy + m.e, y: m.b * cx + m.d * cy + m.f };
 }
 
+// ── Pointer-event drag plumbing (mouse + touch) ──────────────────────
+// Touch pointers get implicit capture on the origin element; render() replaces
+// that element mid-drag, which would kill window-level tracking — so release
+// the capture right away and listen on window with pointercancel as bail-out.
+function dragStartPointer(ev) {
+    try {
+        if (ev.pointerId != null && ev.target.hasPointerCapture && ev.target.hasPointerCapture(ev.pointerId)) {
+            ev.target.releasePointerCapture(ev.pointerId);
+        }
+    } catch (_) { /* ignore */ }
+}
+function dragListen(move, up) {
+    const end = e => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', end);
+        window.removeEventListener('pointercancel', end);
+        up(e);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+}
+
 // ── Node dragging ────────────────────────────────────────────────────────
 function startNodeDrag(ev, n) {
     ev.preventDefault();
+    dragStartPointer(ev);
     const start = screenToSvg(ev.clientX, ev.clientY);
     const ox = n.x, oy = n.y;
     const move = e => {
@@ -506,17 +538,15 @@ function startNodeDrag(ev, n) {
         render();
     };
     const up = () => {
-        window.removeEventListener('mousemove', move);
-        window.removeEventListener('mouseup', up);
         pushState();
     };
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
+    dragListen(move, up);
 }
 
 // ── Connecting ───────────────────────────────────────────────────────────
 function startConnect(ev, fromNode) {
     ev.preventDefault(); ev.stopPropagation();
+    dragStartPointer(ev);
     const a = outAnchor(fromNode);
     tempLine.style.display = 'block';
     const move = e => {
@@ -524,8 +554,6 @@ function startConnect(ev, fromNode) {
         tempLine.setAttribute('d', `M ${a.x} ${a.y} L ${p.x} ${p.y}`);
     };
     const up = e => {
-        window.removeEventListener('mousemove', move);
-        window.removeEventListener('mouseup', up);
         tempLine.style.display = 'none';
         const p = screenToSvg(e.clientX, e.clientY);
         const target = hitTestNode(p.x, p.y);
@@ -543,8 +571,7 @@ function startConnect(ev, fromNode) {
             render(); pushState();
         }
     };
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
+    dragListen(move, up);
 }
 
 function hitTestNode(x, y) {
@@ -563,6 +590,7 @@ function hitTestNode(x, y) {
 const chipGhost = document.getElementById('chipGhost');
 function startChipDrag(ev, pool, pat, clone) {
     ev.preventDefault(); ev.stopPropagation();
+    dragStartPointer(ev);
     const sx = ev.clientX, sy = ev.clientY;
     let dragging = false;
     const wrap = document.getElementById('canvasWrap').getBoundingClientRect();
@@ -585,8 +613,6 @@ function startChipDrag(ev, pool, pat, clone) {
         }
     };
     const up = e => {
-        window.removeEventListener('mousemove', move);
-        window.removeEventListener('mouseup', up);
         chipGhost.style.display = 'none';
         document.querySelectorAll('.node-pool-bg').forEach(r => r.classList.remove('droptarget'));
         if (!dragging) { openEditor(pool, pat); return; }
@@ -605,8 +631,7 @@ function startChipDrag(ev, pool, pat, clone) {
             render(); pushState();
         }
     };
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
+    dragListen(move, up);
 }
 
 // ── Pattern editor modal ─────────────────────────────────────────────────
@@ -681,6 +706,73 @@ function openOvrEditor(list, item) {
 }
 function closeOvrEditor() { ovrEd.classList.remove('open'); _ovrCtx = null; }
 
+// ── Override chip drag: move/clone between pools and the global bar ────
+function startOvrDrag(ev, srcList, item, clone) {
+    ev.preventDefault(); ev.stopPropagation();
+    dragStartPointer(ev);
+    const sx = ev.clientX, sy = ev.clientY;
+    let dragging = false;
+    const wrap = document.getElementById('canvasWrap').getBoundingClientRect();
+    const bar = document.getElementById('ovrBar');
+    const overBar = e => {
+        const r = bar.getBoundingClientRect();
+        return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+    };
+    const clearHl = () => {
+        document.querySelectorAll('.node-pool-bg').forEach(r => r.classList.remove('droptarget'));
+        bar.classList.remove('droptarget');
+    };
+    const move = e => {
+        if (!dragging && (Math.abs(e.clientX - sx) > 5 || Math.abs(e.clientY - sy) > 5)) {
+            dragging = true;
+            chipGhost.textContent = (clone ? '⧉ ' : '') + '\\' + item.key + '=' + item.value;
+            chipGhost.style.display = 'block';
+        }
+        if (dragging) {
+            chipGhost.style.left = (e.clientX - wrap.left + 10) + 'px';
+            chipGhost.style.top = (e.clientY - wrap.top - 8) + 'px';
+            clearHl();
+            if (overBar(e)) {
+                if (clone || srcList !== state.overrides) bar.classList.add('droptarget');
+            } else {
+                const p = screenToSvg(e.clientX, e.clientY);
+                const over = hitTestNode(p.x, p.y);
+                if (over && over.type === 'pool' && (clone || over.overrides !== srcList)) {
+                    const bg = document.getElementById('poolbg_' + over.id);
+                    if (bg) bg.classList.add('droptarget');
+                }
+            }
+        }
+    };
+    const up = e => {
+        chipGhost.style.display = 'none';
+        clearHl();
+        if (!dragging) { openOvrEditor(srcList, item); return; }
+        let dst = null;
+        if (overBar(e)) {
+            state.overrides = state.overrides || [];
+            dst = state.overrides;
+        } else {
+            const p = screenToSvg(e.clientX, e.clientY);
+            const over = hitTestNode(p.x, p.y);
+            if (over && over.type === 'pool') {
+                over.overrides = over.overrides || [];
+                dst = over.overrides;
+            }
+        }
+        if (!dst) return;
+        if (!clone && dst === srcList) return;
+        if (clone) dst.push({ key: item.key, value: item.value });
+        else {
+            const i = srcList.indexOf(item);
+            if (i >= 0) srcList.splice(i, 1);
+            dst.push(item);
+        }
+        render(); renderOvrBar(); pushState();
+    };
+    dragListen(move, up);
+}
+
 document.getElementById('ovSave').addEventListener('click', () => {
     if (!_ovrCtx) return;
     const key = ovKey.value.replace(/[^A-Za-z0-9_]/g, '');
@@ -708,8 +800,12 @@ function renderOvrBar() {
     for (const o of (state.overrides || [])) {
         const s = document.createElement('span');
         s.className = 'gchip';
-        s.textContent = '\\' + o.key + ' = ' + o.value;
-        s.addEventListener('click', () => openOvrEditor(state.overrides, o));
+        const cl = document.createElement('span');
+        cl.className = 'gclone'; cl.textContent = '⧉'; cl.title = 'drag to clone';
+        cl.addEventListener('pointerdown', ev => { ev.stopPropagation(); startOvrDrag(ev, state.overrides, o, true); });
+        s.appendChild(cl);
+        s.appendChild(document.createTextNode('\\' + o.key + ' = ' + o.value));
+        s.addEventListener('pointerdown', ev => startOvrDrag(ev, state.overrides, o, false));
         bar.appendChild(s);
     }
     const add = document.createElement('span');
@@ -759,8 +855,8 @@ function ensureToken(id) {
     el('circle', { r: 7 }, g);
     const txt = el('text', { y: -14, 'text-anchor': 'middle', 'font-size': 9, fill: '#ffd23c' }, g);
     txt.textContent = '' + id;
-    // click: playing → release from pattern (token walks on); idle → steal
-    g.addEventListener('mousedown', ev => {
+    // click/tap: playing → release from pattern (token walks on); idle → steal
+    g.addEventListener('pointerdown', ev => {
         ev.stopPropagation();
         const tk = tokens.get(id);
         if (tk && tk.playingChip) post('release-token', { id });
