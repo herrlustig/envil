@@ -65,6 +65,48 @@ svg { width: 100%; height: 100%; display: block; }
 .chip-add { font-size: 11px; fill: #7a8; cursor: pointer; }
 .chip-add:hover { fill: #ad9; }
 
+.ovr-chip { font-size: 9px; fill: #9ab; cursor: pointer; }
+.ovr-chip:hover { fill: #cde; }
+.ovr-add { font-size: 9px; fill: #7a8; cursor: pointer; }
+.ovr-add:hover { fill: #ad9; }
+
+#ovrBar {
+    flex-shrink: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 2px 8px; font-size: 10px; min-height: 20px;
+    background: #26282f; border-bottom: 1px solid var(--vscode-panel-border, #444);
+}
+#ovrBar .lbl { opacity: 0.6; }
+#ovrBar .gchip { background: #383d49; border: 1px solid #4a5060; border-radius: 3px; padding: 1px 6px; cursor: pointer; color: #cde; }
+#ovrBar .gchip:hover { background: #444b5c; }
+#ovrBar .gadd { color: #7a8; cursor: pointer; }
+#ovrBar .gadd:hover { color: #ad9; }
+
+.edge-badge { cursor: pointer; }
+#edgePop {
+    position: absolute; z-index: 45; display: none; gap: 5px; align-items: center;
+    background: #23252d; border: 1px solid #556; border-radius: 5px; padding: 5px 8px;
+    font-size: 11px; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+#edgePop input { width: 52px; background: #191b20; color: #ffd23c; border: 1px solid #555; border-radius: 3px; font-size: 11px; padding: 2px 4px; }
+#edgePop button { border: none; border-radius: 3px; padding: 2px 9px; cursor: pointer; font-size: 10px; color: #fff; background: #0e639c; }
+#edgePop button.del { background: #a33; }
+
+#ovrEd {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: min(440px, 90%); background: #23252d; border: 1px solid #556;
+    border-radius: 8px; padding: 12px; z-index: 55; display: none;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+}
+#ovrEd.open { display: block; }
+#ovrEd .row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; font-size: 11px; }
+#ovrEd input { background: #191b20; color: #dde; border: 1px solid #555; border-radius: 3px; font-size: 11px; padding: 3px 6px; }
+#ovrEd input.k { width: 110px; }
+#ovrEd input.v { flex: 1; font-family: var(--vscode-editor-font-family, monospace); user-select: text; -webkit-user-select: text; }
+#ovrEd .hint { font-size: 10px; opacity: 0.55; margin: 4px 0 8px; }
+#ovrEd .btns { display: flex; gap: 6px; justify-content: flex-end; }
+#ovrEd button { background: #0e639c; color: #fff; border: none; border-radius: 3px; padding: 4px 12px; cursor: pointer; font-size: 11px; }
+#ovrEd button.del { background: #a33; margin-right: auto; }
+
 .token { pointer-events: none; }
 .token circle { fill: #ffd23c; }
 .token .halo { fill: none; stroke: #ffd23c; opacity: 0.5; }
@@ -94,11 +136,6 @@ svg { width: 100%; height: 100%; display: block; }
 #editor button { background: #0e639c; color: #fff; border: none; border-radius: 3px; padding: 4px 12px; cursor: pointer; font-size: 11px; }
 #editor button.del { background: #a33; margin-right: auto; }
 
-#wInput {
-    position: absolute; width: 44px; z-index: 40; display: none;
-    background: #191b20; color: #ffd23c; border: 1px solid #fc3; border-radius: 3px;
-    font-size: 11px; padding: 1px 4px; text-align: center;
-}
 #chipGhost {
     position: absolute; z-index: 60; pointer-events: none; display: none;
     background: #444b5c; border: 1px solid #fc3; border-radius: 4px;
@@ -120,6 +157,7 @@ svg { width: 100%; height: 100%; display: block; }
     <span id="tokCount"></span>
     <div id="statusDot" title="sc backbone status"></div>
 </div>
+<div id="ovrBar"></div>
 <div id="canvasWrap">
     <svg id="svg">
         <g id="edgeLayer"></g>
@@ -127,7 +165,11 @@ svg { width: 100%; height: 100%; display: block; }
         <g id="tokenLayer"></g>
         <path id="tempLine" class="templine" style="display:none"></path>
     </svg>
-    <input id="wInput" type="text"/>
+    <div id="edgePop">
+        w <input id="epW" type="number" min="0" step="0.1"/>
+        <button id="epOk">ok</button>
+        <button id="epDel" class="del">✕ delete</button>
+    </div>
     <div id="chipGhost"></div>
     <div id="editor">
         <div class="row">
@@ -142,6 +184,18 @@ svg { width: 100%; height: 100%; display: block; }
             <button id="edSave">save</button>
         </div>
     </div>
+    <div id="ovrEd">
+        <div class="row">
+            <span>key</span><input class="k" id="ovKey" type="text" placeholder="legato"/>
+            <span>value</span><input class="v" id="ovVal" type="text" placeholder="1.2  or  \jamVoice  or  Pseq([1,2],inf)"/>
+        </div>
+        <div class="hint">Applied as Pbindf(pattern, \key, value) at each energy grant. Value is SC code, interpreted live. Pool overrides apply first; global overrides win over pool ones.</div>
+        <div class="btns">
+            <button class="del" id="ovDel">delete</button>
+            <button id="ovCancel">cancel</button>
+            <button id="ovSave">save</button>
+        </div>
+    </div>
 </div>
 <script>
 const vscode = acquireVsCodeApi();
@@ -151,6 +205,7 @@ let state = globalThis.__ENVIL_ENERGY_STATE__ || { travelTime: 1.5, dwellTime: 0
 const NODE_W = 180;
 const HEADER_H = 24;
 const CHIP_H = 24;
+const OVR_H = 18;
 const FOOTER_H = 24;
 const SRC_R = 28;
 
@@ -170,7 +225,7 @@ function pushState() {
 
 function getNode(id) { return state.nodes.find(n => n.id === id); }
 function pools() { return state.nodes.filter(n => n.type === 'pool'); }
-function poolH(n) { return HEADER_H + 6 + n.patterns.length * CHIP_H + FOOTER_H; }
+function poolH(n) { return HEADER_H + 6 + n.patterns.length * CHIP_H + OVR_H + FOOTER_H; }
 
 // Anchor points for edges
 function outAnchor(n) {
@@ -215,11 +270,11 @@ function render() {
 
     // ── edges ──
     const src = getNode('source');
-    const addEdge = (from, to, weight, isReturn, onWeight) => {
+    const addEdge = (from, to, weight, isReturn, onWeight, onDelete) => {
         const d = edgePathD(from, to, isReturn);
         const p = el('path', { d, class: 'edge' + (isReturn ? ' return' : ''), id: `edge_${from.id}_${to.id}` }, edgeLayer);
-        el('path', { d, class: 'edge-hit' }, edgeLayer);
-        // arrowhead + weight label at 55% along
+        const hit = el('path', { d, class: 'edge-hit' }, edgeLayer);
+        // arrowhead + weight badge at 55% along
         try {
             const len = p.getTotalLength();
             const mid = p.getPointAtLength(len * 0.55);
@@ -227,24 +282,36 @@ function render() {
             const ang = Math.atan2(mid2.y - mid.y, mid2.x - mid.x) * 180 / Math.PI;
             el('path', { d: 'M -5 -4 L 5 0 L -5 4 z', fill: isReturn ? '#554' : '#667',
                 transform: `translate(${mid.x},${mid.y}) rotate(${ang})` }, edgeLayer);
-            const lbl = el('text', { x: mid.x + 6, y: mid.y - 6, class: 'edge-label' }, edgeLayer);
-            lbl.textContent = 'w:' + weight;
-            lbl.addEventListener('mousedown', ev => { ev.stopPropagation(); editWeight(mid.x, mid.y, weight, onWeight); });
+            const txt = 'w:' + weight;
+            const badge = el('rect', { x: mid.x + 4, y: mid.y - 19, width: txt.length * 6 + 10, height: 15, rx: 4,
+                fill: '#23252d', stroke: '#556', class: 'edge-badge' }, edgeLayer);
+            const lbl = el('text', { x: mid.x + 9, y: mid.y - 8, class: 'edge-label' }, edgeLayer);
+            lbl.textContent = txt;
+            const openPop = ev => { ev.stopPropagation(); ev.preventDefault(); openEdgePop(mid.x, mid.y, weight, onWeight, onDelete); };
+            badge.addEventListener('mousedown', openPop);
+            lbl.addEventListener('mousedown', openPop);
+            hit.addEventListener('mousedown', openPop);
         } catch (_) {}
     };
     if (src) {
         for (const o of (src.outs || [])) {
             const to = getNode(o.to);
-            if (to) addEdge(src, to, o.weight, false, w => { o.weight = w; });
+            if (to) addEdge(src, to, o.weight, false,
+                w => { o.weight = w; },
+                () => { src.outs = src.outs.filter(x => x !== o); });
         }
     }
     for (const pl of pools()) {
         for (const o of (pl.outs || [])) {
             const to = getNode(o.to);
-            if (to) addEdge(pl, to, o.weight, false, w => { o.weight = w; });
+            if (to) addEdge(pl, to, o.weight, false,
+                w => { o.weight = w; },
+                () => { pl.outs = pl.outs.filter(x => x !== o); });
         }
         if (src && (pl.toSourceWeight || 0) > 0) {
-            addEdge(pl, src, pl.toSourceWeight, true, w => { pl.toSourceWeight = w; });
+            addEdge(pl, src, pl.toSourceWeight, true,
+                w => { pl.toSourceWeight = w; },
+                () => { pl.toSourceWeight = 0; });
         }
     }
 
@@ -290,6 +357,22 @@ function renderPool(n) {
         chip.addEventListener('mousedown', ev => startChipDrag(ev, n, pt));
     });
 
+    // override row (between patterns and footer)
+    const ovrY = HEADER_H + 6 + n.patterns.length * CHIP_H;
+    let ox = 9;
+    const oAdd = el('text', { x: ox, y: ovrY + 13, class: 'ovr-add' }, g);
+    oAdd.textContent = '+ovr';
+    oAdd.addEventListener('mousedown', ev => { ev.stopPropagation(); n.overrides = n.overrides || []; openOvrEditor(n.overrides, null); });
+    ox += 32;
+    for (const o of (n.overrides || [])) {
+        const short = o.value.length > 10 ? o.value.slice(0, 9) + '…' : o.value;
+        const txt = '\\' + o.key + '=' + short;
+        const t = el('text', { x: ox, y: ovrY + 13, class: 'ovr-chip' }, g);
+        t.textContent = txt;
+        t.addEventListener('mousedown', ev => { ev.stopPropagation(); openOvrEditor(n.overrides, o); });
+        ox += txt.length * 5.4 + 9;
+    }
+
     const add = el('text', { x: 9, y: h - 8, class: 'chip-add' }, g);
     add.textContent = '+ pattern';
     add.addEventListener('mousedown', ev => { ev.stopPropagation(); addPattern(n); });
@@ -298,26 +381,36 @@ function renderPool(n) {
     port.addEventListener('mousedown', ev => startConnect(ev, n));
 }
 
-// ── Weight inline editing ────────────────────────────────────────────────
-const wInput = document.getElementById('wInput');
-function editWeight(x, y, cur, commit) {
+// ── Edge popover: weight edit + delete ──────────────────────────────────
+const edgePop = document.getElementById('edgePop');
+const epW = document.getElementById('epW');
+let _edgeCtx = null;
+function openEdgePop(x, y, weight, onWeight, onDelete) {
     const wrap = document.getElementById('canvasWrap').getBoundingClientRect();
     const pt = svgToScreen(x, y);
-    wInput.style.left = (pt.x - wrap.left - 22) + 'px';
-    wInput.style.top = (pt.y - wrap.top - 24) + 'px';
-    wInput.style.display = 'block';
-    wInput.value = cur;
-    wInput.focus(); wInput.select();
-    wInput.onkeydown = ev => {
-        if (ev.key === 'Enter') {
-            const v = Math.max(0, Number(wInput.value) || 0);
-            commit(v);
-            wInput.style.display = 'none';
-            render(); pushState();
-        } else if (ev.key === 'Escape') wInput.style.display = 'none';
-    };
-    wInput.onblur = () => { wInput.style.display = 'none'; };
+    edgePop.style.left = Math.max(4, Math.min(wrap.width - 170, pt.x - wrap.left - 50)) + 'px';
+    edgePop.style.top = Math.max(4, pt.y - wrap.top + 12) + 'px';
+    edgePop.style.display = 'flex';
+    epW.value = weight;
+    _edgeCtx = { onWeight, onDelete };
+    epW.focus(); epW.select();
 }
+function closeEdgePop() { edgePop.style.display = 'none'; _edgeCtx = null; }
+function commitEdgeWeight() {
+    if (_edgeCtx) _edgeCtx.onWeight(Math.max(0, Number(epW.value) || 0));
+    closeEdgePop(); render(); pushState();
+}
+document.getElementById('epOk').addEventListener('click', commitEdgeWeight);
+document.getElementById('epDel').addEventListener('click', () => {
+    if (_edgeCtx) _edgeCtx.onDelete();
+    closeEdgePop(); render(); pushState();
+});
+epW.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') commitEdgeWeight();
+    else if (ev.key === 'Escape') closeEdgePop();
+});
+svg.addEventListener('mousedown', () => closeEdgePop());
+
 function svgToScreen(x, y) {
     const m = svg.getScreenCTM();
     return { x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f };
@@ -478,6 +571,58 @@ function addPattern(pool) {
     openEditor(pool, pat);
 }
 
+// ── Override editor (pool rows + global bar) ──────────────────────────
+const ovrEd = document.getElementById('ovrEd');
+const ovKey = document.getElementById('ovKey');
+const ovVal = document.getElementById('ovVal');
+let _ovrCtx = null;   // { list, item }
+
+function openOvrEditor(list, item) {
+    _ovrCtx = { list, item };
+    ovKey.value = item ? item.key : '';
+    ovVal.value = item ? item.value : '';
+    ovrEd.classList.add('open');
+    (item ? ovVal : ovKey).focus();
+}
+function closeOvrEditor() { ovrEd.classList.remove('open'); _ovrCtx = null; }
+
+document.getElementById('ovSave').addEventListener('click', () => {
+    if (!_ovrCtx) return;
+    const key = ovKey.value.replace(/[^A-Za-z0-9_]/g, '');
+    const value = ovVal.value.trim();
+    if (!key || !value) { closeOvrEditor(); return; }
+    if (_ovrCtx.item) { _ovrCtx.item.key = key; _ovrCtx.item.value = value; }
+    else _ovrCtx.list.push({ key, value });
+    closeOvrEditor(); render(); renderOvrBar(); pushState();
+});
+document.getElementById('ovCancel').addEventListener('click', closeOvrEditor);
+document.getElementById('ovDel').addEventListener('click', () => {
+    if (_ovrCtx && _ovrCtx.item) {
+        const i = _ovrCtx.list.indexOf(_ovrCtx.item);
+        if (i >= 0) _ovrCtx.list.splice(i, 1);
+    }
+    closeOvrEditor(); render(); renderOvrBar(); pushState();
+});
+
+function renderOvrBar() {
+    const bar = document.getElementById('ovrBar');
+    bar.innerHTML = '';
+    const lbl = document.createElement('span');
+    lbl.className = 'lbl'; lbl.textContent = 'global ovr:';
+    bar.appendChild(lbl);
+    for (const o of (state.overrides || [])) {
+        const s = document.createElement('span');
+        s.className = 'gchip';
+        s.textContent = '\\' + o.key + ' = ' + o.value;
+        s.addEventListener('click', () => openOvrEditor(state.overrides, o));
+        bar.appendChild(s);
+    }
+    const add = document.createElement('span');
+    add.className = 'gadd'; add.textContent = '+ add';
+    add.addEventListener('click', () => { state.overrides = state.overrides || []; openOvrEditor(state.overrides, null); });
+    bar.appendChild(add);
+}
+
 // ── Pool add / delete ────────────────────────────────────────────────────
 function addPool() {
     let i = 0;
@@ -489,7 +634,7 @@ function addPool() {
         id, type: 'pool',
         x: 200 + (state.nodes.length % 4) * 60,
         y: 120 + (state.nodes.length % 5) * 70,
-        toSourceWeight: 1, outs: [], patterns: [],
+        toSourceWeight: 1, outs: [], patterns: [], overrides: [],
     });
     render(); pushState();
 }
@@ -647,6 +792,7 @@ window.addEventListener('message', ev => {
 window.addEventListener('error', e => post('webview-log', { message: `ERR ${e.message} (${e.filename}:${e.lineno})` }));
 
 refreshCfgUI();
+renderOvrBar();
 render();
 </script>
 </body>

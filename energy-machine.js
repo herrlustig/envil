@@ -168,6 +168,7 @@ function defaultState() {
         travelTime: 1.5,
         dwellTime: 0.6,
         maxPatDur: 60,
+        overrides: [],
         nodes: [
             { id: 'source', type: 'source', x: 90, y: 260, outs: [{ to: 'poolA', weight: 1 }] },
             {
@@ -212,6 +213,7 @@ function sanitizeState(state) {
         travelTime: clampNum(s.travelTime, 0.1, 30, 1.5),
         dwellTime: clampNum(s.dwellTime, 0.05, 30, 0.6),
         maxPatDur: clampNum(s.maxPatDur, 1, 3600, 60),
+        overrides: sanitizeOvr(s.overrides),
         nodes: [],
     };
     const ids = new Set();
@@ -248,6 +250,7 @@ function sanitizeState(state) {
                     weight: clampNum(pt.weight, 0, 100, 1),
                     text: String(pt.text || ''),
                 })),
+            overrides: sanitizeOvr(n.overrides),
         });
     }
     if (!hasSource) out.nodes.unshift({ id: 'source', type: 'source', x: 90, y: 260, outs: [] });
@@ -265,6 +268,18 @@ function sanitizePoolName(name) {
     if (!/^[a-z]/.test(n)) n = 'p' + n;
     if (n === 'source') return null;
     return n;
+}
+
+// Overrides: [{key, value}] — key becomes an SC symbol, value stays a source
+// string interpreted at grant time (so edits apply on the next token visit).
+function sanitizeOvr(list) {
+    return (Array.isArray(list) ? list : [])
+        .filter(o => o && typeof o === 'object')
+        .map(o => ({
+            key: String(o.key || '').replace(/[^A-Za-z0-9_]/g, ''),
+            value: String(o.value != null ? o.value : '').trim(),
+        }))
+        .filter(o => o.key && o.value);
 }
 
 function num(v, d) { const x = Number(v); return Number.isFinite(x) ? x : d; }
@@ -297,6 +312,14 @@ function buildEnergyBackboneCode() {
         `if(Library.at(\\envil, \\energyTokens).isNil, { Library.put(\\envil, \\energyTokens, List.new) });`,
         `if(Library.at(\\envil, \\energyNextTok).isNil, { Library.put(\\envil, \\energyNextTok, 0) });`,
         `if(Library.at(\\envil, \\energyCfg).isNil, { Library.put(\\envil, \\energyCfg, (travel: 1.5, dwell: 0.6, maxDur: 60)) });`,
+        `Library.put(\\envil, \\energyMkOvr, { |list|`,
+        `  var out = List.new;`,
+        `  (list ? []).do { |kv|`,
+        `    var v = try { kv[1].interpret } { |err| ("[energy] override " ++ kv[0] ++ " skipped: " ++ err.errorString).warn; nil };`,
+        `    if(v.notNil, { out.add(kv[0]); out.add(v) });`,
+        `  };`,
+        `  out.asArray;`,
+        `});`,
         `Library.put(\\envil, \\energyMakePool, { |name|`,
         `  Pspawner({ |sp|`,
         `    loop {`,
@@ -320,6 +343,7 @@ function buildEnergyBackboneCode() {
         `    names.do { |name|`,
         `      var pr = ps.at(name);`,
         `      if(pr.source.isNil, {`,
+        `        pr.mold(2, \\audio);`,
         `        pr.fadeTime = 0;`,
         `        ps.put(name, Library.at(\\envil, \\energyMakePool).value(name));`,
         `        ("[energy] pool proxy ~" ++ name ++ " up").postln;`,
@@ -366,6 +390,10 @@ function buildEnergyTokenCode() {
         `          });`,
         `          if(patObj.notNil, {`,
         `            var q = Library.at(\\envil, \\energyQueues, pos);`,
+        `            var po = Library.at(\\envil, \\energyMkOvr).value(node[\\ovr]);`,
+        `            var go = Library.at(\\envil, \\energyMkOvr).value(cfg[\\govr]);`,
+        `            if(po.size > 0, { patObj = Pbindf.performList(\\new, [patObj] ++ po) });`,
+        `            if(go.size > 0, { patObj = Pbindf.performList(\\new, [patObj] ++ go) });`,
         `            patObj = Pfindur(cfg[\\maxDur] ? 60, patObj);`,
         `            if(q.notNil, {`,
         `              cond = Condition(false);`,
@@ -439,7 +467,7 @@ function buildGraphChunks(state) {
             outs.push(`[\\source, ${Number(pool.toSourceWeight)}]`);
         }
         // Header chunk for the pool (outs + empty pats)
-        chunks.push(`(var g = Library.at(\\envil, \\energyGraphNew); g[\\${pool.id}] = (outs: [${outs.join(', ')}], pats: List.new);)`);
+        chunks.push(`(var g = Library.at(\\envil, \\energyGraphNew); g[\\${pool.id}] = (outs: [${outs.join(', ')}], pats: List.new, ovr: List.new);)`);
         // One chunk per pattern (texts can be long)
         for (const pt of pool.patterns) {
             const code = `(var g = Library.at(\\envil, \\energyGraphNew); g[\\${pool.id}][\\pats].add((id: ${scStr(pt.id)}, w: ${Number(pt.weight) || 1}, src: ${scStr(pt.text)}));)`;
@@ -448,6 +476,15 @@ function buildGraphChunks(state) {
                 continue;
             }
             chunks.push(code);
+        }
+        // One chunk per override
+        for (const ov of (pool.overrides || [])) {
+            const oc = `(var g = Library.at(\\envil, \\energyGraphNew); g[\\${pool.id}][\\ovr].add([\\${ov.key}, ${scStr(ov.value)}]);)`;
+            if (oc.length > MAX_PAYLOAD) {
+                log(`⚠ [energy] override "${ov.key}" too long — skipped in SC push`);
+                continue;
+            }
+            chunks.push(oc);
         }
     }
 
@@ -465,7 +502,8 @@ function buildGraphChunks(state) {
 }
 
 function buildConfigCode(state) {
-    return `Library.put(\\envil, \\energyCfg, (travel: ${state.travelTime}, dwell: ${state.dwellTime}, maxDur: ${state.maxPatDur}));`;
+    const govr = (state.overrides || []).map(o => `[\\${o.key}, ${scStr(o.value)}]`).join(', ');
+    return `Library.put(\\envil, \\energyCfg, (travel: ${state.travelTime}, dwell: ${state.dwellTime}, maxDur: ${state.maxPatDur}, govr: [${govr}]));`;
 }
 
 function buildStatusQueryCode() {
