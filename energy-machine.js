@@ -240,6 +240,7 @@ function sanitizeState(state) {
         travelTime: clampNum(s.travelTime, 0, 30, 1.5),
         dwellTime: clampNum(s.dwellTime, 0, 30, 0.6),
         maxPatDur: clampNum(s.maxPatDur, 1, 3600, 60),
+        distanceMode: !!s.distanceMode,
         overrides: sanitizeOvr(s.overrides),
         nodes: [],
     };
@@ -337,7 +338,7 @@ function buildEnergyBackboneCode() {
     return [
         `(`,
         `// ── envil energy machine backbone ──`,
-        `Library.put(\\envil, \\energyNotify, NetAddr("127.0.0.1", ${_notifyPortNumber || 0}));`,
+        `Library.put(\\envil, \\energyNotify, if(${_notifyPortNumber || 0} > 0, { NetAddr("127.0.0.1", ${_notifyPortNumber || 0}) }, { nil }));`,
         `if(Library.at(\\envil, \\energyTokens).isNil, { Library.put(\\envil, \\energyTokens, List.new) });`,
         `if(Library.at(\\envil, \\energyNextTok).isNil, { Library.put(\\envil, \\energyNextTok, 0) });`,
         `if(Library.at(\\envil, \\energyCfg).isNil, { Library.put(\\envil, \\energyCfg, (travel: 1.5, dwell: 0.6, maxDur: 60)) });`,
@@ -399,7 +400,7 @@ function buildEnergyTokenCode() {
         `  var rout;`,
         `  Library.put(\\envil, \\energyNextTok, id + 1);`,
         `  rout = Routine({`,
-        `    var pos = (startPos ? \\source).asSymbol, graph, cfg, addr, node, outs, dest, pats, pick, patObj, cond, w, dwell, travel;`,
+        `    var pos = (startPos ? \\source).asSymbol, graph, cfg, addr, node, outs, dest, pats, pick, patObj, cond, w, dwell, travel, pickO, tdur;`,
         `    addr = Library.at(\\envil, \\energyNotify);`,
         `    Library.put(\\envil, \\energyTokPos, id, pos);`,
         `    addr !? { addr.sendMsg("/envilEnergyTok", id, "at", pos.asString, "") };`,
@@ -448,9 +449,11 @@ function buildEnergyTokenCode() {
         `        }, { dwell.wait });`,
         `        outs = node[\\outs] ? [];`,
         `        if(outs.size == 0, { outs = [[\\source, 1.0]] });`,
-        `        dest = outs.wchoose(outs.collect({ |o| (o[1] ? 1).max(0.0001) }).normalizeSum)[0];`,
-        `        addr !? { addr.sendMsg("/envilEnergyTok", id, "travel", pos.asString, dest.asString, travel) };`,
-        `        travel.wait;`,
+        `        pickO = outs.wchoose(outs.collect({ |o| (o[1] ? 1).max(0.0001) }).normalizeSum);`,
+        `        dest = pickO[0];`,
+        `        tdur = if(((cfg[\\useDist] ? 0) > 0) and: { pickO.size > 2 }, { travel * (pickO[2] ? 1) }, { travel });`,
+        `        addr !? { addr.sendMsg("/envilEnergyTok", id, "travel", pos.asString, dest.asString, tdur) };`,
+        `        tdur.wait;`,
         `        pos = dest;`,
         `        Library.put(\\envil, \\energyTokPos, id, pos);`,
         `        if(pos == \\source, { addr !? { addr.sendMsg("/envilEnergyTok", id, "at", "source", "") } });`,
@@ -550,12 +553,26 @@ function buildGraphChunks(state) {
     const pools = state.nodes.filter(n => n.type === 'pool');
     const source = state.nodes.find(n => n.type === 'source');
 
+    // Node centers for the 'travel distance' mode. Must match the panel's
+    // nodeCenter(): source = x+28,y+28; pool = x+90, y + poolH/2 where
+    // poolH = HEADER(24)+6 + nPats*24 + OVR(18)+FOOTER(24) = 72 + nPats*24.
+    const centerOf = (n) => n.type === 'source'
+        ? { x: num(n.x, 0) + 28, y: num(n.y, 0) + 28 }
+        : { x: num(n.x, 0) + 90, y: num(n.y, 0) + (72 + (n.patterns || []).length * 24) / 2 };
+    const distF = (a, b) => {
+        if (!a || !b) return 1;
+        const ca = centerOf(a), cb = centerOf(b);
+        const f = Math.hypot(cb.x - ca.x, cb.y - ca.y) / 300;   // 300px = 1x travel
+        return Math.round(Math.min(8, Math.max(0.05, f)) * 100) / 100;
+    };
+    const nodeById = (id) => state.nodes.find(n => n.id === id);
+
     // source node: outs point to pools (explicit edges live on source.outs? no —
     // source edges are stored on the source node in the webview state)
     const srcOuts = (source && Array.isArray(source.outs)) ? source.outs : [];
     const srcOutsCode = srcOuts
         .filter(o => pools.some(pl => pl.id === o.to))
-        .map(o => `[\\${o.to}, ${Number(o.weight) || 1}]`)
+        .map(o => `[\\${o.to}, ${Number(o.weight) || 1}, ${distF(source, nodeById(o.to))}]`)
         .join(', ');
     chunks.push(`(var g = Library.at(\\envil, \\energyGraphNew); g[\\source] = (outs: [${srcOutsCode}], pats: []);)`);
 
@@ -563,11 +580,11 @@ function buildGraphChunks(state) {
         const outs = [];
         for (const o of pool.outs) {
             if (o.to !== 'source' && pools.some(pl => pl.id === o.to)) {
-                outs.push(`[\\${o.to}, ${Number(o.weight) || 1}]`);
+                outs.push(`[\\${o.to}, ${Number(o.weight) || 1}, ${distF(pool, nodeById(o.to))}]`);
             }
         }
         if ((Number(pool.toSourceWeight) || 0) > 0) {
-            outs.push(`[\\source, ${Number(pool.toSourceWeight)}]`);
+            outs.push(`[\\source, ${Number(pool.toSourceWeight)}, ${distF(pool, source)}]`);
         }
         // Header chunk for the pool (outs + empty pats)
         chunks.push(`(var g = Library.at(\\envil, \\energyGraphNew); g[\\${pool.id}] = (outs: [${outs.join(', ')}], pats: List.new, ovr: List.new, quant: ${Number(pool.quant) || 0}, mode: \\${pool.mode === 'par' ? 'par' : 'seq'});)`);
@@ -607,7 +624,7 @@ function buildGraphChunks(state) {
 
 function buildConfigCode(state) {
     const govr = (state.overrides || []).map(o => `[\\${o.key}, ${scStr(o.value)}]`).join(', ');
-    return `Library.put(\\envil, \\energyCfg, (travel: ${state.travelTime}, dwell: ${state.dwellTime}, maxDur: ${state.maxPatDur}, govr: [${govr}]));`;
+    return `Library.put(\\envil, \\energyCfg, (travel: ${state.travelTime}, dwell: ${state.dwellTime}, maxDur: ${state.maxPatDur}, useDist: ${state.distanceMode ? 1 : 0}, govr: [${govr}]));`;
 }
 
 function buildStatusQueryCode() {
@@ -651,6 +668,12 @@ function ensureNotifyPort() {
         _notifyPort.on('ready', () => {
             try { _notifyPortNumber = _notifyPort.socket.address().port; } catch (_) { _notifyPortNumber = 0; }
             log(`⚡ energy notify port ready @ udp://127.0.0.1:${_notifyPortNumber}`);
+            // If the backbone was already pushed with port 0 (race at startup),
+            // fix the SC-side notify address now — else VU/token sends spam
+            // "_NetAddr_SendMsg failed" on a port-0 NetAddr.
+            if (_backboneSent && _notifyPortNumber) {
+                sendSC(`Library.put(\\envil, \\energyNotify, NetAddr("127.0.0.1", ${_notifyPortNumber}))`, true);
+            }
         });
         _notifyPort.on('error', (err) => console.warn('[energy] notify port error:', err.message));
         _notifyPort.on('message', (oscMsg) => {

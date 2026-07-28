@@ -161,6 +161,7 @@ svg { width: 100%; height: 100%; display: block; }
     <div class="sep"></div>
     <label>travel <input type="range" id="cfgTravel" min="0" max="8" step="0.1"/><span id="cfgTravelV"></span></label>
     <label>dwell <input type="range" id="cfgDwell" min="0" max="4" step="0.1"/><span id="cfgDwellV"></span></label>
+    <label title="travel time scales with real on-map distance between nodes (300px = 1x travel)">dist <input type="checkbox" id="cfgDist"/></label>
     <label>maxDur <input type="number" id="cfgMaxDur" min="1" max="3600" step="1"/></label>
     <span id="tokCount"></span>
     <div id="statusDot" title="sc backbone status"></div>
@@ -279,13 +280,19 @@ function render() {
 
     // ── edges ──
     const src = getNode('source');
+    // Weight badges are collected per origin node and rendered as a vertical
+    // stack at the node's out border, so they never overlap each other.
+    const badgeStacks = new Map();   // fromId → [{txt, weight, onWeight, onDelete, isReturn, hit}]
+    const distFactor = (from, to) => {
+        const a = nodeCenter(from), b = nodeCenter(to);
+        return Math.min(8, Math.max(0.05, Math.hypot(b.x - a.x, b.y - a.y) / 300));
+    };
     const addEdge = (from, to, weight, isReturn, onWeight, onDelete) => {
         const d = edgePathD(from, to, isReturn);
         const sw = Math.max(0.6, Math.min(8, 1 + weight * 1.1));
         const p = el('path', { d, class: 'edge' + (isReturn ? ' return' : ''), id: `edge_${from.id}_${to.id}`, style: `stroke-width:${sw}` }, edgeLayer);
         const hit = el('path', { d, class: 'edge-hit' }, edgeLayer);
-        // arrowhead at 55%, weight badge near the ORIGIN node so all outgoing
-        // weights are readable at a glance from the node they leave
+        // arrowhead at 55% along
         try {
             const len = p.getTotalLength();
             const mid = p.getPointAtLength(len * 0.55);
@@ -293,18 +300,11 @@ function render() {
             const ang = Math.atan2(mid2.y - mid.y, mid2.x - mid.x) * 180 / Math.PI;
             el('path', { d: 'M -5 -4 L 5 0 L -5 4 z', fill: isReturn ? '#554' : '#667',
                 transform: `translate(${mid.x},${mid.y}) rotate(${ang})` }, edgeLayer);
-            const bp = p.getPointAtLength(Math.min(len * 0.4, 46));
-            const txt = (isReturn ? '↩' : '→' + to.id.replace(/^pool/, '')) + ' w:' + weight;
-            const by = isReturn ? bp.y + 4 : bp.y - 19;
-            const badge = el('rect', { x: bp.x + 2, y: by, width: txt.length * 5.6 + 10, height: 15, rx: 4,
-                fill: '#23252d', stroke: '#556', class: 'edge-badge' }, edgeLayer);
-            const lbl = el('text', { x: bp.x + 7, y: by + 11, class: 'edge-label' }, edgeLayer);
-            lbl.textContent = txt;
-            const openPop = ev => { ev.stopPropagation(); ev.preventDefault(); openEdgePop(bp.x, bp.y, weight, onWeight, onDelete); };
-            badge.addEventListener('mousedown', openPop);
-            lbl.addEventListener('mousedown', openPop);
-            hit.addEventListener('mousedown', openPop);
         } catch (_) {}
+        let txt = (isReturn ? '↩' : '→' + to.id.replace(/^pool/, '')) + ' w:' + weight;
+        if (state.distanceMode) txt += ' ·' + (state.travelTime * distFactor(from, to)).toFixed(1) + 's';
+        if (!badgeStacks.has(from.id)) badgeStacks.set(from.id, []);
+        badgeStacks.get(from.id).push({ txt, weight, onWeight, onDelete, isReturn, hit });
     };
     if (src) {
         for (const o of (src.outs || [])) {
@@ -326,6 +326,26 @@ function render() {
                 w => { pl.toSourceWeight = w; },
                 () => { pl.toSourceWeight = 0; });
         }
+    }
+
+    // ── weight badge stacks (right of each origin node's out border) ──
+    for (const [fromId, list] of badgeStacks) {
+        const n = getNode(fromId);
+        if (!n) continue;
+        const a = outAnchor(n);
+        const x0 = a.x + 10;
+        const y0 = a.y - (list.length * 17) / 2;
+        list.forEach((e, i) => {
+            const by = y0 + i * 17;
+            const badge = el('rect', { x: x0, y: by, width: e.txt.length * 5.6 + 10, height: 15, rx: 4,
+                fill: '#23252d', stroke: e.isReturn ? '#655' : '#556', class: 'edge-badge' }, edgeLayer);
+            const lbl = el('text', { x: x0 + 5, y: by + 11, class: 'edge-label' }, edgeLayer);
+            lbl.textContent = e.txt;
+            const openPop = ev => { ev.stopPropagation(); ev.preventDefault(); openEdgePop(x0, by + 15, e.weight, e.onWeight, e.onDelete); };
+            badge.addEventListener('mousedown', openPop);
+            lbl.addEventListener('mousedown', openPop);
+            if (e.hit) e.hit.addEventListener('mousedown', openPop);
+        });
     }
 
     // ── nodes ──
@@ -840,16 +860,19 @@ document.getElementById('btnSync').addEventListener('click', () => post('resync-
 const cfgTravel = document.getElementById('cfgTravel');
 const cfgDwell = document.getElementById('cfgDwell');
 const cfgMaxDur = document.getElementById('cfgMaxDur');
+const cfgDist = document.getElementById('cfgDist');
 function refreshCfgUI() {
     cfgTravel.value = state.travelTime;
     cfgDwell.value = state.dwellTime;
     cfgMaxDur.value = state.maxPatDur;
+    cfgDist.checked = !!state.distanceMode;
     document.getElementById('cfgTravelV').textContent = state.travelTime + 's';
     document.getElementById('cfgDwellV').textContent = state.dwellTime + 's';
 }
-cfgTravel.addEventListener('input', () => { state.travelTime = Number(cfgTravel.value); refreshCfgUI(); pushState(); });
+cfgTravel.addEventListener('input', () => { state.travelTime = Number(cfgTravel.value); refreshCfgUI(); if (state.distanceMode) render(); pushState(); });
 cfgDwell.addEventListener('input', () => { state.dwellTime = Number(cfgDwell.value); refreshCfgUI(); pushState(); });
 cfgMaxDur.addEventListener('change', () => { state.maxPatDur = Math.max(1, Number(cfgMaxDur.value) || 60); pushState(); });
+cfgDist.addEventListener('change', () => { state.distanceMode = cfgDist.checked; render(); pushState(); });
 
 // ── Host messages ────────────────────────────────────────────────────────
 window.addEventListener('message', ev => {
