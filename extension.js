@@ -12,7 +12,7 @@ const { registerHoverSlider } = require('./hover-slider');
 const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
 const { extractExpressions } = require('./peek-expressions');
 
-const ENVIL_BUILD_STAMP = '20260724-183535';   // rewritten by rebuild-install.sh
+const ENVIL_BUILD_STAMP = '20260728-141215';   // rewritten by rebuild-install.sh
 
 // Auto-watch SC proxies referenced as _s.<name> in evaluated Hydra code.
 // Knob/macro/seq aliases (v_c*, v_n*, mcr_*, seq_*) are served by their own
@@ -38,6 +38,7 @@ function autoWatchScAliases(text) {
     }
 }
 const { registerTouchKnobs, hasEnvilDir, buildDynbufBootInitSCCode, buildDynbufBackboneRegisterCode, buildKnobResyncRegisterCode, buildTempoProxyRegisterCode } = require('./touch-knobs');
+const { registerEnergyMachine } = require('./energy-machine');
 const { registerProxyCompletions } = require('./proxy-completions');
 const { registerEnvCompletions, clearEnvKeyCache } = require('./env-completions');
 const { registerPbindCompletions } = require('./pbind-completions');
@@ -988,6 +989,15 @@ iframe{width:100%;height:100%;border:none}</style></head>
         hydraOutput,
         extensionPath: context.extensionPath,
         autoOpen: touchKnobsAutoOpen,
+        workspacePath: workspaceFolder,
+    });
+
+    // Energy machine — visual node network: tokens walk source → pools → back,
+    // pools are Pspawner-backed proxies (~poolA.ar etc.) usable in ~out
+    registerEnergyMachine(context, {
+        getSC,
+        hydraOutput,
+        extensionPath: context.extensionPath,
         workspacePath: workspaceFolder,
     });
 

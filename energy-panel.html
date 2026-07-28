@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob: __ENVIL_CSP_SRC__;"/>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    width: 100%; height: 100vh; overflow: hidden;
+    background: var(--vscode-editor-background, #1e1e1e);
+    font-family: var(--vscode-font-family, 'Segoe UI', sans-serif);
+    color: var(--vscode-editor-foreground, #ccc);
+    user-select: none; -webkit-user-select: none;
+    display: flex; flex-direction: column;
+}
+#toolbar {
+    flex-shrink: 0; height: 34px; display: flex; align-items: center; gap: 6px;
+    padding: 0 8px; font-size: 12px;
+    background: var(--vscode-titleBar-activeBackground, #333);
+    border-bottom: 1px solid var(--vscode-panel-border, #444);
+}
+#toolbar button {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff);
+    border: none; border-radius: 3px; padding: 4px 10px; cursor: pointer;
+    font-size: 11px; white-space: nowrap;
+}
+#toolbar button:hover { opacity: 0.85; }
+#toolbar button.warn { background: #a33; }
+#toolbar .sep { width: 1px; height: 20px; background: var(--vscode-panel-border, #444); margin: 0 2px; }
+#toolbar label { font-size: 10px; opacity: 0.8; display: flex; align-items: center; gap: 3px; }
+#toolbar input[type=range] { width: 70px; }
+#toolbar input[type=number] { width: 46px; background: #222; color: #ccc; border: 1px solid #555; border-radius: 3px; font-size: 10px; padding: 1px 3px; }
+#statusDot { width: 10px; height: 10px; border-radius: 50%; background: #c33; margin-left: auto; }
+#statusDot.ok { background: #3c3; }
+#tokCount { font-size: 10px; opacity: 0.8; }
+#canvasWrap { flex: 1; position: relative; overflow: hidden; }
+svg { width: 100%; height: 100%; display: block; }
+
+.edge { fill: none; stroke: #667; stroke-width: 2; }
+.edge.return { stroke: #554; stroke-dasharray: 5 4; }
+.edge-hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; }
+.edge-label { font-size: 10px; fill: #aab; cursor: pointer; }
+.edge-label:hover { fill: #fff; }
+.templine { fill: none; stroke: #fc3; stroke-width: 2; stroke-dasharray: 4 4; pointer-events: none; }
+
+.node-pool-bg { fill: #2a2d35; stroke: #556; stroke-width: 1.5; rx: 8; }
+.node-pool-bg.droptarget { stroke: #fc3; stroke-width: 2.5; }
+.node-header { fill: #3a3f4d; cursor: grab; }
+.node-title { font-size: 12px; fill: #dde; font-weight: bold; pointer-events: none; }
+.node-del { font-size: 11px; fill: #966; cursor: pointer; }
+.node-del:hover { fill: #f66; }
+.port { fill: #889; stroke: #223; stroke-width: 1; cursor: crosshair; }
+.port:hover { fill: #fc3; }
+.source-circle { fill: #4a3d10; stroke: #fc3; stroke-width: 2; cursor: grab; }
+.source-label { font-size: 20px; pointer-events: none; }
+.source-name { font-size: 10px; fill: #ca5; pointer-events: none; }
+
+.chip-bg { fill: #383d49; stroke: #4a5060; rx: 4; cursor: pointer; }
+.chip-bg:hover { fill: #444b5c; }
+.chip-bg.playing { stroke: #fc3; stroke-width: 1.5; }
+.chip-label { font-size: 10px; fill: #ccd; pointer-events: none; }
+.chip-w { font-size: 9px; fill: #897; pointer-events: none; }
+.chip-add { font-size: 11px; fill: #7a8; cursor: pointer; }
+.chip-add:hover { fill: #ad9; }
+
+.token { pointer-events: none; }
+.token circle { fill: #ffd23c; }
+.token .halo { fill: none; stroke: #ffd23c; opacity: 0.5; }
+
+#editor {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: min(560px, 92%); background: #23252d; border: 1px solid #556;
+    border-radius: 8px; padding: 12px; z-index: 50; display: none;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+}
+#editor.open { display: block; }
+#editor .row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; font-size: 11px; }
+#editor input[type=text], #editor input[type=number] {
+    background: #191b20; color: #dde; border: 1px solid #555; border-radius: 3px;
+    font-size: 11px; padding: 3px 6px;
+}
+#editor input[type=text] { flex: 1; }
+#editor input[type=number] { width: 60px; }
+#editor textarea {
+    width: 100%; height: 160px; background: #191b20; color: #cde;
+    border: 1px solid #555; border-radius: 4px; padding: 8px;
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 12px;
+    resize: vertical; user-select: text; -webkit-user-select: text;
+}
+#editor .hint { font-size: 10px; opacity: 0.55; margin: 6px 0; }
+#editor .btns { display: flex; gap: 6px; justify-content: flex-end; }
+#editor button { background: #0e639c; color: #fff; border: none; border-radius: 3px; padding: 4px 12px; cursor: pointer; font-size: 11px; }
+#editor button.del { background: #a33; margin-right: auto; }
+
+#wInput {
+    position: absolute; width: 44px; z-index: 40; display: none;
+    background: #191b20; color: #ffd23c; border: 1px solid #fc3; border-radius: 3px;
+    font-size: 11px; padding: 1px 4px; text-align: center;
+}
+#chipGhost {
+    position: absolute; z-index: 60; pointer-events: none; display: none;
+    background: #444b5c; border: 1px solid #fc3; border-radius: 4px;
+    font-size: 10px; color: #dde; padding: 3px 10px; opacity: 0.9;
+}
+</style>
+</head>
+<body>
+<div id="toolbar">
+    <button id="btnSpawn" title="spawn an energy token at the source">⚡ spawn</button>
+    <button id="btnRecall" class="warn" title="stop all tokens (playing patterns finish naturally)">⏏ recall</button>
+    <div class="sep"></div>
+    <button id="btnAddPool" title="add a new pool node">+ pool</button>
+    <button id="btnSync" title="re-push graph + backbone to sclang">⟲ sync sc</button>
+    <div class="sep"></div>
+    <label>travel <input type="range" id="cfgTravel" min="0.2" max="8" step="0.1"/><span id="cfgTravelV"></span></label>
+    <label>dwell <input type="range" id="cfgDwell" min="0.1" max="4" step="0.1"/><span id="cfgDwellV"></span></label>
+    <label>maxDur <input type="number" id="cfgMaxDur" min="1" max="3600" step="1"/></label>
+    <span id="tokCount"></span>
+    <div id="statusDot" title="sc backbone status"></div>
+</div>
+<div id="canvasWrap">
+    <svg id="svg">
+        <g id="edgeLayer"></g>
+        <g id="nodeLayer"></g>
+        <g id="tokenLayer"></g>
+        <path id="tempLine" class="templine" style="display:none"></path>
+    </svg>
+    <input id="wInput" type="text"/>
+    <div id="chipGhost"></div>
+    <div id="editor">
+        <div class="row">
+            <span>name</span><input type="text" id="edName"/>
+            <span>weight</span><input type="number" id="edWeight" min="0" max="100" step="0.1"/>
+        </div>
+        <textarea id="edText" spellcheck="false"></textarea>
+        <div class="hint">Must evaluate to a finite Pattern (e.g. Pbind with Pseq(...,n)). Errors or infinite patterns are skipped / cut at maxDur. Events play into the pool proxy (~poolName.ar in your ~out).</div>
+        <div class="btns">
+            <button class="del" id="edDelete">delete</button>
+            <button id="edCancel">cancel</button>
+            <button id="edSave">save</button>
+        </div>
+    </div>
+</div>
+<script>
+const vscode = acquireVsCodeApi();
+
+// ── State ────────────────────────────────────────────────────────────────
+let state = globalThis.__ENVIL_ENERGY_STATE__ || { travelTime: 1.5, dwellTime: 0.6, maxPatDur: 60, nodes: [] };
+const NODE_W = 180;
+const HEADER_H = 24;
+const CHIP_H = 24;
+const FOOTER_H = 24;
+const SRC_R = 28;
+
+const svg = document.getElementById('svg');
+const edgeLayer = document.getElementById('edgeLayer');
+const nodeLayer = document.getElementById('nodeLayer');
+const tokenLayer = document.getElementById('tokenLayer');
+const tempLine = document.getElementById('tempLine');
+
+function post(type, extra) { vscode.postMessage(Object.assign({ type }, extra || {})); }
+
+let _pushTimer = null;
+function pushState() {
+    clearTimeout(_pushTimer);
+    _pushTimer = setTimeout(() => post('graph-update', { state }), 300);
+}
+
+function getNode(id) { return state.nodes.find(n => n.id === id); }
+function pools() { return state.nodes.filter(n => n.type === 'pool'); }
+function poolH(n) { return HEADER_H + 6 + n.patterns.length * CHIP_H + FOOTER_H; }
+
+// Anchor points for edges
+function outAnchor(n) {
+    if (n.type === 'source') return { x: n.x + SRC_R * 2, y: n.y + SRC_R };
+    return { x: n.x + NODE_W, y: n.y + poolH(n) / 2 };
+}
+function inAnchor(n) {
+    if (n.type === 'source') return { x: n.x, y: n.y + SRC_R };
+    return { x: n.x, y: n.y + poolH(n) / 2 };
+}
+function nodeCenter(n) {
+    if (n.type === 'source') return { x: n.x + SRC_R, y: n.y + SRC_R };
+    return { x: n.x + NODE_W / 2, y: n.y + poolH(n) / 2 };
+}
+function chipCenter(pool, patId) {
+    const idx = pool.patterns.findIndex(p => p.id === patId);
+    if (idx < 0) return nodeCenter(pool);
+    return { x: pool.x + NODE_W / 2, y: pool.y + HEADER_H + 6 + idx * CHIP_H + CHIP_H / 2 };
+}
+
+// ── Rendering ────────────────────────────────────────────────────────────
+const SVGNS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent) {
+    const e = document.createElementNS(SVGNS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+}
+
+function edgePathD(from, to, isReturn) {
+    const a = outAnchor(from), b = inAnchor(to);
+    const dx = Math.max(50, Math.abs(b.x - a.x) * 0.45);
+    let bend = 0;
+    if (isReturn) bend = 30;                            // returns arc below
+    else if (b.x < a.x) bend = -40;                     // backward edges arc above
+    return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y + bend}, ${b.x - dx} ${b.y + bend}, ${b.x} ${b.y}`;
+}
+
+function render() {
+    edgeLayer.innerHTML = '';
+    nodeLayer.innerHTML = '';
+
+    // ── edges ──
+    const src = getNode('source');
+    const addEdge = (from, to, weight, isReturn, onWeight) => {
+        const d = edgePathD(from, to, isReturn);
+        const p = el('path', { d, class: 'edge' + (isReturn ? ' return' : ''), id: `edge_${from.id}_${to.id}` }, edgeLayer);
+        el('path', { d, class: 'edge-hit' }, edgeLayer);
+        // arrowhead + weight label at 55% along
+        try {
+            const len = p.getTotalLength();
+            const mid = p.getPointAtLength(len * 0.55);
+            const mid2 = p.getPointAtLength(Math.min(len, len * 0.55 + 6));
+            const ang = Math.atan2(mid2.y - mid.y, mid2.x - mid.x) * 180 / Math.PI;
+            el('path', { d: 'M -5 -4 L 5 0 L -5 4 z', fill: isReturn ? '#554' : '#667',
+                transform: `translate(${mid.x},${mid.y}) rotate(${ang})` }, edgeLayer);
+            const lbl = el('text', { x: mid.x + 6, y: mid.y - 6, class: 'edge-label' }, edgeLayer);
+            lbl.textContent = 'w:' + weight;
+            lbl.addEventListener('mousedown', ev => { ev.stopPropagation(); editWeight(mid.x, mid.y, weight, onWeight); });
+        } catch (_) {}
+    };
+    if (src) {
+        for (const o of (src.outs || [])) {
+            const to = getNode(o.to);
+            if (to) addEdge(src, to, o.weight, false, w => { o.weight = w; });
+        }
+    }
+    for (const pl of pools()) {
+        for (const o of (pl.outs || [])) {
+            const to = getNode(o.to);
+            if (to) addEdge(pl, to, o.weight, false, w => { o.weight = w; });
+        }
+        if (src && (pl.toSourceWeight || 0) > 0) {
+            addEdge(pl, src, pl.toSourceWeight, true, w => { pl.toSourceWeight = w; });
+        }
+    }
+
+    // ── nodes ──
+    for (const n of state.nodes) {
+        if (n.type === 'source') renderSource(n);
+        else renderPool(n);
+    }
+}
+
+function renderSource(n) {
+    const g = el('g', { transform: `translate(${n.x},${n.y})`, 'data-node': n.id }, nodeLayer);
+    const c = el('circle', { cx: SRC_R, cy: SRC_R, r: SRC_R, class: 'source-circle' }, g);
+    const t = el('text', { x: SRC_R, y: SRC_R + 7, 'text-anchor': 'middle', class: 'source-label' }, g);
+    t.textContent = '⚡';
+    const nm = el('text', { x: SRC_R, y: SRC_R * 2 + 14, 'text-anchor': 'middle', class: 'source-name' }, g);
+    nm.textContent = 'source';
+    const port = el('circle', { cx: SRC_R * 2, cy: SRC_R, r: 6, class: 'port' }, g);
+    c.addEventListener('mousedown', ev => startNodeDrag(ev, n));
+    port.addEventListener('mousedown', ev => startConnect(ev, n));
+}
+
+function renderPool(n) {
+    const h = poolH(n);
+    const g = el('g', { transform: `translate(${n.x},${n.y})`, 'data-node': n.id }, nodeLayer);
+    el('rect', { width: NODE_W, height: h, rx: 8, class: 'node-pool-bg', id: `poolbg_${n.id}` }, g);
+    const hdr = el('rect', { width: NODE_W, height: HEADER_H, rx: 8, class: 'node-header' }, g);
+    const title = el('text', { x: 9, y: 16, class: 'node-title' }, g);
+    title.textContent = '~' + n.id;
+    const del = el('text', { x: NODE_W - 16, y: 16, class: 'node-del' }, g);
+    del.textContent = '✕';
+    del.addEventListener('mousedown', ev => { ev.stopPropagation(); deletePool(n.id); });
+    hdr.addEventListener('mousedown', ev => startNodeDrag(ev, n));
+
+    n.patterns.forEach((pt, i) => {
+        const cy = HEADER_H + 6 + i * CHIP_H;
+        const chip = el('rect', { x: 8, y: cy + 2, width: NODE_W - 16, height: CHIP_H - 5, rx: 4,
+            class: 'chip-bg', id: `chip_${n.id}_${pt.id}` }, g);
+        const lbl = el('text', { x: 15, y: cy + 15, class: 'chip-label' }, g);
+        lbl.textContent = pt.name;
+        const wl = el('text', { x: NODE_W - 14, y: cy + 15, 'text-anchor': 'end', class: 'chip-w' }, g);
+        wl.textContent = 'w' + pt.weight;
+        chip.addEventListener('mousedown', ev => startChipDrag(ev, n, pt));
+    });
+
+    const add = el('text', { x: 9, y: h - 8, class: 'chip-add' }, g);
+    add.textContent = '+ pattern';
+    add.addEventListener('mousedown', ev => { ev.stopPropagation(); addPattern(n); });
+
+    const port = el('circle', { cx: NODE_W, cy: h / 2, r: 6, class: 'port' }, g);
+    port.addEventListener('mousedown', ev => startConnect(ev, n));
+}
+
+// ── Weight inline editing ────────────────────────────────────────────────
+const wInput = document.getElementById('wInput');
+function editWeight(x, y, cur, commit) {
+    const wrap = document.getElementById('canvasWrap').getBoundingClientRect();
+    const pt = svgToScreen(x, y);
+    wInput.style.left = (pt.x - wrap.left - 22) + 'px';
+    wInput.style.top = (pt.y - wrap.top - 24) + 'px';
+    wInput.style.display = 'block';
+    wInput.value = cur;
+    wInput.focus(); wInput.select();
+    wInput.onkeydown = ev => {
+        if (ev.key === 'Enter') {
+            const v = Math.max(0, Number(wInput.value) || 0);
+            commit(v);
+            wInput.style.display = 'none';
+            render(); pushState();
+        } else if (ev.key === 'Escape') wInput.style.display = 'none';
+    };
+    wInput.onblur = () => { wInput.style.display = 'none'; };
+}
+function svgToScreen(x, y) {
+    const m = svg.getScreenCTM();
+    return { x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f };
+}
+function screenToSvg(cx, cy) {
+    const m = svg.getScreenCTM().inverse();
+    return { x: m.a * cx + m.c * cy + m.e, y: m.b * cx + m.d * cy + m.f };
+}
+
+// ── Node dragging ────────────────────────────────────────────────────────
+function startNodeDrag(ev, n) {
+    ev.preventDefault();
+    const start = screenToSvg(ev.clientX, ev.clientY);
+    const ox = n.x, oy = n.y;
+    const move = e => {
+        const p = screenToSvg(e.clientX, e.clientY);
+        n.x = Math.max(0, ox + p.x - start.x);
+        n.y = Math.max(0, oy + p.y - start.y);
+        render();
+    };
+    const up = () => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+        pushState();
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+}
+
+// ── Connecting ───────────────────────────────────────────────────────────
+function startConnect(ev, fromNode) {
+    ev.preventDefault(); ev.stopPropagation();
+    const a = outAnchor(fromNode);
+    tempLine.style.display = 'block';
+    const move = e => {
+        const p = screenToSvg(e.clientX, e.clientY);
+        tempLine.setAttribute('d', `M ${a.x} ${a.y} L ${p.x} ${p.y}`);
+    };
+    const up = e => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+        tempLine.style.display = 'none';
+        const p = screenToSvg(e.clientX, e.clientY);
+        const target = hitTestNode(p.x, p.y);
+        if (!target || target.id === fromNode.id) return;
+        if (target.id === 'source') {
+            if (fromNode.type === 'pool' && !(fromNode.toSourceWeight > 0)) {
+                fromNode.toSourceWeight = 1;
+                render(); pushState();
+            }
+            return;
+        }
+        const outs = fromNode.outs = fromNode.outs || [];
+        if (!outs.some(o => o.to === target.id)) {
+            outs.push({ to: target.id, weight: 1 });
+            render(); pushState();
+        }
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+}
+
+function hitTestNode(x, y) {
+    for (const n of state.nodes) {
+        if (n.type === 'source') {
+            const dx = x - (n.x + SRC_R), dy = y - (n.y + SRC_R);
+            if (dx * dx + dy * dy <= (SRC_R + 8) * (SRC_R + 8)) return n;
+        } else {
+            if (x >= n.x && x <= n.x + NODE_W && y >= n.y && y <= n.y + poolH(n)) return n;
+        }
+    }
+    return null;
+}
+
+// ── Pattern chips: click → edit, drag → move between pools ──────────────
+const chipGhost = document.getElementById('chipGhost');
+function startChipDrag(ev, pool, pat) {
+    ev.preventDefault(); ev.stopPropagation();
+    const sx = ev.clientX, sy = ev.clientY;
+    let dragging = false;
+    const wrap = document.getElementById('canvasWrap').getBoundingClientRect();
+    const move = e => {
+        if (!dragging && (Math.abs(e.clientX - sx) > 5 || Math.abs(e.clientY - sy) > 5)) {
+            dragging = true;
+            chipGhost.textContent = pat.name;
+            chipGhost.style.display = 'block';
+        }
+        if (dragging) {
+            chipGhost.style.left = (e.clientX - wrap.left + 10) + 'px';
+            chipGhost.style.top = (e.clientY - wrap.top - 8) + 'px';
+            const p = screenToSvg(e.clientX, e.clientY);
+            const over = hitTestNode(p.x, p.y);
+            document.querySelectorAll('.node-pool-bg').forEach(r => r.classList.remove('droptarget'));
+            if (over && over.type === 'pool' && over.id !== pool.id) {
+                const bg = document.getElementById('poolbg_' + over.id);
+                if (bg) bg.classList.add('droptarget');
+            }
+        }
+    };
+    const up = e => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+        chipGhost.style.display = 'none';
+        document.querySelectorAll('.node-pool-bg').forEach(r => r.classList.remove('droptarget'));
+        if (!dragging) { openEditor(pool, pat); return; }
+        const p = screenToSvg(e.clientX, e.clientY);
+        const over = hitTestNode(p.x, p.y);
+        if (over && over.type === 'pool' && over.id !== pool.id) {
+            pool.patterns = pool.patterns.filter(x => x.id !== pat.id);
+            over.patterns.push(pat);           // weight travels with the pattern
+            render(); pushState();
+        }
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+}
+
+// ── Pattern editor modal ─────────────────────────────────────────────────
+const editor = document.getElementById('editor');
+const edName = document.getElementById('edName');
+const edWeight = document.getElementById('edWeight');
+const edText = document.getElementById('edText');
+let _edCtx = null;   // { pool, pat }
+
+function openEditor(pool, pat) {
+    _edCtx = { pool, pat };
+    edName.value = pat.name;
+    edWeight.value = pat.weight;
+    edText.value = pat.text;
+    editor.classList.add('open');
+    edText.focus();
+}
+function closeEditor() { editor.classList.remove('open'); _edCtx = null; }
+
+document.getElementById('edSave').addEventListener('click', () => {
+    if (!_edCtx) return;
+    _edCtx.pat.name = edName.value.trim() || 'pat';
+    _edCtx.pat.weight = Math.max(0, Number(edWeight.value) || 1);
+    _edCtx.pat.text = edText.value;
+    closeEditor(); render(); pushState();
+});
+document.getElementById('edCancel').addEventListener('click', closeEditor);
+document.getElementById('edDelete').addEventListener('click', () => {
+    if (!_edCtx) return;
+    _edCtx.pool.patterns = _edCtx.pool.patterns.filter(x => x.id !== _edCtx.pat.id);
+    closeEditor(); render(); pushState();
+});
+
+function addPattern(pool) {
+    const pat = {
+        id: 'p' + Math.random().toString(36).slice(2, 8),
+        name: 'pat' + (pool.patterns.length + 1),
+        weight: 1,
+        text: 'Pbind(\\degree, Pseq([0, 2, 4, 7], 2), \\dur, 0.25, \\amp, 0.2)',
+    };
+    pool.patterns.push(pat);
+    render(); pushState();
+    openEditor(pool, pat);
+}
+
+// ── Pool add / delete ────────────────────────────────────────────────────
+function addPool() {
+    let i = 0;
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    let id;
+    do { id = 'pool' + letters[i % 26] + (i >= 26 ? Math.floor(i / 26) : ''); i++; }
+    while (getNode(id));
+    state.nodes.push({
+        id, type: 'pool',
+        x: 200 + (state.nodes.length % 4) * 60,
+        y: 120 + (state.nodes.length % 5) * 70,
+        toSourceWeight: 1, outs: [], patterns: [],
+    });
+    render(); pushState();
+}
+function deletePool(id) {
+    state.nodes = state.nodes.filter(n => n.id !== id);
+    for (const n of state.nodes) {
+        if (n.outs) n.outs = n.outs.filter(o => o.to !== id);
+    }
+    for (const [tid, tok] of tokens) if (tok.nodeId === id) removeToken(tid);
+    render(); pushState();
+}
+
+// ── Tokens (animated) ────────────────────────────────────────────────────
+const tokens = new Map();   // id → { g, x, y, mode, path, pathLen, t0, dur, tx, ty, fx, fy, pulse, nodeId }
+
+function ensureToken(id) {
+    let t = tokens.get(id);
+    if (t) return t;
+    const g = el('g', { class: 'token' }, tokenLayer);
+    el('circle', { r: 12, class: 'halo' }, g);
+    el('circle', { r: 7 }, g);
+    const txt = el('text', { y: -14, 'text-anchor': 'middle', 'font-size': 9, fill: '#ffd23c' }, g);
+    txt.textContent = '' + id;
+    t = { g, x: 0, y: 0, mode: 'idle', pulse: 0, nodeId: 'source' };
+    tokens.set(id, t);
+    return t;
+}
+function removeToken(id) {
+    const t = tokens.get(id);
+    if (t) { t.g.remove(); tokens.delete(id); }
+    updateTokCount();
+}
+function updateTokCount() {
+    document.getElementById('tokCount').textContent = tokens.size ? (tokens.size + ' ⚡') : '';
+}
+
+function tokenEvent(msg) {
+    const t = ensureToken(msg.id);
+    if (msg.kind === 'gone') { removeToken(msg.id); return; }
+    updateTokCount();
+    if (msg.kind === 'travel') {
+        const from = getNode(msg.a), to = getNode(msg.b);
+        t.nodeId = msg.b;
+        const path = document.getElementById(`edge_${msg.a}_${msg.b}`);
+        if (path) {
+            t.mode = 'path'; t.path = path;
+            try { t.pathLen = path.getTotalLength(); } catch (_) { t.pathLen = 0; }
+        } else if (from && to) {
+            t.mode = 'lerp';
+            const a = nodeCenter(from), b = nodeCenter(to);
+            t.fx = a.x; t.fy = a.y; t.tx = b.x; t.ty = b.y;
+        } else { t.mode = 'idle'; }
+        t.t0 = performance.now();
+        t.dur = Math.max(0.05, msg.dur || 1) * 1000;
+    } else if (msg.kind === 'play') {
+        const pool = getNode(msg.a);
+        t.nodeId = msg.a;
+        const c = pool ? chipCenter(pool, msg.b) : { x: t.x, y: t.y };
+        t.mode = 'glide'; t.fx = t.x; t.fy = t.y; t.tx = c.x; t.ty = c.y;
+        t.t0 = performance.now(); t.dur = 250; t.after = 'pulse';
+        markChipPlaying(msg.a, msg.b, true);
+        t.playingChip = [msg.a, msg.b];
+    } else if (msg.kind === 'at' || msg.kind === 'skip') {
+        const n = getNode(msg.a);
+        t.nodeId = msg.a;
+        if (n) {
+            const c = nodeCenter(n);
+            t.mode = 'glide'; t.fx = t.x; t.fy = t.y; t.tx = c.x; t.ty = c.y;
+            t.t0 = performance.now(); t.dur = 200; t.after = 'idle';
+        }
+        clearChip(t);
+    }
+    if (msg.kind !== 'play') clearChip(t);
+}
+function markChipPlaying(poolId, patId, on) {
+    const c = document.getElementById(`chip_${poolId}_${patId}`);
+    if (c) c.classList.toggle('playing', on);
+}
+function clearChip(t) {
+    if (t.playingChip) { markChipPlaying(t.playingChip[0], t.playingChip[1], false); t.playingChip = null; }
+}
+
+function ease(u) { return u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2; }
+
+function tick(now) {
+    for (const t of tokens.values()) {
+        if (t.mode === 'path' && t.path && t.path.isConnected) {
+            const u = Math.min(1, (now - t.t0) / t.dur);
+            try {
+                const p = t.path.getPointAtLength(t.pathLen * ease(u));
+                t.x = p.x; t.y = p.y;
+            } catch (_) {}
+            if (u >= 1) t.mode = 'idle';
+        } else if (t.mode === 'path') {
+            // path got re-rendered away — try to re-find it
+            const p2 = document.getElementById(t.path && t.path.id || '');
+            if (p2) { t.path = p2; try { t.pathLen = p2.getTotalLength(); } catch (_) {} }
+            else t.mode = 'idle';
+        } else if (t.mode === 'lerp' || t.mode === 'glide') {
+            const u = Math.min(1, (now - t.t0) / t.dur);
+            const e = ease(u);
+            t.x = t.fx + (t.tx - t.fx) * e;
+            t.y = t.fy + (t.ty - t.fy) * e;
+            if (u >= 1) t.mode = (t.after === 'pulse') ? 'pulse' : 'idle';
+        }
+        t.pulse += 0.08;
+        const halo = t.g.firstChild;
+        const r = (t.mode === 'pulse') ? 12 + Math.sin(t.pulse) * 4 : 12;
+        halo.setAttribute('r', r);
+        t.g.setAttribute('transform', `translate(${t.x},${t.y})`);
+    }
+    requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+// ── Toolbar ──────────────────────────────────────────────────────────────
+document.getElementById('btnSpawn').addEventListener('click', () => post('spawn-token'));
+document.getElementById('btnRecall').addEventListener('click', () => {
+    post('recall-tokens');
+    // panel-side cleanup too, in case sclang is down
+    for (const id of Array.from(tokens.keys())) removeToken(id);
+});
+document.getElementById('btnAddPool').addEventListener('click', addPool);
+document.getElementById('btnSync').addEventListener('click', () => post('resync-sc'));
+
+const cfgTravel = document.getElementById('cfgTravel');
+const cfgDwell = document.getElementById('cfgDwell');
+const cfgMaxDur = document.getElementById('cfgMaxDur');
+function refreshCfgUI() {
+    cfgTravel.value = state.travelTime;
+    cfgDwell.value = state.dwellTime;
+    cfgMaxDur.value = state.maxPatDur;
+    document.getElementById('cfgTravelV').textContent = state.travelTime + 's';
+    document.getElementById('cfgDwellV').textContent = state.dwellTime + 's';
+}
+cfgTravel.addEventListener('input', () => { state.travelTime = Number(cfgTravel.value); refreshCfgUI(); pushState(); });
+cfgDwell.addEventListener('input', () => { state.dwellTime = Number(cfgDwell.value); refreshCfgUI(); pushState(); });
+cfgMaxDur.addEventListener('change', () => { state.maxPatDur = Math.max(1, Number(cfgMaxDur.value) || 60); pushState(); });
+
+// ── Host messages ────────────────────────────────────────────────────────
+window.addEventListener('message', ev => {
+    const msg = ev.data;
+    if (!msg) return;
+    if (msg.type === 'token-event') tokenEvent(msg);
+    else if (msg.type === 'status') {
+        const s = msg.status || {};
+        const dot = document.getElementById('statusDot');
+        dot.classList.toggle('ok', !!(s.ready && s.isProxySpace));
+        dot.title = s.sclangDown ? 'sclang not running'
+            : (s.ready ? (s.isProxySpace ? 'backbone ok · ProxySpace ok' : 'backbone ok · NO ProxySpace!') : 'backbone missing (auto-healing…)');
+    }
+});
+
+// ── Error forwarding for debugging ───────────────────────────────────────
+window.addEventListener('error', e => post('webview-log', { message: `ERR ${e.message} (${e.filename}:${e.lineno})` }));
+
+refreshCfgUI();
+render();
+</script>
+</body>
+</html>

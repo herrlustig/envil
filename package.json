@@ -189,6 +189,15 @@
         "title": "Envil: Close Touch Knobs"
       },
       {
+        "command": "envil.energyMachine.open",
+        "title": "Envil: Open Energy Machine",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "envil.energyMachine.close",
+        "title": "Envil: Close Energy Machine"
+      },
+      {
         "command": "envil.initWorkspace",
         "title": "Envil: Init Workspace",
         "icon": "$(folder-active)"
