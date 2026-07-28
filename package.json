@@ -250,6 +250,11 @@
             "default": true,
             "description": "Automatically open the Touch Knobs panel on startup (centre column)."
           },
+          "envil.energyMachine.autoOpen": {
+            "type": "boolean",
+            "default": true,
+            "description": "Automatically open the Energy Machine panel on startup when the workspace has used it before (.envil/energy.json exists)."
+          },
           "envil.sequencer.oscEnabled": {
             "type": "boolean",
             "default": true,

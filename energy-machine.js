@@ -48,7 +48,7 @@ let _backboneSent = false;
 // PUBLIC API
 // ─────────────────────────────────────────────────────────────────────────────
 
-function registerEnergyMachine(context, { getSC, hydraOutput, extensionPath, workspacePath }) {
+function registerEnergyMachine(context, { getSC, hydraOutput, extensionPath, workspacePath, autoOpen }) {
     _getSC = getSC;
     _hydraOutput = hydraOutput;
     _workspacePath = workspacePath || null;
@@ -58,6 +58,11 @@ function registerEnergyMachine(context, { getSC, hydraOutput, extensionPath, wor
         vscode.commands.registerCommand('envil.energyMachine.open', () => openPanel(context)),
         vscode.commands.registerCommand('envil.energyMachine.close', () => closePanel()),
     );
+
+    // Auto-open on startup (small delay so editors have time to settle)
+    if (autoOpen) {
+        setTimeout(() => { try { openPanel(context); } catch (e) { console.warn('[energy] autoOpen failed:', e.message); } }, 800);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -145,6 +150,10 @@ function handleMessage(msg) {
             sendSC(`Library.at(\\envil, \\energySteal) !? { |f| f.value(${Number(msg.id) | 0}) }`, true);
             return;
         }
+        case 'release-token': {
+            sendSC(`Library.at(\\envil, \\energyRelease) !? { |f| f.value(${Number(msg.id) | 0}) }`, true);
+            return;
+        }
         case 'check-pattern': {
             const reqId = Number(msg.reqId) | 0;
             const lit = scStr(String(msg.text || ''));
@@ -194,7 +203,7 @@ function defaultState() {
         _version: STATE_VERSION,
         travelTime: 1.5,
         dwellTime: 0.6,
-        maxPatDur: 60,
+        maxPatDur: 20,
         overrides: [],
         nodes: [
             { id: 'source', type: 'source', x: 90, y: 260, outs: [{ to: 'poolA', weight: 1 }] },
@@ -239,7 +248,7 @@ function sanitizeState(state) {
         _version: STATE_VERSION,
         travelTime: clampNum(s.travelTime, 0, 30, 1.5),
         dwellTime: clampNum(s.dwellTime, 0, 30, 0.6),
-        maxPatDur: clampNum(s.maxPatDur, 1, 3600, 60),
+        maxPatDur: clampNum(s.maxPatDur, 1, 3600, 20),
         distanceMode: !!s.distanceMode,
         overrides: sanitizeOvr(s.overrides),
         nodes: [],
@@ -341,7 +350,7 @@ function buildEnergyBackboneCode() {
         `Library.put(\\envil, \\energyNotify, if(${_notifyPortNumber || 0} > 0, { NetAddr("127.0.0.1", ${_notifyPortNumber || 0}) }, { nil }));`,
         `if(Library.at(\\envil, \\energyTokens).isNil, { Library.put(\\envil, \\energyTokens, List.new) });`,
         `if(Library.at(\\envil, \\energyNextTok).isNil, { Library.put(\\envil, \\energyNextTok, 0) });`,
-        `if(Library.at(\\envil, \\energyCfg).isNil, { Library.put(\\envil, \\energyCfg, (travel: 1.5, dwell: 0.6, maxDur: 60)) });`,
+        `if(Library.at(\\envil, \\energyCfg).isNil, { Library.put(\\envil, \\energyCfg, (travel: 1.5, dwell: 0.6, maxDur: 20)) });`,
         `Library.put(\\envil, \\energyMkOvr, { |list|`,
         `  var out = List.new;`,
         `  (list ? []).do { |kv|`,
@@ -400,7 +409,7 @@ function buildEnergyTokenCode() {
         `  var rout;`,
         `  Library.put(\\envil, \\energyNextTok, id + 1);`,
         `  rout = Routine({`,
-        `    var pos = (startPos ? \\source).asSymbol, graph, cfg, addr, node, outs, dest, pats, pick, patObj, cond, w, dwell, travel, pickO, tdur;`,
+        `    var pos = (startPos ? \\source).asSymbol, graph, cfg, addr, node, outs, dest, pats, pick, patObj, cond, w, dwell, travel, pickO, tdur, tf, prog, c2, dd, sl;`,
         `    addr = Library.at(\\envil, \\energyNotify);`,
         `    Library.put(\\envil, \\energyTokPos, id, pos);`,
         `    addr !? { addr.sendMsg("/envilEnergyTok", id, "at", pos.asString, "") };`,
@@ -431,7 +440,7 @@ function buildEnergyTokenCode() {
         `            var go = Library.at(\\envil, \\energyMkOvr).value(cfg[\\govr]);`,
         `            if(po.size > 0, { patObj = Pbindf.performList(\\new, [patObj] ++ po) });`,
         `            if(go.size > 0, { patObj = Pbindf.performList(\\new, [patObj] ++ go) });`,
-        `            patObj = Pfindur(cfg[\\maxDur] ? 60, patObj);`,
+        `            patObj = Pfindur(cfg[\\maxDur] ? 20, patObj);`,
         `            if(q.notNil, {`,
         `              cond = Condition(false);`,
         `              q.add([patObj, cond, id]);`,
@@ -451,9 +460,18 @@ function buildEnergyTokenCode() {
         `        if(outs.size == 0, { outs = [[\\source, 1.0]] });`,
         `        pickO = outs.wchoose(outs.collect({ |o| (o[1] ? 1).max(0.0001) }).normalizeSum);`,
         `        dest = pickO[0];`,
-        `        tdur = if(((cfg[\\useDist] ? 0) > 0) and: { pickO.size > 2 }, { travel * (pickO[2] ? 1) }, { travel });`,
+        `        tf = if(pickO.size > 2, { pickO[2] ? 1 }, { 1 });`,
+        `        tdur = if((cfg[\\useDist] ? 0) > 0, { travel * tf }, { travel });`,
         `        addr !? { addr.sendMsg("/envilEnergyTok", id, "travel", pos.asString, dest.asString, tdur) };`,
-        `        tdur.wait;`,
+        `        // sliced wait: re-reads cfg each tick so travel-slider moves apply mid-flight`,
+        `        prog = 0;`,
+        `        while({ prog < 1 }, {`,
+        `          c2 = Library.at(\\envil, \\energyCfg) ? ();`,
+        `          dd = if((c2[\\useDist] ? 0) > 0, { (c2[\\travel] ? 1.5) * tf }, { c2[\\travel] ? 1.5 }).max(0.02);`,
+        `          sl = 0.05.min(dd);`,
+        `          sl.wait;`,
+        `          prog = prog + (sl / dd);`,
+        `        });`,
         `        pos = dest;`,
         `        Library.put(\\envil, \\energyTokPos, id, pos);`,
         `        if(pos == \\source, { addr !? { addr.sendMsg("/envilEnergyTok", id, "at", "source", "") } });`,
@@ -481,7 +499,18 @@ function buildEnergyTokenCode() {
 function buildEnergyExtrasCode() {
     return [
         `(`,
-        `// ── envil energy machine: steal + VU extras ──`,
+        `// ── envil energy machine: steal + release + VU extras ──`,
+        `Library.put(\\envil, \\energyRelease, { |id|`,
+        `  var pl = Library.at(\\envil, \\energyPlaying, id);`,
+        `  var sp;`,
+        `  if(pl.notNil, {`,
+        `    sp = Library.at(\\envil, \\energySpawners, pl[0]);`,
+        `    sp !? { try { sp.suspend(pl[1]) } };`,
+        `    Library.put(\\envil, \\energyPlaying, id, nil);`,
+        `    pl[2].test = true; pl[2].signal;`,
+        `    ("[energy] token " ++ id ++ " released from pattern").postln;`,
+        `  });`,
+        `});`,
         `Library.put(\\envil, \\energySteal, { |id|`,
         `  var toks = Library.at(\\envil, \\energyTokens);`,
         `  var addr = Library.at(\\envil, \\energyNotify);`,
@@ -523,6 +552,10 @@ function buildEnergyExtrasCode() {
         `        Library.put(\\envil, \\energyVUSyns, ());`,
         `        names.do({ |name, i|`,
         `          var pr = ps.at(name);`,
+        `          if(pr.loaded.not and: { pr.source.notNil }, {`,
+        `            pr.wakeUp;`,
+        `            ("[energy] pool ~" ++ name ++ " woken (was not running)").postln;`,
+        `          });`,
         `          if(pr.bus.notNil, {`,
         `            Library.at(\\envil, \\energyVUSyns)[name] = Synth(\\envilEnergyVU, [\\bus, pr.bus.index, \\idx, i], RootNode(srv), \\addToTail);`,
         `          });`,
@@ -555,10 +588,10 @@ function buildGraphChunks(state) {
 
     // Node centers for the 'travel distance' mode. Must match the panel's
     // nodeCenter(): source = x+28,y+28; pool = x+90, y + poolH/2 where
-    // poolH = HEADER(24)+6 + nPats*24 + OVR(18)+FOOTER(24) = 72 + nPats*24.
+    // poolH = HEADER(24)+6 + nPats*34 + OVR(18)+FOOTER(24) = 72 + nPats*34.
     const centerOf = (n) => n.type === 'source'
         ? { x: num(n.x, 0) + 28, y: num(n.y, 0) + 28 }
-        : { x: num(n.x, 0) + 90, y: num(n.y, 0) + (72 + (n.patterns || []).length * 24) / 2 };
+        : { x: num(n.x, 0) + 90, y: num(n.y, 0) + (72 + (n.patterns || []).length * 34) / 2 };
     const distF = (a, b) => {
         if (!a || !b) return 1;
         const ca = centerOf(a), cb = centerOf(b);

@@ -67,6 +67,7 @@ svg { width: 100%; height: 100%; display: block; }
 .chip-bg:hover { fill: #444b5c; }
 .chip-bg.playing { stroke: #fc3; stroke-width: 1.5; }
 .chip-bg.failed { stroke: #f55; stroke-width: 1.5; }
+.chip-code { font-size: 7px; fill: #8a92a8; pointer-events: none; font-family: var(--vscode-editor-font-family, monospace); }
 .chip-label { font-size: 10px; fill: #ccd; pointer-events: none; }
 .chip-w { font-size: 9px; fill: #897; pointer-events: none; }
 .chip-add { font-size: 11px; fill: #7a8; cursor: pointer; }
@@ -196,7 +197,7 @@ svg { width: 100%; height: 100%; display: block; }
     </div>
     <div id="ovrEd">
         <div class="row">
-            <span>key</span><input class="k" id="ovKey" type="text" placeholder="legato"/>
+            <span>key</span><input class="k" id="ovKey" type="text" placeholder="\legato"/>
             <span>value</span><input class="v" id="ovVal" type="text" placeholder="1.2  or  \jamVoice  or  Pseq([1,2],inf)"/>
         </div>
         <div class="hint">Applied as Pbindf(pattern, \key, value) at each energy grant. Value is SC code, interpreted live. Pool overrides apply first; global overrides win over pool ones.</div>
@@ -211,10 +212,10 @@ svg { width: 100%; height: 100%; display: block; }
 const vscode = acquireVsCodeApi();
 
 // ── State ────────────────────────────────────────────────────────────────
-let state = globalThis.__ENVIL_ENERGY_STATE__ || { travelTime: 1.5, dwellTime: 0.6, maxPatDur: 60, nodes: [] };
+let state = globalThis.__ENVIL_ENERGY_STATE__ || { travelTime: 1.5, dwellTime: 0.6, maxPatDur: 20, nodes: [] };
 const NODE_W = 180;
 const HEADER_H = 24;
-const CHIP_H = 24;
+const CHIP_H = 34;
 const OVR_H = 18;
 const FOOTER_H = 24;
 const SRC_R = 28;
@@ -256,6 +257,14 @@ function chipCenter(pool, patId) {
     return { x: pool.x + NODE_W / 2, y: pool.y + HEADER_H + 6 + idx * CHIP_H + CHIP_H / 2 };
 }
 
+// Distance factor between two nodes (300px = 1x travel) — shared by edge
+// badges and live token animation.
+function distFactorOf(from, to) {
+    if (!from || !to) return 1;
+    const a = nodeCenter(from), b = nodeCenter(to);
+    return Math.min(8, Math.max(0.05, Math.hypot(b.x - a.x, b.y - a.y) / 300));
+}
+
 // ── Rendering ────────────────────────────────────────────────────────────
 const SVGNS = 'http://www.w3.org/2000/svg';
 function el(tag, attrs, parent) {
@@ -283,10 +292,6 @@ function render() {
     // Weight badges are collected per origin node and rendered as a vertical
     // stack at the node's out border, so they never overlap each other.
     const badgeStacks = new Map();   // fromId → [{txt, weight, onWeight, onDelete, isReturn, hit}]
-    const distFactor = (from, to) => {
-        const a = nodeCenter(from), b = nodeCenter(to);
-        return Math.min(8, Math.max(0.05, Math.hypot(b.x - a.x, b.y - a.y) / 300));
-    };
     const addEdge = (from, to, weight, isReturn, onWeight, onDelete) => {
         const d = edgePathD(from, to, isReturn);
         const sw = Math.max(0.6, Math.min(8, 1 + weight * 1.1));
@@ -302,7 +307,7 @@ function render() {
                 transform: `translate(${mid.x},${mid.y}) rotate(${ang})` }, edgeLayer);
         } catch (_) {}
         let txt = (isReturn ? '↩' : '→' + to.id.replace(/^pool/, '')) + ' w:' + weight;
-        if (state.distanceMode) txt += ' ·' + (state.travelTime * distFactor(from, to)).toFixed(1) + 's';
+        if (state.distanceMode) txt += ' ·' + (state.travelTime * distFactorOf(from, to)).toFixed(1) + 's';
         if (!badgeStacks.has(from.id)) badgeStacks.set(from.id, []);
         badgeStacks.get(from.id).push({ txt, weight, onWeight, onDelete, isReturn, hit });
     };
@@ -389,9 +394,14 @@ function renderPool(n) {
         const cy = HEADER_H + 6 + i * CHIP_H;
         const chip = el('rect', { x: 8, y: cy + 2, width: NODE_W - 16, height: CHIP_H - 5, rx: 4,
             class: 'chip-bg' + (failedPats.has(n.id + '_' + pt.id) ? ' failed' : ''), id: `chip_${n.id}_${pt.id}` }, g);
-        const lbl = el('text', { x: 15, y: cy + 15, class: 'chip-label' }, g);
+        const tip = document.createElementNS(SVGNS, 'title');
+        tip.textContent = pt.text || '(empty pattern)';
+        chip.appendChild(tip);
+        const lbl = el('text', { x: 15, y: cy + 14, class: 'chip-label' }, g);
         lbl.textContent = pt.name;
-        const wl = el('text', { x: NODE_W - 14, y: cy + 15, 'text-anchor': 'end', class: 'chip-w' }, g);
+        const code = el('text', { x: 15, y: cy + 25, class: 'chip-code' }, g);
+        code.textContent = (pt.text || '').replace(/\s+/g, ' ').trim().slice(0, 42);
+        const wl = el('text', { x: NODE_W - 14, y: cy + 14, 'text-anchor': 'end', class: 'chip-w' }, g);
         wl.textContent = 'w' + pt.weight;
         chip.addEventListener('mousedown', ev => startChipDrag(ev, n, pt));
     });
@@ -718,7 +728,7 @@ function deletePool(id) {
 
 // ── Tokens (animated) ────────────────────────────────────────────────────
 const tokens = new Map();   // id → { g, x, y, mode, path, pathLen, t0, dur, tx, ty, fx, fy, pulse, nodeId, trail }
-const TRAIL_N = 10;
+const TRAIL_N = 32;
 
 function ensureToken(id) {
     let t = tokens.get(id);
@@ -733,7 +743,13 @@ function ensureToken(id) {
     el('circle', { r: 7 }, g);
     const txt = el('text', { y: -14, 'text-anchor': 'middle', 'font-size': 9, fill: '#ffd23c' }, g);
     txt.textContent = '' + id;
-    g.addEventListener('mousedown', ev => { ev.stopPropagation(); post('steal-token', { id }); });
+    // click: playing → release from pattern (token walks on); idle → steal
+    g.addEventListener('mousedown', ev => {
+        ev.stopPropagation();
+        const tk = tokens.get(id);
+        if (tk && tk.playingChip) post('release-token', { id });
+        else post('steal-token', { id });
+    });
     t = { g, trailG, trail, hist: [], x: 0, y: 0, mode: 'idle', pulse: 0, nodeId: 'source' };
     tokens.set(id, t);
     return t;
@@ -754,6 +770,7 @@ function tokenEvent(msg) {
     if (msg.kind === 'travel') {
         const from = getNode(msg.a), to = getNode(msg.b);
         t.nodeId = msg.b;
+        t.travFrom = msg.a; t.travTo = msg.b; t.prog = 0;
         const path = document.getElementById(`edge_${msg.a}_${msg.b}`);
         if (path) {
             t.mode = 'path'; t.path = path;
@@ -768,6 +785,7 @@ function tokenEvent(msg) {
     } else if (msg.kind === 'play') {
         const pool = getNode(msg.a);
         t.nodeId = msg.a;
+        t.prog = null;
         const c = pool ? chipCenter(pool, msg.b) : { x: t.x, y: t.y };
         t.mode = 'glide'; t.fx = t.x; t.fy = t.y; t.tx = c.x; t.ty = c.y;
         t.t0 = performance.now(); t.dur = 250; t.after = 'pulse';
@@ -776,6 +794,7 @@ function tokenEvent(msg) {
     } else if (msg.kind === 'at' || msg.kind === 'skip') {
         const n = getNode(msg.a);
         t.nodeId = msg.a;
+        t.prog = null;
         if (msg.kind === 'skip' && msg.b && msg.b !== 'empty' && msg.b !== 'noqueue') {
             failedPats.add(msg.a + '_' + msg.b);
             const c = document.getElementById(`chip_${msg.a}_${msg.b}`);
@@ -800,10 +819,29 @@ function clearChip(t) {
 
 function ease(u) { return u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2; }
 
+// Where a resting token SHOULD be right now (follows dragged nodes live)
+function tokenTarget(t) {
+    const n = getNode(t.nodeId);
+    if (!n) return null;
+    if (t.playingChip && t.playingChip[0] === t.nodeId) return chipCenter(n, t.playingChip[1]);
+    return nodeCenter(n);
+}
+
+// Live travel duration in ms — tracks the travel slider + dist toggle so
+// speed changes apply to tokens already in flight (mirrors SC's sliced wait).
+function travMs(t) {
+    const f = state.distanceMode ? distFactorOf(getNode(t.travFrom), getNode(t.travTo)) : 1;
+    return Math.max(30, state.travelTime * f * 1000);
+}
+
+let _lastTick = 0;
 function tick(now) {
+    const dt = _lastTick ? Math.min(100, now - _lastTick) : 16;
+    _lastTick = now;
     for (const t of tokens.values()) {
         if (t.mode === 'path' && t.path && t.path.isConnected) {
-            const u = Math.min(1, (now - t.t0) / t.dur);
+            t.prog = Math.min(1, (t.prog || 0) + dt / travMs(t));
+            const u = t.prog;
             try {
                 const p = t.path.getPointAtLength(t.pathLen * ease(u));
                 t.x = p.x; t.y = p.y;
@@ -815,31 +853,48 @@ function tick(now) {
             if (p2) { t.path = p2; try { t.pathLen = p2.getTotalLength(); } catch (_) {} }
             else t.mode = 'idle';
         } else if (t.mode === 'lerp' || t.mode === 'glide') {
-            const u = Math.min(1, (now - t.t0) / t.dur);
+            // re-aim at the live target each frame so dragged nodes are tracked
+            const c = tokenTarget(t);
+            if (c) { t.tx = c.x; t.ty = c.y; }
+            let u;
+            if (t.mode === 'lerp') {
+                t.prog = Math.min(1, (t.prog || 0) + dt / travMs(t));
+                u = t.prog;
+            } else {
+                u = Math.min(1, (now - t.t0) / t.dur);
+            }
             const e = ease(u);
             t.x = t.fx + (t.tx - t.fx) * e;
             t.y = t.fy + (t.ty - t.fy) * e;
             if (u >= 1) t.mode = (t.after === 'pulse') ? 'pulse' : 'idle';
+        } else {
+            // idle / pulse: smoothly follow the node the token sits on
+            const c = tokenTarget(t);
+            if (c) { t.x += (c.x - t.x) * 0.35; t.y += (c.y - t.y) * 0.35; }
         }
         t.pulse += 0.08;
         const halo = t.g.firstChild;
         const r = (t.mode === 'pulse') ? 12 + Math.sin(t.pulse) * 4 : 12;
         halo.setAttribute('r', r);
         t.g.setAttribute('transform', `translate(${t.x},${t.y})`);
-        // trail: record every 3rd frame while moving, fade out
+        // trail: record every frame while the token moves at all, fade out slowly
         t._fc = (t._fc || 0) + 1;
-        const moving = t.mode === 'path' || t.mode === 'lerp' || t.mode === 'glide';
-        if (moving && t._fc % 3 === 0) {
+        const dx = t.x - (t._px != null ? t._px : t.x);
+        const dy = t.y - (t._py != null ? t._py : t.y);
+        t._px = t.x; t._py = t.y;
+        if ((dx * dx + dy * dy) > 0.2) {
             t.hist.unshift({ x: t.x, y: t.y });
             if (t.hist.length > TRAIL_N) t.hist.pop();
-        } else if (!moving && t._fc % 6 === 0 && t.hist.length) {
+        } else if (t._fc % 4 === 0 && t.hist.length) {
             t.hist.pop();
         }
         for (let i = 0; i < TRAIL_N; i++) {
             const c = t.trail[i], h = t.hist[i];
             if (h) {
+                const f = 1 - i / TRAIL_N;
                 c.setAttribute('cx', h.x); c.setAttribute('cy', h.y);
-                c.setAttribute('opacity', 0.45 * (1 - i / TRAIL_N));
+                c.setAttribute('r', 1 + f * 4);
+                c.setAttribute('opacity', 0.7 * f);
             } else c.setAttribute('opacity', 0);
         }
     }

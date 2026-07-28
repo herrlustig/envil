@@ -12,7 +12,7 @@ const { registerHoverSlider } = require('./hover-slider');
 const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
 const { extractExpressions } = require('./peek-expressions');
 
-const ENVIL_BUILD_STAMP = '20260728-160200';   // rewritten by rebuild-install.sh
+const ENVIL_BUILD_STAMP = '20260728-163917';   // rewritten by rebuild-install.sh
 
 // Auto-watch SC proxies referenced as _s.<name> in evaluated Hydra code.
 // Knob/macro/seq aliases (v_c*, v_n*, mcr_*, seq_*) are served by their own
@@ -993,12 +993,17 @@ iframe{width:100%;height:100%;border:none}</style></head>
     });
 
     // Energy machine — visual node network: tokens walk source → pools → back,
-    // pools are Pspawner-backed proxies (~poolA.ar etc.) usable in ~out
+    // pools are Pspawner-backed proxies (~poolA.ar etc.) usable in ~out.
+    // Auto-opens when the workspace has used it before (.envil/energy.json).
+    const energyCfgAutoOpen = vscode.workspace.getConfiguration('envil').get('energyMachine.autoOpen', true);
+    const energyAutoOpen = energyCfgAutoOpen && workspaceFolder
+        && fs.existsSync(path.join(workspaceFolder, '.envil', 'energy.json'));
     registerEnergyMachine(context, {
         getSC,
         hydraOutput,
         extensionPath: context.extensionPath,
         workspacePath: workspaceFolder,
+        autoOpen: energyAutoOpen,
     });
 
     // ProxySpace autocompletion — ~proxy suggestions from live sclang
