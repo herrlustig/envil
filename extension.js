@@ -12,7 +12,7 @@ const { registerHoverSlider } = require('./hover-slider');
 const { registerBlockCodeLens, CMD_RUN_SC_BLOCK, CMD_RUN_HYDRA_BLOCK } = require('./codelens-blocks');
 const { extractExpressions } = require('./peek-expressions');
 
-const ENVIL_BUILD_STAMP = '20260728-183155';   // rewritten by rebuild-install.sh
+const ENVIL_BUILD_STAMP = '20260728-184906';   // rewritten by rebuild-install.sh
 
 // Auto-watch SC proxies referenced as _s.<name> in evaluated Hydra code.
 // Knob/macro/seq aliases (v_c*, v_n*, mcr_*, seq_*) are served by their own

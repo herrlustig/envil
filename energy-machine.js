@@ -772,8 +772,9 @@ function handleVUMsg(oscMsg) {
 }
 
 function handleStatusMsg(oscMsg) {
-    const a = (oscMsg.args || []).map(x => Number(oscArg(x)) | 0);
-    const status = { ready: !!a[0], isProxySpace: !!a[1], tokens: a[2] | 0, tempo: Number(a[3]) || 0 };
+    const a = (oscMsg.args || []).map(oscArg);
+    // NB: tempo must stay a float (beats/sec) — do NOT truncate with |0
+    const status = { ready: !!Number(a[0]), isProxySpace: !!Number(a[1]), tokens: Number(a[2]) | 0, tempo: Number(a[3]) || 0 };
     if (_panel) _panel.webview.postMessage({ type: 'status', status });
     // Self-heal: backbone missing (fresh sclang) → re-push everything, throttled
     if (!status.ready) {

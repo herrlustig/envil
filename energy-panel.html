@@ -37,6 +37,10 @@ html, body {
 #tokCount { font-size: 10px; opacity: 0.8; }
 #canvasWrap { flex: 1; position: relative; overflow: hidden; }
 svg { width: 100%; height: 100%; display: block; touch-action: none; }
+#hScroll, #vScroll { position: absolute; background: #778; opacity: 0.35; border-radius: 3px; display: none; z-index: 5; touch-action: none; cursor: pointer; }
+#hScroll:hover, #vScroll:hover { opacity: 0.7; }
+#hScroll { height: 6px; bottom: 2px; }
+#vScroll { width: 6px; right: 2px; }
 
 .edge { fill: none; stroke: #667; stroke-width: 2; }
 .edge.return { stroke: #554; stroke-dasharray: 5 4; }
@@ -51,6 +55,7 @@ svg { width: 100%; height: 100%; display: block; touch-action: none; }
 .node-title { font-size: 12px; fill: #dde; font-weight: bold; pointer-events: none; }
 .node-del { font-size: 11px; fill: #966; cursor: pointer; }
 .node-del:hover { fill: #f66; }
+.node-del.confirm { fill: #f33; font-weight: bold; }
 .node-inject { font-size: 11px; fill: #a95; cursor: pointer; }
 .node-inject:hover { fill: #fc3; }
 .node-toggle { font-size: 9px; fill: #8a9; cursor: pointer; }
@@ -106,6 +111,7 @@ svg { width: 100%; height: 100%; display: block; touch-action: none; }
 #edgePop input { width: 52px; background: #191b20; color: #ffd23c; border: 1px solid #555; border-radius: 3px; font-size: 11px; padding: 2px 4px; }
 #edgePop button { border: none; border-radius: 3px; padding: 2px 9px; cursor: pointer; font-size: 10px; color: #fff; background: #0e639c; }
 #edgePop button.del { background: #a33; }
+button.del.confirm { background: #d00 !important; border: 1px solid #f66 !important; font-weight: bold; }
 
 #ovrEd {
     position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -183,6 +189,8 @@ svg { width: 100%; height: 100%; display: block; touch-action: none; }
         <g id="tokenLayer"></g>
         <path id="tempLine" class="templine" style="display:none"></path>
     </svg>
+    <div id="hScroll"></div>
+    <div id="vScroll"></div>
     <div id="edgePop">
         w <input id="epW" type="number" min="0" step="0.1"/>
         <button id="epOk">ok</button>
@@ -235,6 +243,27 @@ const tokenLayer = document.getElementById('tokenLayer');
 const tempLine = document.getElementById('tempLine');
 
 function post(type, extra) { vscode.postMessage(Object.assign({ type }, extra || {})); }
+
+// Double-press to confirm destructive actions (same mechanic as touch-knobs
+// panel): first press arms the button ('…?', red) for 2s, second press fires.
+const _armTimers = new Map();
+function confirmPress(el, key, action) {
+    const armed = _armTimers.get(key);
+    if (armed) {
+        clearTimeout(armed.timer);
+        _armTimers.delete(key);
+        if (el.isConnected) { el.classList.remove('confirm'); el.textContent = armed.orig; }
+        action();
+        return;
+    }
+    const orig = el.textContent;
+    el.classList.add('confirm');
+    el.textContent = orig + '?';
+    _armTimers.set(key, { orig, timer: setTimeout(() => {
+        _armTimers.delete(key);
+        if (el.isConnected) { el.classList.remove('confirm'); el.textContent = orig; }
+    }, 2000) });
+}
 
 let _pushTimer = null;
 function pushState() {
@@ -382,6 +411,7 @@ function render() {
         if (n.type === 'source') renderSource(n);
         else renderPool(n);
     }
+    updateScrollbars();
 }
 
 function renderSource(n) {
@@ -403,15 +433,15 @@ function renderPool(n) {
     const hdr = el('rect', { width: NODE_W, height: HEADER_H, rx: 8, class: 'node-header' }, g);
     const title = el('text', { x: 9, y: 16, class: 'node-title' }, g);
     title.textContent = '~' + n.id;
-    // VU meter strip in header
-    el('rect', { x: NODE_W - 78, y: 8, width: 44, height: 8, rx: 2, class: 'vu-bg' }, g);
-    el('rect', { x: NODE_W - 78, y: 8, width: 0, height: 8, rx: 2, class: 'vu-bar', id: `vu_${n.id}` }, g);
-    const inj = el('text', { x: NODE_W - 30, y: 16, class: 'node-inject' }, g);
+    // VU meter strip in header (⚡ inject sits left of it, ✕ far right)
+    el('rect', { x: NODE_W - 62, y: 8, width: 44, height: 8, rx: 2, class: 'vu-bg' }, g);
+    el('rect', { x: NODE_W - 62, y: 8, width: 0, height: 8, rx: 2, class: 'vu-bar', id: `vu_${n.id}` }, g);
+    const inj = el('text', { x: NODE_W - 78, y: 16, class: 'node-inject' }, g);
     inj.textContent = '⚡';
     inj.addEventListener('pointerdown', ev => { ev.stopPropagation(); post('inject-token', { pool: n.id }); });
     const del = el('text', { x: NODE_W - 16, y: 16, class: 'node-del' }, g);
     del.textContent = '✕';
-    del.addEventListener('pointerdown', ev => { ev.stopPropagation(); deletePool(n.id); });
+    del.addEventListener('pointerdown', ev => { ev.stopPropagation(); confirmPress(del, 'pool_' + n.id, () => deletePool(n.id)); });
     hdr.addEventListener('pointerdown', ev => startNodeDrag(ev, n));
 
     n.patterns.forEach((pt, i) => {
@@ -497,9 +527,11 @@ function commitEdgeWeight() {
     closeEdgePop(); render(); pushState();
 }
 document.getElementById('epOk').addEventListener('click', commitEdgeWeight);
-document.getElementById('epDel').addEventListener('click', () => {
-    if (_edgeCtx) _edgeCtx.onDelete();
-    closeEdgePop(); render(); pushState();
+document.getElementById('epDel').addEventListener('click', ev => {
+    confirmPress(ev.currentTarget, 'epDel', () => {
+        if (_edgeCtx) _edgeCtx.onDelete();
+        closeEdgePop(); render(); pushState();
+    });
 });
 epW.addEventListener('keydown', ev => {
     if (ev.key === 'Enter') commitEdgeWeight();
@@ -511,14 +543,77 @@ svg.addEventListener('pointerdown', ev => {
 });
 
 // ── Canvas scrolling / panning (wheel, or drag empty space — mouse & touch)
+// Scroll extent is content-based: you can only scroll as far as nodes
+// actually reach (plus a margin), and scrollbar thumbs on the borders show
+// where you are. Dragging a node against a border auto-pans (grows the area).
 let viewX = 0, viewY = 0;
-function updateViewBox() {
-    svg.setAttribute('viewBox', `${viewX} ${viewY} ${svg.clientWidth || 1} ${svg.clientHeight || 1}`);
+let _apTimer = null, _apCX = 0, _apCY = 0, _apCb = null;   // edge auto-pan state
+const hScroll = document.getElementById('hScroll');
+const vScroll = document.getElementById('vScroll');
+
+function contentExtent() {
+    const M = 60;   // margin beyond the outermost node
+    let mx = 0, my = 0;
+    for (const n of state.nodes) {
+        const w = n.type === 'source' ? SRC_R * 2 + 40 : NODE_W;
+        const h = n.type === 'source' ? SRC_R * 2 + 20 : poolH(n);
+        mx = Math.max(mx, n.x + w);
+        my = Math.max(my, n.y + h);
+    }
+    return { w: mx + M, h: my + M };
 }
+function updateViewBox() {
+    if (!_apTimer) {   // don't clamp while edge auto-pan is growing the area
+        const vw = svg.clientWidth || 1, vh = svg.clientHeight || 1;
+        const ext = contentExtent();
+        viewX = Math.max(0, Math.min(viewX, Math.max(0, ext.w - vw)));
+        viewY = Math.max(0, Math.min(viewY, Math.max(0, ext.h - vh)));
+    }
+    applyViewBox();
+}
+function applyViewBox() {
+    svg.setAttribute('viewBox', `${viewX} ${viewY} ${svg.clientWidth || 1} ${svg.clientHeight || 1}`);
+    updateScrollbars();
+}
+function updateScrollbars() {
+    const vw = svg.clientWidth || 1, vh = svg.clientHeight || 1;
+    const ext = contentExtent();
+    setThumb(hScroll, vw, Math.max(ext.w, viewX + vw), viewX, true);
+    setThumb(vScroll, vh, Math.max(ext.h, viewY + vh), viewY, false);
+}
+function setThumb(elm, vp, ext, pos, horiz) {
+    if (ext <= vp + 1) { elm.style.display = 'none'; return; }
+    elm.style.display = 'block';
+    const track = vp - 4;
+    const size = Math.max(24, track * vp / ext);
+    const off = 2 + (track - size) * (pos / Math.max(1, ext - vp));
+    if (horiz) { elm.style.width = size + 'px'; elm.style.left = off + 'px'; }
+    else { elm.style.height = size + 'px'; elm.style.top = off + 'px'; }
+}
+function startThumbDrag(ev, horiz) {
+    ev.preventDefault(); ev.stopPropagation();
+    dragStartPointer(ev);
+    const vw = svg.clientWidth || 1, vh = svg.clientHeight || 1;
+    const ext = contentExtent();
+    const vp = horiz ? vw : vh;
+    const ex = horiz ? Math.max(ext.w, viewX + vw) : Math.max(ext.h, viewY + vh);
+    const track = vp - 4, size = Math.max(24, track * vp / ex);
+    const scale = (ex - vp) / Math.max(1, track - size);
+    const s = horiz ? ev.clientX : ev.clientY, o = horiz ? viewX : viewY;
+    dragListen(e => {
+        const d = ((horiz ? e.clientX : e.clientY) - s) * scale;
+        if (horiz) viewX = Math.max(0, Math.min(o + d, ex - vp));
+        else viewY = Math.max(0, Math.min(o + d, ex - vp));
+        applyViewBox();
+    }, () => {});
+}
+hScroll.addEventListener('pointerdown', ev => startThumbDrag(ev, true));
+vScroll.addEventListener('pointerdown', ev => startThumbDrag(ev, false));
+
 svg.addEventListener('wheel', e => {
     e.preventDefault();
-    viewX = Math.max(0, viewX + (e.shiftKey ? e.deltaY : e.deltaX));
-    viewY = Math.max(0, viewY + (e.shiftKey ? 0 : e.deltaY));
+    viewX += (e.shiftKey ? e.deltaY : e.deltaX);
+    viewY += (e.shiftKey ? 0 : e.deltaY);
     updateViewBox();
 }, { passive: false });
 function startPan(ev) {
@@ -526,14 +621,37 @@ function startPan(ev) {
     dragStartPointer(ev);
     const sx = ev.clientX, sy = ev.clientY, ox = viewX, oy = viewY;
     const move = e => {
-        viewX = Math.max(0, ox - (e.clientX - sx));
-        viewY = Math.max(0, oy - (e.clientY - sy));
+        viewX = ox - (e.clientX - sx);
+        viewY = oy - (e.clientY - sy);
         updateViewBox();
     };
     dragListen(move, () => {});
 }
 window.addEventListener('resize', updateViewBox);
 updateViewBox();
+
+// ── Edge auto-pan: while dragging near a canvas border, slide the view ──
+function autoPanTrack(e, cb) {
+    _apCX = e.clientX; _apCY = e.clientY; _apCb = cb;
+    if (!_apTimer) _apTimer = setInterval(autoPanStep, 16);
+}
+function autoPanStop() {
+    if (_apTimer) { clearInterval(_apTimer); _apTimer = null; }
+    _apCb = null;
+    updateViewBox();   // clamp back to the (possibly grown) content extent
+}
+function autoPanStep() {
+    const r = svg.getBoundingClientRect();
+    const E = 30, S = 8;
+    let dx = 0, dy = 0;
+    if (_apCX < r.left + E) dx = -S; else if (_apCX > r.right - E) dx = S;
+    if (_apCY < r.top + E) dy = -S; else if (_apCY > r.bottom - E) dy = S;
+    if (!dx && !dy) return;
+    viewX = Math.max(0, viewX + dx);
+    viewY = Math.max(0, viewY + dy);
+    applyViewBox();
+    if (_apCb) _apCb(_apCX, _apCY);
+}
 
 function svgToScreen(x, y) {
     const m = svg.getScreenCTM();
@@ -573,13 +691,18 @@ function startNodeDrag(ev, n) {
     dragStartPointer(ev);
     const start = screenToSvg(ev.clientX, ev.clientY);
     const ox = n.x, oy = n.y;
-    const move = e => {
-        const p = screenToSvg(e.clientX, e.clientY);
+    const place = (cx, cy) => {
+        const p = screenToSvg(cx, cy);
         n.x = Math.max(0, ox + p.x - start.x);
         n.y = Math.max(0, oy + p.y - start.y);
         render();
     };
+    const move = e => {
+        autoPanTrack(e, place);
+        place(e.clientX, e.clientY);
+    };
     const up = () => {
+        autoPanStop();
         pushState();
     };
     dragListen(move, up);
@@ -591,11 +714,16 @@ function startConnect(ev, fromNode) {
     dragStartPointer(ev);
     const a = outAnchor(fromNode);
     tempLine.style.display = 'block';
-    const move = e => {
-        const p = screenToSvg(e.clientX, e.clientY);
+    const aim = (cx, cy) => {
+        const p = screenToSvg(cx, cy);
         tempLine.setAttribute('d', `M ${a.x} ${a.y} L ${p.x} ${p.y}`);
     };
+    const move = e => {
+        autoPanTrack(e, aim);
+        aim(e.clientX, e.clientY);
+    };
     const up = e => {
+        autoPanStop();
         tempLine.style.display = 'none';
         const p = screenToSvg(e.clientX, e.clientY);
         const target = hitTestNode(p.x, p.y);
@@ -715,10 +843,12 @@ document.getElementById('edSave').addEventListener('click', () => {
     closeEditor(); render(); pushState();
 });
 document.getElementById('edCancel').addEventListener('click', closeEditor);
-document.getElementById('edDelete').addEventListener('click', () => {
-    if (!_edCtx) return;
-    _edCtx.pool.patterns = _edCtx.pool.patterns.filter(x => x.id !== _edCtx.pat.id);
-    closeEditor(); render(); pushState();
+document.getElementById('edDelete').addEventListener('click', ev => {
+    confirmPress(ev.currentTarget, 'edDelete', () => {
+        if (!_edCtx) return;
+        _edCtx.pool.patterns = _edCtx.pool.patterns.filter(x => x.id !== _edCtx.pat.id);
+        closeEditor(); render(); pushState();
+    });
 });
 
 function addPattern(pool) {
@@ -825,12 +955,14 @@ document.getElementById('ovSave').addEventListener('click', () => {
     closeOvrEditor(); render(); renderOvrBar(); pushState();
 });
 document.getElementById('ovCancel').addEventListener('click', closeOvrEditor);
-document.getElementById('ovDel').addEventListener('click', () => {
-    if (_ovrCtx && _ovrCtx.item) {
-        const i = _ovrCtx.list.indexOf(_ovrCtx.item);
-        if (i >= 0) _ovrCtx.list.splice(i, 1);
-    }
-    closeOvrEditor(); render(); renderOvrBar(); pushState();
+document.getElementById('ovDel').addEventListener('click', ev => {
+    confirmPress(ev.currentTarget, 'ovDel', () => {
+        if (_ovrCtx && _ovrCtx.item) {
+            const i = _ovrCtx.list.indexOf(_ovrCtx.item);
+            if (i >= 0) _ovrCtx.list.splice(i, 1);
+        }
+        closeOvrEditor(); render(); renderOvrBar(); pushState();
+    });
 });
 
 function renderOvrBar() {
