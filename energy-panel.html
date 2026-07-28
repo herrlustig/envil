@@ -75,8 +75,9 @@ svg { width: 100%; height: 100%; display: block; touch-action: none; }
 .chip-add { font-size: 11px; fill: #7a8; cursor: pointer; }
 .chip-add:hover { fill: #ad9; }
 
-.ovr-chip { font-size: 9px; fill: #9ab; cursor: pointer; }
-.ovr-chip:hover { fill: #cde; }
+.ovr-bg { fill: #383d49; stroke: #4a5060; rx: 4; cursor: pointer; }
+.ovr-bg:hover { fill: #444b5c; }
+.ovr-chip { font-size: 9px; fill: #9ab; pointer-events: none; }
 .ovr-clone { font-size: 9px; fill: #5f6678; cursor: copy; }
 .ovr-clone:hover { fill: #9db; }
 .ovr-add { font-size: 9px; fill: #7a8; cursor: pointer; }
@@ -243,7 +244,23 @@ function pushState() {
 
 function getNode(id) { return state.nodes.find(n => n.id === id); }
 function pools() { return state.nodes.filter(n => n.type === 'pool'); }
-function poolH(n) { return HEADER_H + 6 + n.patterns.length * CHIP_H + OVR_H + FOOTER_H; }
+// Override chips wrap into rows; the pool card grows with them.
+// NOTE: keep this layout math in sync with ovrRowsOf() in energy-machine.js
+// (host uses it for distance-mode node centers).
+function ovrLayout(n) {
+    const items = [];
+    let x = 41, row = 0;                       // row 0 starts after '+ovr'
+    for (const o of (n.overrides || [])) {
+        const short = o.value.length > 10 ? o.value.slice(0, 9) + '…' : o.value;
+        const txt = '\\' + o.key + '=' + short;
+        const w = txt.length * 5 + 21;         // clone handle + label + padding
+        if (x + w > NODE_W - 8 && x > (row === 0 ? 41 : 9)) { x = 9; row++; }
+        items.push({ o, txt, x, w, row });
+        x += w + 4;
+    }
+    return { rows: row + 1, items };
+}
+function poolH(n) { return HEADER_H + 6 + n.patterns.length * CHIP_H + ovrLayout(n).rows * OVR_H + FOOTER_H; }
 
 // Anchor points for edges
 function outAnchor(n) {
@@ -420,23 +437,20 @@ function renderPool(n) {
         chip.addEventListener('pointerdown', ev => startChipDrag(ev, n, pt));
     });
 
-    // override row (between patterns and footer)
+    // override rows (between patterns and footer, wrapping)
     const ovrY = HEADER_H + 6 + n.patterns.length * CHIP_H;
-    let ox = 9;
-    const oAdd = el('text', { x: ox, y: ovrY + 13, class: 'ovr-add' }, g);
+    const oAdd = el('text', { x: 9, y: ovrY + 13, class: 'ovr-add' }, g);
     oAdd.textContent = '+ovr';
     oAdd.addEventListener('pointerdown', ev => { ev.stopPropagation(); n.overrides = n.overrides || []; openOvrEditor(n.overrides, null); });
-    ox += 32;
-    for (const o of (n.overrides || [])) {
-        const short = o.value.length > 10 ? o.value.slice(0, 9) + '…' : o.value;
-        const txt = '\\' + o.key + '=' + short;
-        const cl = el('text', { x: ox, y: ovrY + 13, class: 'ovr-clone' }, g);
+    for (const it of ovrLayout(n).items) {
+        const ry = ovrY + it.row * OVR_H;
+        const bg = el('rect', { x: it.x, y: ry + 1, width: it.w, height: OVR_H - 4, rx: 4, class: 'ovr-bg' }, g);
+        bg.addEventListener('pointerdown', ev => { ev.stopPropagation(); startOvrDrag(ev, n.overrides, it.o, false); });
+        const cl = el('text', { x: it.x + 5, y: ry + 12, class: 'ovr-clone' }, g);
         cl.textContent = '⧉';
-        cl.addEventListener('pointerdown', ev => { ev.stopPropagation(); startOvrDrag(ev, n.overrides, o, true); });
-        const t = el('text', { x: ox + 9, y: ovrY + 13, class: 'ovr-chip' }, g);
-        t.textContent = txt;
-        t.addEventListener('pointerdown', ev => { ev.stopPropagation(); startOvrDrag(ev, n.overrides, o, false); });
-        ox += txt.length * 5.4 + 20;
+        cl.addEventListener('pointerdown', ev => { ev.stopPropagation(); startOvrDrag(ev, n.overrides, it.o, true); });
+        const t = el('text', { x: it.x + 15, y: ry + 12, class: 'ovr-chip' }, g);
+        t.textContent = it.txt;
     }
 
     const add = el('text', { x: 9, y: h - 8, class: 'chip-add' }, g);

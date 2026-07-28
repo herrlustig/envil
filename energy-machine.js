@@ -588,10 +588,22 @@ function buildGraphChunks(state) {
 
     // Node centers for the 'travel distance' mode. Must match the panel's
     // nodeCenter(): source = x+28,y+28; pool = x+90, y + poolH/2 where
-    // poolH = HEADER(24)+6 + nPats*34 + OVR(18)+FOOTER(24) = 72 + nPats*34.
+    // poolH = HEADER(24)+6 + nPats*34 + ovrRows*18 + FOOTER(24)
+    //       = 54 + nPats*34 + ovrRows*18.
+    // ovrRowsOf mirrors the panel's ovrLayout() wrap math.
+    const ovrRowsOf = (n) => {
+        let x = 41, row = 0;
+        for (const o of (n.overrides || [])) {
+            const short = o.value.length > 10 ? o.value.slice(0, 9) + '…' : o.value;
+            const w = (o.key.length + short.length + 2) * 5 + 21;
+            if (x + w > 172 && x > (row === 0 ? 41 : 9)) { x = 9; row++; }
+            x += w + 4;
+        }
+        return row + 1;
+    };
     const centerOf = (n) => n.type === 'source'
         ? { x: num(n.x, 0) + 28, y: num(n.y, 0) + 28 }
-        : { x: num(n.x, 0) + 90, y: num(n.y, 0) + (72 + (n.patterns || []).length * 34) / 2 };
+        : { x: num(n.x, 0) + 90, y: num(n.y, 0) + (54 + (n.patterns || []).length * 34 + ovrRowsOf(n) * 18) / 2 };
     const distF = (a, b) => {
         if (!a || !b) return 1;
         const ca = centerOf(a), cb = centerOf(b);
