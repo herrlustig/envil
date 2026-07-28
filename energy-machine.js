@@ -136,6 +136,33 @@ function handleMessage(msg) {
             sendSC(`Library.at(\\envil, \\energySpawnToken) !? { |f| f.value }`, true);
             return;
         }
+        case 'inject-token': {
+            const pool = sanitizePoolName(msg.pool);
+            if (pool) sendSC(`Library.at(\\envil, \\energySpawnToken) !? { |f| f.value(\\${pool}) }`, true);
+            return;
+        }
+        case 'steal-token': {
+            sendSC(`Library.at(\\envil, \\energySteal) !? { |f| f.value(${Number(msg.id) | 0}) }`, true);
+            return;
+        }
+        case 'check-pattern': {
+            const reqId = Number(msg.reqId) | 0;
+            const lit = scStr(String(msg.text || ''));
+            if (!_notifyPortNumber || lit.length > MAX_PAYLOAD - 400) {
+                if (_panel) _panel.webview.postMessage({ type: 'check-result', reqId, ok: false, err: 'cannot check (too long or no OSC port)' });
+                return;
+            }
+            sendSC([
+                `(`,
+                `var addr = NetAddr("127.0.0.1", ${_notifyPortNumber});`,
+                `var r = try { ${lit}.interpret } { |err| err.errorString };`,
+                `if(r.isKindOf(Pattern), { addr.sendMsg("/envilEnergyCheck", ${reqId}, 1, "ok") }, {`,
+                `  addr.sendMsg("/envilEnergyCheck", ${reqId}, 0, if(r.isNil, { "syntax error (see SC post window)" }, { ("not a Pattern: " ++ r.asString).keep(140) }));`,
+                `});`,
+                `)`,
+            ].join(' '), true);
+            return;
+        }
         case 'recall-tokens': {
             sendSC(`Library.at(\\envil, \\energyRecall) !? { |f| f.value }`, true);
             return;
@@ -210,8 +237,8 @@ function sanitizeState(state) {
     const s = (state && typeof state === 'object') ? state : {};
     const out = {
         _version: STATE_VERSION,
-        travelTime: clampNum(s.travelTime, 0.1, 30, 1.5),
-        dwellTime: clampNum(s.dwellTime, 0.05, 30, 0.6),
+        travelTime: clampNum(s.travelTime, 0, 30, 1.5),
+        dwellTime: clampNum(s.dwellTime, 0, 30, 0.6),
         maxPatDur: clampNum(s.maxPatDur, 1, 3600, 60),
         overrides: sanitizeOvr(s.overrides),
         nodes: [],
@@ -239,6 +266,8 @@ function sanitizeState(state) {
             id, type: 'pool',
             x: num(n.x, 300), y: num(n.y, 200),
             toSourceWeight: clampNum(n.toSourceWeight, 0, 100, 1),
+            quant: clampNum(n.quant, 0, 256, 0),
+            mode: n.mode === 'par' ? 'par' : 'seq',
             outs: (Array.isArray(n.outs) ? n.outs : [])
                 .filter(o => o && typeof o.to === 'string')
                 .map(o => ({ to: sanitizePoolName(o.to) || 'source', weight: clampNum(o.weight, 0, 100, 1) })),
@@ -322,13 +351,19 @@ function buildEnergyBackboneCode() {
         `});`,
         `Library.put(\\envil, \\energyMakePool, { |name|`,
         `  Pspawner({ |sp|`,
+        `    Library.put(\\envil, \\energySpawners, name, sp);`,
         `    loop {`,
         `      var q = Library.at(\\envil, \\energyQueues, name);`,
-        `      var item;`,
+        `      var item, node, quant, mode, str, b;`,
         `      if(q.notNil and: { q.size > 0 }, { item = q.removeAt(0) });`,
         `      if(item.notNil, {`,
-        `        try { sp.seq(item[0]) } { |err| ("[energy] pattern crashed in " ++ name ++ ": " ++ err.errorString).warn };`,
-        `        item[1].test = true; item[1].signal;`,
+        `        node = Library.at(\\envil, \\energyGraph) !? { |g| g.at(name) };`,
+        `        quant = ((node !? { node[\\quant] }) ? 0).max(0);`,
+        `        if(quant > 0, { b = thisThread.clock.beats; sp.wait((quant - (b % quant)) % quant) });`,
+        `        str = sp.par(Pfset({}, Pprotect(item[0], { |err| ("[energy] pattern error in " ++ name ++ ": " ++ err.errorString).warn }), { item[1].test = true; item[1].signal }));`,
+        `        item[2] !? { Library.put(\\envil, \\energyPlaying, item[2], [name, str, item[1]]) };`,
+        `        mode = (node !? { node[\\mode] }) ? \\seq;`,
+        `        if(mode != \\par, { while({ item[1].test.not }, { sp.wait(0.1) }) });`,
         `      }, { sp.wait(0.1) });`,
         `    };`,
         `  });`,
@@ -359,14 +394,15 @@ function buildEnergyTokenCode() {
     return [
         `(`,
         `// ── envil energy machine: token engine ──`,
-        `Library.put(\\envil, \\energySpawnToken, {`,
+        `Library.put(\\envil, \\energySpawnToken, { |startPos|`,
         `  var id = Library.at(\\envil, \\energyNextTok) ? 0;`,
         `  var rout;`,
         `  Library.put(\\envil, \\energyNextTok, id + 1);`,
         `  rout = Routine({`,
-        `    var pos = \\source, graph, cfg, addr, node, outs, dest, pats, pick, patObj, cond, w, dwell, travel;`,
+        `    var pos = (startPos ? \\source).asSymbol, graph, cfg, addr, node, outs, dest, pats, pick, patObj, cond, w, dwell, travel;`,
         `    addr = Library.at(\\envil, \\energyNotify);`,
-        `    addr !? { addr.sendMsg("/envilEnergyTok", id, "at", "source", "") };`,
+        `    Library.put(\\envil, \\energyTokPos, id, pos);`,
+        `    addr !? { addr.sendMsg("/envilEnergyTok", id, "at", pos.asString, "") };`,
         `    loop {`,
         `      graph = Library.at(\\envil, \\energyGraph);`,
         `      cfg = Library.at(\\envil, \\energyCfg) ? ();`,
@@ -397,16 +433,17 @@ function buildEnergyTokenCode() {
         `            patObj = Pfindur(cfg[\\maxDur] ? 60, patObj);`,
         `            if(q.notNil, {`,
         `              cond = Condition(false);`,
-        `              q.add([patObj, cond]);`,
+        `              q.add([patObj, cond, id]);`,
         `              addr !? { addr.sendMsg("/envilEnergyTok", id, "play", pos.asString, pick[\\id].asString) };`,
         `              cond.wait;`,
+        `              Library.put(\\envil, \\energyPlaying, id, nil);`,
         `            }, {`,
         `              addr !? { addr.sendMsg("/envilEnergyTok", id, "skip", pos.asString, "noqueue") };`,
-        `              dwell.wait;`,
+        `              dwell.max(0.05).wait;`,
         `            });`,
         `          }, {`,
         `            addr !? { addr.sendMsg("/envilEnergyTok", id, "skip", pos.asString, if(pick.isNil, { "empty" }, { pick[\\id].asString })) };`,
-        `            dwell.wait;`,
+        `            dwell.max(0.05).wait;`,
         `          });`,
         `        }, { dwell.wait });`,
         `        outs = node[\\outs] ? [];`,
@@ -415,6 +452,7 @@ function buildEnergyTokenCode() {
         `        addr !? { addr.sendMsg("/envilEnergyTok", id, "travel", pos.asString, dest.asString, travel) };`,
         `        travel.wait;`,
         `        pos = dest;`,
+        `        Library.put(\\envil, \\energyTokPos, id, pos);`,
         `        if(pos == \\source, { addr !? { addr.sendMsg("/envilEnergyTok", id, "at", "source", "") } });`,
         `      });`,
         `    };`,
@@ -424,14 +462,79 @@ function buildEnergyTokenCode() {
         `  id;`,
         `});`,
         `Library.put(\\envil, \\energyRecall, {`,
-        `  var toks = Library.at(\\envil, \\energyTokens);`,
-        `  var addr = Library.at(\\envil, \\energyNotify);`,
-        `  var names = Library.at(\\envil, \\energyPoolNames) ? [];`,
-        `  toks.do({ |t| t[1].stop; addr !? { addr.sendMsg("/envilEnergyTok", t[0], "gone", "", "") } });`,
-        `  toks.clear;`,
-        `  names.do({ |n| Library.at(\\envil, \\energyQueues, n) !? { |q| q.clear } });`,
+        `  var toks = Library.at(\\envil, \\energyTokens).copy;`,
+        `  toks.do({ |t| Library.at(\\envil, \\energySteal) !? { |f| f.value(t[0]) } });`,
         `  "[energy] all tokens recalled".postln;`,
         `});`,
+        `)`,
+    ].join('\n');
+}
+
+/**
+ * Extras: token steal (surgical sp.suspend of the tracked child stream),
+ * per-pool VU meters (InFeedback synth on each pool bus → SendReply →
+ * forwarded to the panel), ServerTree re-registration for reboot.
+ */
+function buildEnergyExtrasCode() {
+    return [
+        `(`,
+        `// ── envil energy machine: steal + VU extras ──`,
+        `Library.put(\\envil, \\energySteal, { |id|`,
+        `  var toks = Library.at(\\envil, \\energyTokens);`,
+        `  var addr = Library.at(\\envil, \\energyNotify);`,
+        `  var idx = toks.detectIndex({ |t| t[0] == id });`,
+        `  var tok, pl, sp;`,
+        `  if(idx.notNil, {`,
+        `    tok = toks.removeAt(idx);`,
+        `    tok[1].stop;`,
+        `    pl = Library.at(\\envil, \\energyPlaying, id);`,
+        `    if(pl.notNil, {`,
+        `      sp = Library.at(\\envil, \\energySpawners, pl[0]);`,
+        `      sp !? { try { sp.suspend(pl[1]) } };`,
+        `      pl[2].test = true;`,
+        `      Library.put(\\envil, \\energyPlaying, id, nil);`,
+        `    });`,
+        `    (Library.at(\\envil, \\energyQueues) ?? { () }).do({ |q|`,
+        `      var keep;`,
+        `      if(q.isKindOf(List), { keep = q.reject({ |it| it[2] == id }); q.clear; keep.do({ |x| q.add(x) }) });`,
+        `    });`,
+        `    addr !? { addr.sendMsg("/envilEnergyTok", id, "gone", "", "") };`,
+        `    ("[energy] token " ++ id ++ " recalled").postln;`,
+        `  });`,
+        `});`,
+        `Library.put(\\envil, \\energyVURefresh, {`,
+        `  Routine({`,
+        `    var names, ps, srv = Server.default, t = 0;`,
+        `    while({ srv.serverRunning.not and: { t < 10 } }, { 0.2.wait; t = t + 0.2 });`,
+        `    if(srv.serverRunning, {`,
+        `      names = Library.at(\\envil, \\energyPoolNames) ? [];`,
+        `      ps = Library.at(\\envil, \\pspace);`,
+        `      if(ps.isNil and: { currentEnvironment.isKindOf(ProxySpace) }, { ps = currentEnvironment });`,
+        `      if(ps.notNil, {`,
+        `        SynthDef(\\envilEnergyVU, { |bus=0, idx=0|`,
+        `          var sig = InFeedback.ar(bus, 2);`,
+        `          SendReply.kr(Impulse.kr(12), '/envilEnergyVU', [Amplitude.kr(Mix(sig) * 0.7).ampdb.clip(-60, 0)], idx);`,
+        `        }).add;`,
+        `        srv.sync;`,
+        `        (Library.at(\\envil, \\energyVUSyns) ? ()).do({ |s| try { s.free } });`,
+        `        Library.put(\\envil, \\energyVUSyns, ());`,
+        `        names.do({ |name, i|`,
+        `          var pr = ps.at(name);`,
+        `          if(pr.bus.notNil, {`,
+        `            Library.at(\\envil, \\energyVUSyns)[name] = Synth(\\envilEnergyVU, [\\bus, pr.bus.index, \\idx, i], RootNode(srv), \\addToTail);`,
+        `          });`,
+        `        });`,
+        `      });`,
+        `    });`,
+        `  }).play(AppClock);`,
+        `});`,
+        `OSCdef(\\envilEnergyVU, { |msg|`,
+        `  var addr = Library.at(\\envil, \\energyNotify);`,
+        `  addr !? { addr.sendMsg("/envilEnergyVU", msg[2], msg[3]) };`,
+        `}, '/envilEnergyVU');`,
+        `(Library.at(\\envil, \\energyTreeFn)) !? { |fn| ServerTree.remove(fn, Server.default) };`,
+        `Library.put(\\envil, \\energyTreeFn, { Library.at(\\envil, \\energyVURefresh) !? { |f| f.value } });`,
+        `ServerTree.add(Library.at(\\envil, \\energyTreeFn), Server.default);`,
         `)`,
     ].join('\n');
 }
@@ -467,7 +570,7 @@ function buildGraphChunks(state) {
             outs.push(`[\\source, ${Number(pool.toSourceWeight)}]`);
         }
         // Header chunk for the pool (outs + empty pats)
-        chunks.push(`(var g = Library.at(\\envil, \\energyGraphNew); g[\\${pool.id}] = (outs: [${outs.join(', ')}], pats: List.new, ovr: List.new);)`);
+        chunks.push(`(var g = Library.at(\\envil, \\energyGraphNew); g[\\${pool.id}] = (outs: [${outs.join(', ')}], pats: List.new, ovr: List.new, quant: ${Number(pool.quant) || 0}, mode: \\${pool.mode === 'par' ? 'par' : 'seq'});)`);
         // One chunk per pattern (texts can be long)
         for (const pt of pool.patterns) {
             const code = `(var g = Library.at(\\envil, \\energyGraphNew); g[\\${pool.id}][\\pats].add((id: ${scStr(pt.id)}, w: ${Number(pt.weight) || 1}, src: ${scStr(pt.text)}));)`;
@@ -494,6 +597,7 @@ function buildGraphChunks(state) {
         `Library.put(\\envil, \\energyGraph, Library.at(\\envil, \\energyGraphNew));`,
         `Library.put(\\envil, \\energyPoolNames, [${poolSyms}]);`,
         `Library.at(\\envil, \\energyEnsurePools) !? { |f| f.value([${poolSyms}]) };`,
+        `Library.at(\\envil, \\energyVURefresh) !? { |f| f.value };`,
         `("[energy] graph updated (" ++ ${pools.length} ++ " pools)").postln;`,
         `)`,
     ].join(' '));
@@ -530,6 +634,7 @@ function pushConfigToSC(state) {
 function pushAllToSC(state) {
     sendSC(buildEnergyBackboneCode(), true);
     sendSC(buildEnergyTokenCode(), true);
+    sendSC(buildEnergyExtrasCode(), true);
     pushConfigToSC(state);
     pushGraphToSC(state);
     _backboneSent = true;
@@ -553,6 +658,8 @@ function ensureNotifyPort() {
                 if (!oscMsg) return;
                 if (oscMsg.address === '/envilEnergyTok') handleTokenMsg(oscMsg);
                 else if (oscMsg.address === '/envilEnergyStatus') handleStatusMsg(oscMsg);
+                else if (oscMsg.address === '/envilEnergyCheck') handleCheckMsg(oscMsg);
+                else if (oscMsg.address === '/envilEnergyVU') handleVUMsg(oscMsg);
             } catch (e) { console.warn('[energy] notify handler error:', e.message); }
         });
         _notifyPort.open();
@@ -576,6 +683,23 @@ function handleTokenMsg(oscMsg) {
         b: String(a[3] != null ? a[3] : ''),
         dur: Number(a[4]) || 0,
     });
+}
+
+function handleCheckMsg(oscMsg) {
+    const a = (oscMsg.args || []).map(oscArg);
+    if (!_panel) return;
+    _panel.webview.postMessage({
+        type: 'check-result',
+        reqId: Number(a[0]) | 0,
+        ok: !!Number(a[1]),
+        err: String(a[2] != null ? a[2] : ''),
+    });
+}
+
+function handleVUMsg(oscMsg) {
+    const a = (oscMsg.args || []).map(oscArg);
+    if (!_panel) return;
+    _panel.webview.postMessage({ type: 'vu', idx: Number(a[0]) | 0, db: Number(a[1]) || -60 });
 }
 
 function handleStatusMsg(oscMsg) {
@@ -630,5 +754,5 @@ function log(msg) {
 module.exports = {
     registerEnergyMachine,
     // exported for offline codegen testing
-    _test: { buildEnergyBackboneCode, buildEnergyTokenCode, buildGraphChunks, buildConfigCode, defaultState, sanitizeState },
+    _test: { buildEnergyBackboneCode, buildEnergyTokenCode, buildEnergyExtrasCode, buildGraphChunks, buildConfigCode, defaultState, sanitizeState },
 };

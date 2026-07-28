@@ -51,6 +51,12 @@ svg { width: 100%; height: 100%; display: block; }
 .node-title { font-size: 12px; fill: #dde; font-weight: bold; pointer-events: none; }
 .node-del { font-size: 11px; fill: #966; cursor: pointer; }
 .node-del:hover { fill: #f66; }
+.node-inject { font-size: 11px; fill: #a95; cursor: pointer; }
+.node-inject:hover { fill: #fc3; }
+.node-toggle { font-size: 9px; fill: #8a9; cursor: pointer; }
+.node-toggle:hover { fill: #cfd; }
+.vu-bg { fill: #1a1c22; }
+.vu-bar { fill: #4a8; }
 .port { fill: #889; stroke: #223; stroke-width: 1; cursor: crosshair; }
 .port:hover { fill: #fc3; }
 .source-circle { fill: #4a3d10; stroke: #fc3; stroke-width: 2; cursor: grab; }
@@ -60,6 +66,7 @@ svg { width: 100%; height: 100%; display: block; }
 .chip-bg { fill: #383d49; stroke: #4a5060; rx: 4; cursor: pointer; }
 .chip-bg:hover { fill: #444b5c; }
 .chip-bg.playing { stroke: #fc3; stroke-width: 1.5; }
+.chip-bg.failed { stroke: #f55; stroke-width: 1.5; }
 .chip-label { font-size: 10px; fill: #ccd; pointer-events: none; }
 .chip-w { font-size: 9px; fill: #897; pointer-events: none; }
 .chip-add { font-size: 11px; fill: #7a8; cursor: pointer; }
@@ -107,9 +114,10 @@ svg { width: 100%; height: 100%; display: block; }
 #ovrEd button { background: #0e639c; color: #fff; border: none; border-radius: 3px; padding: 4px 12px; cursor: pointer; font-size: 11px; }
 #ovrEd button.del { background: #a33; margin-right: auto; }
 
-.token { pointer-events: none; }
+.token { cursor: pointer; }
 .token circle { fill: #ffd23c; }
 .token .halo { fill: none; stroke: #ffd23c; opacity: 0.5; }
+.trail { fill: #ffd23c; pointer-events: none; }
 
 #editor {
     position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -151,8 +159,8 @@ svg { width: 100%; height: 100%; display: block; }
     <button id="btnAddPool" title="add a new pool node">+ pool</button>
     <button id="btnSync" title="re-push graph + backbone to sclang">⟲ sync sc</button>
     <div class="sep"></div>
-    <label>travel <input type="range" id="cfgTravel" min="0.2" max="8" step="0.1"/><span id="cfgTravelV"></span></label>
-    <label>dwell <input type="range" id="cfgDwell" min="0.1" max="4" step="0.1"/><span id="cfgDwellV"></span></label>
+    <label>travel <input type="range" id="cfgTravel" min="0" max="8" step="0.1"/><span id="cfgTravelV"></span></label>
+    <label>dwell <input type="range" id="cfgDwell" min="0" max="4" step="0.1"/><span id="cfgDwellV"></span></label>
     <label>maxDur <input type="number" id="cfgMaxDur" min="1" max="3600" step="1"/></label>
     <span id="tokCount"></span>
     <div id="statusDot" title="sc backbone status"></div>
@@ -177,9 +185,10 @@ svg { width: 100%; height: 100%; display: block; }
             <span>weight</span><input type="number" id="edWeight" min="0" max="100" step="0.1"/>
         </div>
         <textarea id="edText" spellcheck="false"></textarea>
-        <div class="hint">Must evaluate to a finite Pattern (e.g. Pbind with Pseq(...,n)). Errors or infinite patterns are skipped / cut at maxDur. Events play into the pool proxy (~poolName.ar in your ~out).</div>
+        <div class="hint" id="edCheckMsg">Must evaluate to a finite Pattern (e.g. Pbind with Pseq(...,n)). Errors or infinite patterns are skipped / cut at maxDur. Events play into the pool proxy (~poolName.ar in your ~out).</div>
         <div class="btns">
             <button class="del" id="edDelete">delete</button>
+            <button id="edCheck" style="background:#3a7">check</button>
             <button id="edCancel">cancel</button>
             <button id="edSave">save</button>
         </div>
@@ -272,9 +281,11 @@ function render() {
     const src = getNode('source');
     const addEdge = (from, to, weight, isReturn, onWeight, onDelete) => {
         const d = edgePathD(from, to, isReturn);
-        const p = el('path', { d, class: 'edge' + (isReturn ? ' return' : ''), id: `edge_${from.id}_${to.id}` }, edgeLayer);
+        const sw = Math.max(0.6, Math.min(8, 1 + weight * 1.1));
+        const p = el('path', { d, class: 'edge' + (isReturn ? ' return' : ''), id: `edge_${from.id}_${to.id}`, style: `stroke-width:${sw}` }, edgeLayer);
         const hit = el('path', { d, class: 'edge-hit' }, edgeLayer);
-        // arrowhead + weight badge at 55% along
+        // arrowhead at 55%, weight badge near the ORIGIN node so all outgoing
+        // weights are readable at a glance from the node they leave
         try {
             const len = p.getTotalLength();
             const mid = p.getPointAtLength(len * 0.55);
@@ -282,12 +293,14 @@ function render() {
             const ang = Math.atan2(mid2.y - mid.y, mid2.x - mid.x) * 180 / Math.PI;
             el('path', { d: 'M -5 -4 L 5 0 L -5 4 z', fill: isReturn ? '#554' : '#667',
                 transform: `translate(${mid.x},${mid.y}) rotate(${ang})` }, edgeLayer);
-            const txt = 'w:' + weight;
-            const badge = el('rect', { x: mid.x + 4, y: mid.y - 19, width: txt.length * 6 + 10, height: 15, rx: 4,
+            const bp = p.getPointAtLength(Math.min(len * 0.4, 46));
+            const txt = (isReturn ? '↩' : '→' + to.id.replace(/^pool/, '')) + ' w:' + weight;
+            const by = isReturn ? bp.y + 4 : bp.y - 19;
+            const badge = el('rect', { x: bp.x + 2, y: by, width: txt.length * 5.6 + 10, height: 15, rx: 4,
                 fill: '#23252d', stroke: '#556', class: 'edge-badge' }, edgeLayer);
-            const lbl = el('text', { x: mid.x + 9, y: mid.y - 8, class: 'edge-label' }, edgeLayer);
+            const lbl = el('text', { x: bp.x + 7, y: by + 11, class: 'edge-label' }, edgeLayer);
             lbl.textContent = txt;
-            const openPop = ev => { ev.stopPropagation(); ev.preventDefault(); openEdgePop(mid.x, mid.y, weight, onWeight, onDelete); };
+            const openPop = ev => { ev.stopPropagation(); ev.preventDefault(); openEdgePop(bp.x, bp.y, weight, onWeight, onDelete); };
             badge.addEventListener('mousedown', openPop);
             lbl.addEventListener('mousedown', openPop);
             hit.addEventListener('mousedown', openPop);
@@ -341,6 +354,12 @@ function renderPool(n) {
     const hdr = el('rect', { width: NODE_W, height: HEADER_H, rx: 8, class: 'node-header' }, g);
     const title = el('text', { x: 9, y: 16, class: 'node-title' }, g);
     title.textContent = '~' + n.id;
+    // VU meter strip in header
+    el('rect', { x: NODE_W - 78, y: 8, width: 44, height: 8, rx: 2, class: 'vu-bg' }, g);
+    el('rect', { x: NODE_W - 78, y: 8, width: 0, height: 8, rx: 2, class: 'vu-bar', id: `vu_${n.id}` }, g);
+    const inj = el('text', { x: NODE_W - 30, y: 16, class: 'node-inject' }, g);
+    inj.textContent = '⚡';
+    inj.addEventListener('mousedown', ev => { ev.stopPropagation(); post('inject-token', { pool: n.id }); });
     const del = el('text', { x: NODE_W - 16, y: 16, class: 'node-del' }, g);
     del.textContent = '✕';
     del.addEventListener('mousedown', ev => { ev.stopPropagation(); deletePool(n.id); });
@@ -349,7 +368,7 @@ function renderPool(n) {
     n.patterns.forEach((pt, i) => {
         const cy = HEADER_H + 6 + i * CHIP_H;
         const chip = el('rect', { x: 8, y: cy + 2, width: NODE_W - 16, height: CHIP_H - 5, rx: 4,
-            class: 'chip-bg', id: `chip_${n.id}_${pt.id}` }, g);
+            class: 'chip-bg' + (failedPats.has(n.id + '_' + pt.id) ? ' failed' : ''), id: `chip_${n.id}_${pt.id}` }, g);
         const lbl = el('text', { x: 15, y: cy + 15, class: 'chip-label' }, g);
         lbl.textContent = pt.name;
         const wl = el('text', { x: NODE_W - 14, y: cy + 15, 'text-anchor': 'end', class: 'chip-w' }, g);
@@ -377,6 +396,21 @@ function renderPool(n) {
     add.textContent = '+ pattern';
     add.addEventListener('mousedown', ev => { ev.stopPropagation(); addPattern(n); });
 
+    // quant + mode toggles (footer right)
+    const qt = el('text', { x: NODE_W - 72, y: h - 8, class: 'node-toggle' }, g);
+    qt.textContent = 'q:' + (n.quant || 0);
+    qt.addEventListener('mousedown', ev => {
+        ev.stopPropagation();
+        openEdgePop(n.x + NODE_W - 72, n.y + h, n.quant || 0, v => { n.quant = v; }, null);
+    });
+    const mt = el('text', { x: NODE_W - 34, y: h - 8, class: 'node-toggle' }, g);
+    mt.textContent = n.mode === 'par' ? 'par' : 'seq';
+    mt.addEventListener('mousedown', ev => {
+        ev.stopPropagation();
+        n.mode = (n.mode === 'par') ? 'seq' : 'par';
+        render(); pushState();
+    });
+
     const port = el('circle', { cx: NODE_W, cy: h / 2, r: 6, class: 'port' }, g);
     port.addEventListener('mousedown', ev => startConnect(ev, n));
 }
@@ -391,6 +425,7 @@ function openEdgePop(x, y, weight, onWeight, onDelete) {
     edgePop.style.left = Math.max(4, Math.min(wrap.width - 170, pt.x - wrap.left - 50)) + 'px';
     edgePop.style.top = Math.max(4, pt.y - wrap.top + 12) + 'px';
     edgePop.style.display = 'flex';
+    document.getElementById('epDel').style.display = onDelete ? '' : 'none';
     epW.value = weight;
     _edgeCtx = { onWeight, onDelete };
     epW.focus(); epW.select();
@@ -533,23 +568,37 @@ const editor = document.getElementById('editor');
 const edName = document.getElementById('edName');
 const edWeight = document.getElementById('edWeight');
 const edText = document.getElementById('edText');
+const edCheckMsg = document.getElementById('edCheckMsg');
+const ED_HINT = edCheckMsg.textContent;
 let _edCtx = null;   // { pool, pat }
+let _checkReq = 0;
+const failedPats = new Set();   // 'poolId_patId' whose last interpret failed
 
 function openEditor(pool, pat) {
     _edCtx = { pool, pat };
     edName.value = pat.name;
     edWeight.value = pat.weight;
     edText.value = pat.text;
+    edCheckMsg.textContent = ED_HINT;
+    edCheckMsg.style.color = '';
     editor.classList.add('open');
     edText.focus();
 }
 function closeEditor() { editor.classList.remove('open'); _edCtx = null; }
+
+document.getElementById('edCheck').addEventListener('click', () => {
+    _checkReq++;
+    edCheckMsg.textContent = 'checking…';
+    edCheckMsg.style.color = '#ca5';
+    post('check-pattern', { reqId: _checkReq, text: edText.value });
+});
 
 document.getElementById('edSave').addEventListener('click', () => {
     if (!_edCtx) return;
     _edCtx.pat.name = edName.value.trim() || 'pat';
     _edCtx.pat.weight = Math.max(0, Number(edWeight.value) || 1);
     _edCtx.pat.text = edText.value;
+    failedPats.delete(_edCtx.pool.id + '_' + _edCtx.pat.id);
     closeEditor(); render(); pushState();
 });
 document.getElementById('edCancel').addEventListener('click', closeEditor);
@@ -648,23 +697,30 @@ function deletePool(id) {
 }
 
 // ── Tokens (animated) ────────────────────────────────────────────────────
-const tokens = new Map();   // id → { g, x, y, mode, path, pathLen, t0, dur, tx, ty, fx, fy, pulse, nodeId }
+const tokens = new Map();   // id → { g, x, y, mode, path, pathLen, t0, dur, tx, ty, fx, fy, pulse, nodeId, trail }
+const TRAIL_N = 10;
 
 function ensureToken(id) {
     let t = tokens.get(id);
     if (t) return t;
+    const trailG = el('g', {}, tokenLayer);
+    const trail = [];
+    for (let i = 0; i < TRAIL_N; i++) {
+        trail.push(el('circle', { r: 2.5, class: 'trail', opacity: 0 }, trailG));
+    }
     const g = el('g', { class: 'token' }, tokenLayer);
     el('circle', { r: 12, class: 'halo' }, g);
     el('circle', { r: 7 }, g);
     const txt = el('text', { y: -14, 'text-anchor': 'middle', 'font-size': 9, fill: '#ffd23c' }, g);
     txt.textContent = '' + id;
-    t = { g, x: 0, y: 0, mode: 'idle', pulse: 0, nodeId: 'source' };
+    g.addEventListener('mousedown', ev => { ev.stopPropagation(); post('steal-token', { id }); });
+    t = { g, trailG, trail, hist: [], x: 0, y: 0, mode: 'idle', pulse: 0, nodeId: 'source' };
     tokens.set(id, t);
     return t;
 }
 function removeToken(id) {
     const t = tokens.get(id);
-    if (t) { t.g.remove(); tokens.delete(id); }
+    if (t) { t.g.remove(); t.trailG.remove(); clearChip(t); tokens.delete(id); }
     updateTokCount();
 }
 function updateTokCount() {
@@ -700,6 +756,11 @@ function tokenEvent(msg) {
     } else if (msg.kind === 'at' || msg.kind === 'skip') {
         const n = getNode(msg.a);
         t.nodeId = msg.a;
+        if (msg.kind === 'skip' && msg.b && msg.b !== 'empty' && msg.b !== 'noqueue') {
+            failedPats.add(msg.a + '_' + msg.b);
+            const c = document.getElementById(`chip_${msg.a}_${msg.b}`);
+            if (c) c.classList.add('failed');
+        }
         if (n) {
             const c = nodeCenter(n);
             t.mode = 'glide'; t.fx = t.x; t.fy = t.y; t.tx = c.x; t.ty = c.y;
@@ -745,6 +806,22 @@ function tick(now) {
         const r = (t.mode === 'pulse') ? 12 + Math.sin(t.pulse) * 4 : 12;
         halo.setAttribute('r', r);
         t.g.setAttribute('transform', `translate(${t.x},${t.y})`);
+        // trail: record every 3rd frame while moving, fade out
+        t._fc = (t._fc || 0) + 1;
+        const moving = t.mode === 'path' || t.mode === 'lerp' || t.mode === 'glide';
+        if (moving && t._fc % 3 === 0) {
+            t.hist.unshift({ x: t.x, y: t.y });
+            if (t.hist.length > TRAIL_N) t.hist.pop();
+        } else if (!moving && t._fc % 6 === 0 && t.hist.length) {
+            t.hist.pop();
+        }
+        for (let i = 0; i < TRAIL_N; i++) {
+            const c = t.trail[i], h = t.hist[i];
+            if (h) {
+                c.setAttribute('cx', h.x); c.setAttribute('cy', h.y);
+                c.setAttribute('opacity', 0.45 * (1 - i / TRAIL_N));
+            } else c.setAttribute('opacity', 0);
+        }
     }
     requestAnimationFrame(tick);
 }
@@ -779,6 +856,18 @@ window.addEventListener('message', ev => {
     const msg = ev.data;
     if (!msg) return;
     if (msg.type === 'token-event') tokenEvent(msg);
+    else if (msg.type === 'vu') {
+        const pool = pools()[msg.idx];
+        if (pool) {
+            const bar = document.getElementById('vu_' + pool.id);
+            if (bar) bar.setAttribute('width', Math.max(0, Math.min(44, (msg.db + 60) / 60 * 44)));
+        }
+    }
+    else if (msg.type === 'check-result') {
+        if (msg.reqId !== _checkReq) return;
+        edCheckMsg.textContent = msg.ok ? '✓ valid Pattern' : '✗ ' + msg.err;
+        edCheckMsg.style.color = msg.ok ? '#4c4' : '#f66';
+    }
     else if (msg.type === 'status') {
         const s = msg.status || {};
         const dot = document.getElementById('statusDot');
