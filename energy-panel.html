@@ -168,10 +168,10 @@ svg { width: 100%; height: 100%; display: block; touch-action: none; }
     <button id="btnAddPool" title="add a new pool node">+ pool</button>
     <button id="btnSync" title="re-push graph + backbone to sclang">⟲ sync sc</button>
     <div class="sep"></div>
-    <label>travel <input type="range" id="cfgTravel" min="0" max="8" step="0.1"/><span id="cfgTravelV"></span></label>
-    <label>dwell <input type="range" id="cfgDwell" min="0" max="4" step="0.1"/><span id="cfgDwellV"></span></label>
+    <label title="beats per hop (synced to TempoClock.default)">travel <input type="range" id="cfgTravel" min="0" max="8" step="0.1"/><span id="cfgTravelV"></span></label>
+    <label title="beats resting on source / after a skip">dwell <input type="range" id="cfgDwell" min="0" max="4" step="0.1"/><span id="cfgDwellV"></span></label>
     <label title="travel time scales with real on-map distance between nodes (300px = 1x travel)">dist <input type="checkbox" id="cfgDist"/></label>
-    <label>maxDur <input type="number" id="cfgMaxDur" min="1" max="3600" step="1"/></label>
+    <label title="max pattern duration in beats (Pfindur cap)">maxDur <input type="number" id="cfgMaxDur" min="1" max="3600" step="1"/></label>
     <span id="tokCount"></span>
     <div id="statusDot" title="sc backbone status"></div>
 </div>
@@ -331,7 +331,7 @@ function render() {
                 transform: `translate(${mid.x},${mid.y}) rotate(${ang})` }, edgeLayer);
         } catch (_) {}
         let txt = (isReturn ? '↩' : '→' + to.id.replace(/^pool/, '')) + ' w:' + weight;
-        if (state.distanceMode) txt += ' ·' + (state.travelTime * distFactorOf(from, to)).toFixed(1) + 's';
+        if (state.distanceMode) txt += ' ·' + (state.travelTime * distFactorOf(from, to)).toFixed(1) + 'b';
         if (!badgeStacks.has(from.id)) badgeStacks.set(from.id, []);
         badgeStacks.get(from.id).push({ txt, weight, onWeight, onDelete, isReturn, hit });
     };
@@ -505,7 +505,35 @@ epW.addEventListener('keydown', ev => {
     if (ev.key === 'Enter') commitEdgeWeight();
     else if (ev.key === 'Escape') closeEdgePop();
 });
-svg.addEventListener('pointerdown', () => closeEdgePop());
+svg.addEventListener('pointerdown', ev => {
+    closeEdgePop();
+    if (ev.target === svg) startPan(ev);   // drag empty canvas → pan
+});
+
+// ── Canvas scrolling / panning (wheel, or drag empty space — mouse & touch)
+let viewX = 0, viewY = 0;
+function updateViewBox() {
+    svg.setAttribute('viewBox', `${viewX} ${viewY} ${svg.clientWidth || 1} ${svg.clientHeight || 1}`);
+}
+svg.addEventListener('wheel', e => {
+    e.preventDefault();
+    viewX = Math.max(0, viewX + (e.shiftKey ? e.deltaY : e.deltaX));
+    viewY = Math.max(0, viewY + (e.shiftKey ? 0 : e.deltaY));
+    updateViewBox();
+}, { passive: false });
+function startPan(ev) {
+    ev.preventDefault();
+    dragStartPointer(ev);
+    const sx = ev.clientX, sy = ev.clientY, ox = viewX, oy = viewY;
+    const move = e => {
+        viewX = Math.max(0, ox - (e.clientX - sx));
+        viewY = Math.max(0, oy - (e.clientY - sy));
+        updateViewBox();
+    };
+    dragListen(move, () => {});
+}
+window.addEventListener('resize', updateViewBox);
+updateViewBox();
 
 function svgToScreen(x, y) {
     const m = svg.getScreenCTM();
@@ -953,11 +981,13 @@ function tokenTarget(t) {
     return nodeCenter(n);
 }
 
-// Live travel duration in ms — tracks the travel slider + dist toggle so
-// speed changes apply to tokens already in flight (mirrors SC's sliced wait).
+// Live travel duration in ms — tracks the travel slider, dist toggle AND the
+// SC tempo (beats → seconds via TempoClock.default.tempo from the heartbeat)
+// so speed changes apply to tokens already in flight.
+let _tempo = 1;   // beats per second, updated from status messages
 function travMs(t) {
     const f = state.distanceMode ? distFactorOf(getNode(t.travFrom), getNode(t.travTo)) : 1;
-    return Math.max(30, state.travelTime * f * 1000);
+    return Math.max(30, state.travelTime * f / _tempo * 1000);
 }
 
 let _lastTick = 0;
@@ -1047,8 +1077,8 @@ function refreshCfgUI() {
     cfgDwell.value = state.dwellTime;
     cfgMaxDur.value = state.maxPatDur;
     cfgDist.checked = !!state.distanceMode;
-    document.getElementById('cfgTravelV').textContent = state.travelTime + 's';
-    document.getElementById('cfgDwellV').textContent = state.dwellTime + 's';
+    document.getElementById('cfgTravelV').textContent = state.travelTime + 'b';
+    document.getElementById('cfgDwellV').textContent = state.dwellTime + 'b';
 }
 cfgTravel.addEventListener('input', () => { state.travelTime = Number(cfgTravel.value); refreshCfgUI(); if (state.distanceMode) render(); pushState(); });
 cfgDwell.addEventListener('input', () => { state.dwellTime = Number(cfgDwell.value); refreshCfgUI(); pushState(); });
@@ -1074,10 +1104,12 @@ window.addEventListener('message', ev => {
     }
     else if (msg.type === 'status') {
         const s = msg.status || {};
+        if (s.tempo > 0) _tempo = s.tempo;
         const dot = document.getElementById('statusDot');
         dot.classList.toggle('ok', !!(s.ready && s.isProxySpace));
-        dot.title = s.sclangDown ? 'sclang not running'
-            : (s.ready ? (s.isProxySpace ? 'backbone ok · ProxySpace ok' : 'backbone ok · NO ProxySpace!') : 'backbone missing (auto-healing…)');
+        dot.title = (s.sclangDown ? 'sclang not running'
+            : (s.ready ? (s.isProxySpace ? 'backbone ok · ProxySpace ok' : 'backbone ok · NO ProxySpace!') : 'backbone missing (auto-healing…)'))
+            + (s.tempo > 0 ? ' · ' + Math.round(s.tempo * 60) + ' bpm' : '');
     }
 });
 

@@ -5,7 +5,8 @@
 // from an energy source through pattern pools and back. Each pool is exposed
 // as a normal ProxySpace proxy (~poolA, ~poolB, …) whose source is a Pspawner
 // that plays whatever pattern the arriving token picked. The token routing
-// itself runs sclang-side (Routines on SystemClock), so closing the panel
+// itself runs sclang-side (Routines on TempoClock.default, so travel/dwell
+// are in beats and follow tap-tempo), so closing the panel
 // never stops the music — the panel is display + intervention only.
 //
 // SC-side state lives under Library.at(\envil, \energy*):
@@ -477,7 +478,7 @@ function buildEnergyTokenCode() {
         `        if(pos == \\source, { addr !? { addr.sendMsg("/envilEnergyTok", id, "at", "source", "") } });`,
         `      });`,
         `    };`,
-        `  }).play(SystemClock);`,
+        `  }).play(TempoClock.default);`,
         `  Library.at(\\envil, \\energyTokens).add([id, rout]);`,
         `  ("[energy] token " ++ id ++ " spawned").postln;`,
         `  id;`,
@@ -680,7 +681,7 @@ function buildStatusQueryCode() {
         `var ready = Library.at(\\envil, \\energyMakePool).notNil.if(1, 0);`,
         `var isPS = currentEnvironment.isKindOf(ProxySpace).if(1, 0);`,
         `var toks = (Library.at(\\envil, \\energyTokens) ?? { List.new }).size;`,
-        `addr.sendMsg("/envilEnergyStatus", ready, isPS, toks);`,
+        `addr.sendMsg("/envilEnergyStatus", ready, isPS, toks, TempoClock.default.tempo);`,
         `)`,
     ].join(' ');
 }
@@ -772,7 +773,7 @@ function handleVUMsg(oscMsg) {
 
 function handleStatusMsg(oscMsg) {
     const a = (oscMsg.args || []).map(x => Number(oscArg(x)) | 0);
-    const status = { ready: !!a[0], isProxySpace: !!a[1], tokens: a[2] | 0 };
+    const status = { ready: !!a[0], isProxySpace: !!a[1], tokens: a[2] | 0, tempo: Number(a[3]) || 0 };
     if (_panel) _panel.webview.postMessage({ type: 'status', status });
     // Self-heal: backbone missing (fresh sclang) → re-push everything, throttled
     if (!status.ready) {
