@@ -210,14 +210,14 @@ function defaultState() {
             { id: 'source', type: 'source', x: 90, y: 260, outs: [{ to: 'poolA', weight: 1 }] },
             {
                 id: 'poolA', type: 'pool', x: 320, y: 120, toSourceWeight: 1,
-                outs: [{ to: 'poolB', weight: 1 }],
+                outs: [{ to: 'poolB', weight: 1 }, { to: 'poolA', weight: 0 }],
                 patterns: [
                     { id: 'p1', name: 'up', weight: 1, text: 'Pbind(\\degree, Pseq([0, 2, 4, 7], 2), \\dur, 0.25, \\amp, 0.2)' },
                 ],
             },
             {
                 id: 'poolB', type: 'pool', x: 320, y: 400, toSourceWeight: 1,
-                outs: [],
+                outs: [{ to: 'poolB', weight: 0 }],
                 patterns: [
                     { id: 'p2', name: 'down', weight: 1, text: 'Pbind(\\degree, Pseq([7, 4, 2, 0], 2), \\dur, 0.25, \\amp, 0.2)' },
                 ],
@@ -276,7 +276,8 @@ function sanitizeState(state) {
         out.nodes.push({
             id, type: 'pool',
             x: num(n.x, 300), y: num(n.y, 200),
-            toSourceWeight: clampNum(n.toSourceWeight, 0, 100, 1),
+            // null = no return edge; a number (incl. 0) = visible edge
+            toSourceWeight: n.toSourceWeight == null ? null : clampNum(n.toSourceWeight, 0, 100, 1),
             quant: clampNum(n.quant, 0, 256, 0),
             mode: n.mode === 'par' ? 'par' : 'seq',
             outs: (Array.isArray(n.outs) ? n.outs : [])
@@ -606,19 +607,21 @@ function buildGraphChunks(state) {
         ? { x: num(n.x, 0) + 28, y: num(n.y, 0) + 28 }
         : { x: num(n.x, 0) + 90, y: num(n.y, 0) + (54 + (n.patterns || []).length * 34 + ovrRowsOf(n) * 18) / 2 };
     const distF = (a, b) => {
-        if (!a || !b) return 1;
+        if (!a || !b || a === b) return 1;   // self-loop = 1x travel
         const ca = centerOf(a), cb = centerOf(b);
         const f = Math.hypot(cb.x - ca.x, cb.y - ca.y) / 300;   // 300px = 1x travel
         return Math.round(Math.min(8, Math.max(0.05, f)) * 100) / 100;
     };
     const nodeById = (id) => state.nodes.find(n => n.id === id);
+    // Edge weight: keep 0 as 0 (visible, ~never picked) — only default missing/NaN to 1
+    const wnum = (w) => Number.isFinite(Number(w)) ? Number(w) : 1;
 
     // source node: outs point to pools (explicit edges live on source.outs? no —
     // source edges are stored on the source node in the webview state)
     const srcOuts = (source && Array.isArray(source.outs)) ? source.outs : [];
     const srcOutsCode = srcOuts
         .filter(o => pools.some(pl => pl.id === o.to))
-        .map(o => `[\\${o.to}, ${Number(o.weight) || 1}, ${distF(source, nodeById(o.to))}]`)
+        .map(o => `[\\${o.to}, ${wnum(o.weight)}, ${distF(source, nodeById(o.to))}]`)
         .join(', ');
     chunks.push(`(var g = Library.at(\\envil, \\energyGraphNew); g[\\source] = (outs: [${srcOutsCode}], pats: []);)`);
 
@@ -626,11 +629,11 @@ function buildGraphChunks(state) {
         const outs = [];
         for (const o of pool.outs) {
             if (o.to !== 'source' && pools.some(pl => pl.id === o.to)) {
-                outs.push(`[\\${o.to}, ${Number(o.weight) || 1}, ${distF(pool, nodeById(o.to))}]`);
+                outs.push(`[\\${o.to}, ${wnum(o.weight)}, ${distF(pool, nodeById(o.to))}]`);
             }
         }
-        if ((Number(pool.toSourceWeight) || 0) > 0) {
-            outs.push(`[\\source, ${Number(pool.toSourceWeight)}, ${distF(pool, source)}]`);
+        if (pool.toSourceWeight != null) {
+            outs.push(`[\\source, ${wnum(pool.toSourceWeight)}, ${distF(pool, source)}]`);
         }
         // Header chunk for the pool (outs + empty pats)
         chunks.push(`(var g = Library.at(\\envil, \\energyGraphNew); g[\\${pool.id}] = (outs: [${outs.join(', ')}], pats: List.new, ovr: List.new, quant: ${Number(pool.quant) || 0}, mode: \\${pool.mode === 'par' ? 'par' : 'seq'});)`);

@@ -130,9 +130,9 @@ button.del.confirm { background: #d00 !important; border: 1px solid #f66 !import
 #ovrEd button.del { background: #a33; margin-right: auto; }
 
 .token { cursor: pointer; }
-.token circle { fill: #ffd23c; }
+.token .core { stroke: #ffd23c; stroke-width: 2; }   /* gold border, random fill */
 .token .halo { fill: none; stroke: #ffd23c; opacity: 0.5; }
-.trail { fill: #ffd23c; pointer-events: none; }
+.trail { pointer-events: none; }
 
 #editor {
     position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -313,7 +313,7 @@ function chipCenter(pool, patId) {
 // Distance factor between two nodes (300px = 1x travel) — shared by edge
 // badges and live token animation.
 function distFactorOf(from, to) {
-    if (!from || !to) return 1;
+    if (!from || !to || from === to) return 1;   // self-loop = 1x travel
     const a = nodeCenter(from), b = nodeCenter(to);
     return Math.min(8, Math.max(0.05, Math.hypot(b.x - a.x, b.y - a.y) / 300));
 }
@@ -329,6 +329,10 @@ function el(tag, attrs, parent) {
 
 function edgePathD(from, to, isReturn) {
     const a = outAnchor(from), b = inAnchor(to);
+    if (from.id === to.id) {   // self-loop: arc below the node
+        const drop = (from.type === 'pool' ? poolH(from) / 2 : SRC_R) + 46;
+        return `M ${a.x} ${a.y} C ${a.x + 55} ${a.y + drop}, ${b.x - 55} ${b.y + drop}, ${b.x} ${b.y}`;
+    }
     const dx = Math.max(50, Math.abs(b.x - a.x) * 0.45);
     let bend = 0;
     if (isReturn) bend = 30;                            // returns arc below
@@ -359,7 +363,7 @@ function render() {
             el('path', { d: 'M -5 -4 L 5 0 L -5 4 z', fill: isReturn ? '#554' : '#667',
                 transform: `translate(${mid.x},${mid.y}) rotate(${ang})` }, edgeLayer);
         } catch (_) {}
-        let txt = (isReturn ? '↩' : '→' + to.id.replace(/^pool/, '')) + ' w:' + weight;
+        let txt = (isReturn ? '↩' : (from.id === to.id ? '↻' : '→' + to.id.replace(/^pool/, ''))) + ' w:' + weight;
         if (state.distanceMode) txt += ' ·' + (state.travelTime * distFactorOf(from, to)).toFixed(1) + 'b';
         if (!badgeStacks.has(from.id)) badgeStacks.set(from.id, []);
         badgeStacks.get(from.id).push({ txt, weight, onWeight, onDelete, isReturn, hit });
@@ -379,10 +383,10 @@ function render() {
                 w => { o.weight = w; },
                 () => { pl.outs = pl.outs.filter(x => x !== o); });
         }
-        if (src && (pl.toSourceWeight || 0) > 0) {
+        if (src && pl.toSourceWeight != null) {
             addEdge(pl, src, pl.toSourceWeight, true,
                 w => { pl.toSourceWeight = w; },
-                () => { pl.toSourceWeight = 0; });
+                () => { pl.toSourceWeight = null; });
         }
     }
 
@@ -727,9 +731,9 @@ function startConnect(ev, fromNode) {
         tempLine.style.display = 'none';
         const p = screenToSvg(e.clientX, e.clientY);
         const target = hitTestNode(p.x, p.y);
-        if (!target || target.id === fromNode.id) return;
+        if (!target) return;
         if (target.id === 'source') {
-            if (fromNode.type === 'pool' && !(fromNode.toSourceWeight > 0)) {
+            if (fromNode.type === 'pool' && fromNode.toSourceWeight == null) {
                 fromNode.toSourceWeight = 1;
                 render(); pushState();
             }
@@ -737,7 +741,8 @@ function startConnect(ev, fromNode) {
         }
         const outs = fromNode.outs = fromNode.outs || [];
         if (!outs.some(o => o.to === target.id)) {
-            outs.push({ to: target.id, weight: 1 });
+            // self-loops are allowed, defaulting to weight 0
+            outs.push({ to: target.id, weight: target.id === fromNode.id ? 0 : 1 });
             render(); pushState();
         }
     };
@@ -999,7 +1004,9 @@ function addPool() {
         id, type: 'pool',
         x: 200 + (state.nodes.length % 4) * 60,
         y: 120 + (state.nodes.length % 5) * 70,
-        toSourceWeight: 1, outs: [], patterns: [], overrides: [],
+        toSourceWeight: 1,
+        outs: [{ to: id, weight: 0 }],   // default self-loop, weight 0
+        patterns: [], overrides: [],
     });
     render(); pushState();
 }
@@ -1019,14 +1026,16 @@ const TRAIL_N = 32;
 function ensureToken(id) {
     let t = tokens.get(id);
     if (t) return t;
+    // per-token color for core + trail (deterministic from id); border stays gold
+    const col = `hsl(${(id * 137.508) % 360}, 90%, 62%)`;
     const trailG = el('g', {}, tokenLayer);
     const trail = [];
     for (let i = 0; i < TRAIL_N; i++) {
-        trail.push(el('circle', { r: 2.5, class: 'trail', opacity: 0 }, trailG));
+        trail.push(el('circle', { r: 2.5, class: 'trail', fill: col, opacity: 0 }, trailG));
     }
     const g = el('g', { class: 'token' }, tokenLayer);
     el('circle', { r: 12, class: 'halo' }, g);
-    el('circle', { r: 7 }, g);
+    el('circle', { r: 7, class: 'core', fill: col }, g);
     const txt = el('text', { y: -14, 'text-anchor': 'middle', 'font-size': 9, fill: '#ffd23c' }, g);
     txt.textContent = '' + id;
     // click/tap: playing → release from pattern (token walks on); idle → steal
@@ -1072,8 +1081,10 @@ function tokenEvent(msg) {
         const pool = getNode(msg.a);
         t.nodeId = msg.a;
         t.prog = null;
-        const c = pool ? chipCenter(pool, msg.b) : { x: t.x, y: t.y };
-        t.mode = 'glide'; t.fx = t.x; t.fy = t.y; t.tx = c.x; t.ty = c.y;
+        // random x inside the chip — keeps repeats on the same chip visible
+        t.jx = (Math.random() - 0.5) * (NODE_W - 70);
+        const c = pool ? chipCenter(pool, msg.b) : { x: t.x - t.jx, y: t.y };
+        t.mode = 'glide'; t.fx = t.x; t.fy = t.y; t.tx = c.x + t.jx; t.ty = c.y;
         t.t0 = performance.now(); t.dur = 250; t.after = 'pulse';
         markChipPlaying(msg.a, msg.b, true);
         t.playingChip = [msg.a, msg.b];
@@ -1109,7 +1120,10 @@ function ease(u) { return u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
 function tokenTarget(t) {
     const n = getNode(t.nodeId);
     if (!n) return null;
-    if (t.playingChip && t.playingChip[0] === t.nodeId) return chipCenter(n, t.playingChip[1]);
+    if (t.playingChip && t.playingChip[0] === t.nodeId) {
+        const c = chipCenter(n, t.playingChip[1]);
+        return { x: c.x + (t.jx || 0), y: c.y };
+    }
     return nodeCenter(n);
 }
 
@@ -1171,8 +1185,17 @@ function tick(now) {
         const dy = t.y - (t._py != null ? t._py : t.y);
         t._px = t.x; t._py = t.y;
         if ((dx * dx + dy * dy) > 0.2) {
+            // teleport (e.g. travel = 0): backfill a straight line of trail
+            // points from the origin so you still see where it came from
+            const jump = Math.hypot(dx, dy);
+            if (jump > 20) {
+                const steps = Math.min(TRAIL_N - 1, Math.floor(jump / 8));
+                for (let s = steps; s >= 1; s--) {
+                    t.hist.unshift({ x: t.x - dx * s / (steps + 1), y: t.y - dy * s / (steps + 1) });
+                }
+            }
             t.hist.unshift({ x: t.x, y: t.y });
-            if (t.hist.length > TRAIL_N) t.hist.pop();
+            if (t.hist.length > TRAIL_N) t.hist.length = TRAIL_N;
         } else if (t._fc % 4 === 0 && t.hist.length) {
             t.hist.pop();
         }
