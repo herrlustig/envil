@@ -13,6 +13,7 @@ This setup provides every convenient feature of vscode, overlaying it on top of 
 ## Requirements
 
 - [SuperCollider](https://supercollider.github.io/downloads)
+  - **Recommended version:** if you use **supernova** (`Server.supernova;` in your startup.scd), use the **newest release (3.14.1 or later)** — older supernova builds (e.g. the 3.13 packages shipped by some Linux distros) can segfault under sustained OSC/SendReply traffic, which ENVIL features like VU meters and Hydra parameter bindings generate. If you use the default **scsynth**, a slightly older version (3.13.x) works fine too.
 - Any [Chromium based](https://en.wikipedia.org/wiki/Chromium_(web_browser)#Browsers_based_on_Chromium) Web Browser
 
 ## Getting started
