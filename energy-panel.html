@@ -53,8 +53,8 @@ svg { width: 100%; height: 100%; display: block; touch-action: none; }
 .node-pool-bg.droptarget { stroke: #fc3; stroke-width: 2.5; }
 .node-header { fill: #3a3f4d; cursor: grab; }
 .node-title { font-size: 12px; fill: #dde; font-weight: bold; pointer-events: none; }
-.node-title-drag { font-size: 12px; color: #dde; font-weight: bold; line-height: 1;
-    padding: 5px 0 0 9px; white-space: nowrap; overflow: hidden;
+.node-title-drag { display: inline-block; font-size: 12px; color: #dde; font-weight: bold; line-height: 1;
+    margin: 4px 0 0 0; white-space: nowrap;
     cursor: alias; user-select: none; -webkit-user-select: none; }
 .node-title-drag:hover { color: #ffd23c; }
 .node-del { font-size: 11px; fill: #966; cursor: pointer; }
@@ -66,6 +66,7 @@ svg { width: 100%; height: 100%; display: block; touch-action: none; }
 .node-toggle:hover { fill: #cfd; }
 .vu-bg { fill: #1a1c22; }
 .vu-bar { fill: #4a8; }
+.vu-pass { pointer-events: none; }
 .port { fill: #889; stroke: #223; stroke-width: 1; cursor: crosshair; }
 .port:hover { fill: #fc3; }
 .source-circle { fill: #4a3d10; stroke: #fc3; stroke-width: 2; cursor: grab; }
@@ -76,11 +77,20 @@ svg { width: 100%; height: 100%; display: block; touch-action: none; }
 .chip-bg:hover { fill: #444b5c; }
 .chip-bg.playing { stroke: #fc3; stroke-width: 1.5; }
 .chip-bg.failed { stroke: #f55; stroke-width: 1.5; }
-.chip-code { font-size: 7px; fill: #8a92a8; pointer-events: none; font-family: var(--vscode-editor-font-family, monospace); }
 .chip-clone { font-size: 11px; fill: #5f6678; cursor: copy; }
 .chip-clone:hover { fill: #9db; }
-.chip-label { font-size: 10px; fill: #ccd; pointer-events: none; }
-.chip-w { font-size: 9px; fill: #897; pointer-events: none; }
+.chip-meta {
+    width: 100%; max-height: 22px; overflow: hidden;
+    white-space: normal; overflow-wrap: anywhere; word-break: break-all;
+    line-height: 11px; font-size: 10px; color: #97a2b8;
+    pointer-events: none; user-select: none; -webkit-user-select: none;
+}
+.chip-meta-title { color: #dde; }
+.chip-meta-weight { color: #7fc790; }
+.chip-meta-code { color: #8a92a8; font-family: var(--vscode-editor-font-family, monospace); font-size: 9px; }
+.chip-now-zone { fill: #2e4249; stroke: #39545f; stroke-width: 1; cursor: pointer; }
+.chip-now-zone:hover { fill: #36505a; }
+.chip-now { font-size: 8px; fill: #8fb4c2; pointer-events: none; }
 .chip-add { font-size: 11px; fill: #7a8; cursor: pointer; }
 .chip-add:hover { fill: #ad9; }
 
@@ -441,10 +451,14 @@ function renderPool(n) {
     const hdr = el('rect', { width: NODE_W, height: HEADER_H, rx: 8, class: 'node-header' }, g);
     // title is a draggable HTML div (via foreignObject) → native drag to a code
     // editor inserts the proxy name, same as touch-knobs/macro labels
-    const fo = el('foreignObject', { x: 0, y: 0, width: NODE_W - 82, height: HEADER_H }, g);
+    const titleText = '~' + n.id;
+    // Keep drag-to-code exactly on title text; the rest of the header remains
+    // available for pool dragging.
+    const titleW = Math.min(NODE_W - 90, Math.max(20, titleText.length * 8 + 4));
+    const fo = el('foreignObject', { x: 9, y: 0, width: titleW, height: HEADER_H }, g);
     const title = document.createElement('div');
     title.className = 'node-title-drag';
-    title.textContent = '~' + n.id;
+    title.textContent = titleText;
     title.draggable = true;
     title.title = 'drag into code → inserts ~' + n.id + ' (NodeProxy)';
     title.addEventListener('dragstart', ev => {
@@ -453,8 +467,8 @@ function renderPool(n) {
     });
     fo.appendChild(title);
     // VU meter strip in header (⚡ inject sits left of it, ✕ far right)
-    el('rect', { x: NODE_W - 62, y: 8, width: 44, height: 8, rx: 2, class: 'vu-bg' }, g);
-    el('rect', { x: NODE_W - 62, y: 8, width: 0, height: 8, rx: 2, class: 'vu-bar', id: `vu_${n.id}` }, g);
+    el('rect', { x: NODE_W - 62, y: 8, width: 44, height: 8, rx: 2, class: 'vu-bg vu-pass' }, g);
+    el('rect', { x: NODE_W - 62, y: 8, width: 0, height: 8, rx: 2, class: 'vu-bar vu-pass', id: `vu_${n.id}` }, g);
     const inj = el('text', { x: NODE_W - 78, y: 16, class: 'node-inject' }, g);
     inj.textContent = '⚡';
     inj.addEventListener('pointerdown', ev => { ev.stopPropagation(); post('inject-token', { pool: n.id }); });
@@ -465,6 +479,12 @@ function renderPool(n) {
 
     n.patterns.forEach((pt, i) => {
         const cy = HEADER_H + 6 + i * CHIP_H;
+        const chipX = 8;
+        const chipY = cy + 2;
+        const chipW = NODE_W - 16;
+        const chipH = CHIP_H - 5;
+        const playW = Math.max(24, Math.round(chipW / 5));
+        const playX = chipX + chipW - playW;
         const chip = el('rect', { x: 8, y: cy + 2, width: NODE_W - 16, height: CHIP_H - 5, rx: 4,
             class: 'chip-bg' + (failedPats.has(n.id + '_' + pt.id) ? ' failed' : ''), id: `chip_${n.id}_${pt.id}` }, g);
         const tip = document.createElementNS(SVGNS, 'title');
@@ -477,12 +497,37 @@ function renderPool(n) {
         clTip.textContent = 'drag to clone';
         cl.appendChild(clTip);
         cl.addEventListener('pointerdown', ev => startChipDrag(ev, n, pt, true));
-        const lbl = el('text', { x: 24, y: cy + 14, class: 'chip-label' }, g);
-        lbl.textContent = pt.name;
-        const code = el('text', { x: 24, y: cy + 25, class: 'chip-code' }, g);
-        code.textContent = (pt.text || '').replace(/\s+/g, ' ').trim().slice(0, 40);
-        const wl = el('text', { x: NODE_W - 14, y: cy + 14, 'text-anchor': 'end', class: 'chip-w' }, g);
-        wl.textContent = 'w' + pt.weight;
+        const textX = 24;
+        const textW = Math.max(32, chipX + chipW - textX - 4);
+        const playBg = el('rect', { x: playX, y: chipY, width: playW, height: chipH, rx: 4, class: 'chip-now-zone' }, g);
+        const textBox = el('foreignObject', { x: textX, y: chipY + 3, width: textW, height: chipH - 6, style: 'pointer-events:none' }, g);
+        const meta = document.createElement('div');
+        meta.className = 'chip-meta';
+        const ti = document.createElement('span');
+        ti.className = 'chip-meta-title';
+        ti.textContent = pt.name || 'pat';
+        const w = document.createElement('span');
+        w.className = 'chip-meta-weight';
+        w.textContent = 'w' + pt.weight;
+        const co = document.createElement('span');
+        co.className = 'chip-meta-code';
+        co.textContent = (pt.text || '').replace(/\s+/g, ' ').trim();
+        meta.appendChild(ti);
+        meta.appendChild(document.createTextNode(', '));
+        meta.appendChild(w);
+        meta.appendChild(document.createTextNode(', '));
+        meta.appendChild(co);
+        textBox.appendChild(meta);
+        const playNow = el('text', { x: chipX + chipW - 4, y: cy + 10, class: 'chip-now', 'text-anchor': 'end' }, g);
+        playNow.textContent = '▶';
+        const playTip = document.createElementNS(SVGNS, 'title');
+        playTip.textContent = 'play now in ~' + n.id + ' (bypasses token flow)';
+        playBg.appendChild(playTip);
+        playBg.addEventListener('pointerdown', ev => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            post('play-pattern-now', { pool: n.id, patId: pt.id, text: pt.text || '' });
+        });
         chip.addEventListener('pointerdown', ev => startChipDrag(ev, n, pt));
     });
 
@@ -776,7 +821,8 @@ function hitTestNode(x, y) {
     return null;
 }
 
-// ── Pattern chips: click → edit, drag → move between pools, ⧉ → clone ─
+// ── Pattern chips: click → edit, drag → move between pools, ⧉ → clone,
+//    ▶ → play now in the selected pool (no token interaction)
 const chipGhost = document.getElementById('chipGhost');
 function startChipDrag(ev, pool, pat, clone) {
     ev.preventDefault(); ev.stopPropagation();
